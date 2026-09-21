@@ -1,0 +1,146 @@
+# Automated Clothing Product Publishing Backend (Telegram & Instagram)
+
+Production-ready backend service that autonomously ingests fashion product listings (Zara, Mango, etc.) from an aggregator API, curates the best items and writes compelling copy using OpenAI GPT, computes final sale prices with markup and currency conversion, and publishes posts to Telegram channels and Instagram Business/Creator accounts on a configurable schedule.
+
+---
+
+## 🚀 Quickstart
+
+### 1. Environment Setup
+Requires Python 3.11+.
+
+```powershell
+# Create and activate virtual environment
+uv venv --python 3.11
+.venv\Scripts\activate
+
+# Install dependencies
+uv pip install -e .
+```
+
+### 2. Verify Setup & Dry-Run Mode
+The project comes pre-configured with mock data sources and safe dry-run mode enabled out of the box:
+
+```powershell
+# Check configuration
+python main.py --check-config
+
+# Execute a single pipeline cycle in dry-run mode
+python main.py --run-once --dry-run
+
+# Launch the Web Admin Dashboard
+python main.py --dashboard
+```
+
+Open **http://localhost:8000** in your browser to view the interactive Admin Dashboard.
+From the web interface, you can:
+- Monitor publication counts (today and all-time), caps, and current markup.
+- Inspect all ingested products with photos, titles, original/sale prices, and status badges.
+- Trigger pipeline cycles on demand with one click.
+- Review and approve/reject items held in the moderation queue.
+- Live-edit the GPT curation prompt and operational parameters.
+
+During dry-run execution:
+- Product listings are fetched from the built-in `MockAggregatorClient` (Zara and Mango items).
+- Products are deduplicated and saved to the SQLite database (`data/app.db`).
+- GPT descriptions are generated.
+- Prices are calculated with markup and FX conversion.
+- Composed posts are displayed in the log output without making external network calls to Telegram or Instagram.
+
+---
+
+## 🛠 Routine Operations (No Code Changes Required)
+
+As specified in SRS §1.2, day-to-day operation is completely autonomous. The operator only edits three configuration items:
+
+### 1. Editing the GPT Prompt (`prompt.txt`)
+The AI curation criteria and copywriting tone are controlled via [prompt.txt](file:///d:/projects/fashion-autopost/prompt.txt).
+- **Hot-Reloadable**: Re-read from disk on **every cycle** — edits take effect immediately without restarting the service.
+- Edit this file to instruct GPT to prioritize specific styles (e.g., summer linens, evening wear, neutral palettes) or change the copywriting voice.
+
+### 2. Changing the Markup Value (`config.yaml`)
+Open [config.yaml](file:///d:/projects/fashion-autopost/config.yaml) and update the `markup` parameter:
+```yaml
+markup: 20.00          # Sale price = (converted store price) + 20.00
+target_currency: "USD" # Currency in which markup is added and displayed
+```
+- **Hot-Reloadable**: Reloaded at the start of each pipeline cycle without service restart.
+
+### 3. Modifying the Publishing Schedule (`config.yaml`)
+Configure publication times and timezone in [config.yaml](file:///d:/projects/fashion-autopost/config.yaml):
+```yaml
+schedule:
+  posts_per_day: 2
+  times:
+    - "09:30"
+    - "18:00"
+  timezone: "Europe/Istanbul"
+```
+- The scheduler automatically re-registers cron jobs for newly specified times.
+
+---
+
+## 🔐 Going Live: Credentials Checklist
+
+To transition from dry-run simulation to live publishing:
+
+1. Copy `.env.example` to `.env` (or update `.env`):
+   ```ini
+   # Aggregator API
+   AGGREGATOR_API_KEY=your_real_key
+   AGGREGATOR_MODE=http  # Switch from 'mock' to 'http' once provider contract is confirmed
+
+   # OpenAI
+   OPENAI_API_KEY=sk-...
+   OPENAI_MODEL=gpt-4.1
+
+   # Telegram Bot API
+   TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+   TELEGRAM_CHANNEL_ID=@your_fashion_channel
+   TELEGRAM_ADMIN_CHAT_ID=123456789  # For critical failure alerts
+
+   # Instagram Graph API
+   INSTAGRAM_ACCESS_TOKEN=EAAG...
+   INSTAGRAM_ACCOUNT_ID=178414...
+
+   # Optional S3 Storage (only needed if photo URLs are not already public HTTPS)
+   S3_BUCKET=my-fashion-bucket
+   S3_ACCESS_KEY=...
+   S3_SECRET_KEY=...
+   ```
+
+2. Switch `dry_run: false` in `config.yaml` or run with `--live`:
+   ```powershell
+   python main.py --run-once --live
+   ```
+
+3. Run in Daemon Mode (Continuous Scheduled Execution):
+   ```powershell
+   python main.py
+   ```
+
+---
+
+## 🧪 Running Automated Tests
+
+Run the test suite covering unit tests and integration tests:
+
+```powershell
+.venv\Scripts\pytest -v
+```
+
+All 20 tests validate:
+- Currency conversion, cross rates, and markup addition (`test_pricing.py`).
+- Deduplication against previously published database records (`test_dedup.py`).
+- Post text and link composition (`test_composer.py`).
+- Pipeline orchestration, per-product failure isolation, daily caps, and moderation gates (`test_pipeline.py`).
+- Config loading and hot-reload (`test_config.py`).
+- Full dry-run execution against SQLite repository (`test_dry_run_cycle.py`).
+- Publication idempotency across multiple consecutive cycles (`test_idempotency.py`).
+
+---
+
+## 📂 Architecture Reference
+- [SRS.md](file:///d:/projects/fashion-autopost/documentation/srs.md): Software Requirements Specification
+- [SDD.md](file:///d:/projects/fashion-autopost/documentation/sdd.md): Software Design Document
+- [NOTES.md](file:///d:/projects/fashion-autopost/NOTES.md): Resolutions and details on the 5 open questions

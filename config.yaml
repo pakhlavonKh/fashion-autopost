@@ -1,0 +1,68 @@
+# ==============================================================================
+# Fashion Autopost Backend - Operational Configuration
+# Changes to markup, schedule, and prompt_path reload automatically without restart.
+# ==============================================================================
+
+# Sale price calculation: price_final = (price_original converted to target_currency) + markup
+markup: 15.00
+target_currency: "USD"
+
+# Currency conversion settings (SRS §10.3)
+# mode: "fixed" uses fixed_rate; "dynamic" uses rates dictionary or external provider
+fx:
+  mode: "fixed"
+  fixed_rate: 1.08
+  rates:
+    EUR: 1.08
+    USD: 1.00
+    TRY: 0.029
+    GBP: 1.29
+
+# Maximum products selected and published per cycle
+max_products_per_run: 3
+
+# Optional cap on total items published per calendar day (SRS §10.4)
+# Set to null or a number (e.g., 10)
+daily_publish_cap: null
+
+# Path to the plain text GPT prompt file (SRS FR-2.2, re-read on every cycle)
+prompt_path: "./prompt.txt"
+
+# Dry-run flag: if true, full pipeline runs but publishing is simulated (SRS FR-9)
+dry_run: true
+
+# Include product source URL in the published post
+include_product_link: true
+
+# Publication schedule (SRS FR-8)
+schedule:
+  posts_per_day: 2
+  times:
+    - "10:00"
+    - "18:00"
+  timezone: "UTC"
+
+# Database connection URL (SQLite by default, PostgreSQL supported seamlessly)
+db_url: "sqlite:///./data/app.db"
+
+# Aggregator source settings (SRS §10.1)
+# mode: "mock" uses simulated Zara/Mango products; "http" connects to real provider
+aggregator:
+  mode: "mock"
+  base_url: "https://api.aggregator.example.com"
+  timeout_seconds: 30.0
+  stores:
+    - "zara"
+    - "mango"
+
+# Moderation gate settings (SRS §10.2)
+# If enabled: true and auto_approve: false, selected posts are held as "pending_review"
+moderation:
+  enabled: false
+  auto_approve: true
+
+# Admin alert settings for critical failures (SRS §10.5)
+# channel: "telegram", "console", or "none"
+alert:
+  channel: "console"
+  telegram_chat_id: null

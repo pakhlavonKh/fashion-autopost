@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fashion Autopost — Admin Command Center</title>
+  <meta name="description" content="Autonomous fashion publishing backend dashboard for Telegram and Instagram.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand-section">
+        <div class="brand-logo">
+          <i data-lucide="sparkles"></i>
+        </div>
+        <div>
+          <h1 class="brand-title">Fashion Autopost</h1>
+          <p id="brandSubtitle" class="brand-subtitle" data-i18n="brandSubtitle">Telegram va Instagram uchun avtomatlashtirilgan kiyimlar nashr markazi</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <!-- Language Switcher -->
+        <div class="lang-switcher">
+          <button class="lang-btn active" data-lang="uz">UZ</button>
+          <button class="lang-btn" data-lang="ru">RU</button>
+          <button class="lang-btn" data-lang="en">EN</button>
+        </div>
+
+        <div id="modePill" class="mode-badge mode-dryrun">
+          <span class="pulse-dot"></span>
+          <span id="modeText" data-i18n="modeDryRun">Sinov rejimi (Dry-Run)</span>
+        </div>
+        <button id="btnOpenPrompt" class="btn btn-secondary">
+          <i data-lucide="file-edit"></i>
+          <span data-i18n="btnPrompt">Promptni tahrirlash</span>
+        </button>
+        <button id="btnOpenConfig" class="btn btn-secondary">
+          <i data-lucide="settings"></i>
+          <span data-i18n="btnConfig">Sozlamalar</span>
+        </button>
+        <button id="btnRunCycle" class="btn btn-primary">
+          <i id="btnRunCycleIcon" data-lucide="zap"></i>
+          <span id="btnRunCycleText" data-i18n="btnRunCycle">Tsiklni ishga tushirish</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Metrics Cards -->
+    <section class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">
+          <span data-i18n="metricPublishedToday">Bugun chop etilgan</span>
+          <i data-lucide="calendar" class="metric-icon"></i>
+        </div>
+        <div id="metricPublishedToday" class="metric-value">0</div>
+        <div id="metricPublishedCap" class="metric-sub" data-i18n="noDailyCap">Kunlik cheklov yo'q</div>
+      </div>
+
+      <div class="metric-card">
+        <div class="metric-label">
+          <span data-i18n="metricPublishedTotal">Jami chop etilgan</span>
+          <i data-lucide="send" class="metric-icon"></i>
+        </div>
+        <div id="metricPublishedTotal" class="metric-value">0</div>
+        <div class="metric-sub" data-i18n="metricTotalSub">Barcha kanallar bo'yicha</div>
+      </div>
+
+      <div class="metric-card">
+        <div class="metric-label">
+          <span data-i18n="metricPending">Moderatsiyada</span>
+          <i data-lucide="clock" class="metric-icon"></i>
+        </div>
+        <div id="metricPending" class="metric-value">0</div>
+        <div class="metric-sub" data-i18n="metricPendingSub">Tasdiqlash kutilmoqda</div>
+      </div>
+
+      <div class="metric-card">
+        <div class="metric-label">
+          <span data-i18n="metricMarkup">Belgilangan ustama</span>
+          <i data-lucide="tag" class="metric-icon"></i>
+        </div>
+        <div id="metricMarkup" class="metric-value">$15.00</div>
+        <div id="metricScheduleTimes" class="metric-sub">Vaqtlar: 10:00, 18:00 UTC</div>
+      </div>
+    </section>
+
+    <!-- Products & Moderation Section -->
+    <section>
+      <div class="section-header">
+        <h2 data-i18n="catalogTitle">Mahsulotlar katalogi va moderatsiya</h2>
+        <div class="filter-tabs">
+          <button class="tab-btn active" data-filter="all" data-i18n="tabAll">Barchasi</button>
+          <button class="tab-btn" data-filter="published" data-i18n="tabPublished">Chop etilgan</button>
+          <button class="tab-btn" data-filter="pending_review" data-i18n="tabPending">Moderatsiyada</button>
+          <button class="tab-btn" data-filter="selected" data-i18n="tabSelected">Tanlangan</button>
+          <button class="tab-btn" data-filter="new" data-i18n="tabNew">Yangi</button>
+          <button class="tab-btn" data-filter="failed" data-i18n="tabFailed">Xato</button>
+        </div>
+      </div>
+
+      <div id="productsGrid" class="products-grid">
+        <!-- Injected via JavaScript -->
+        <div style="grid-column: 1 / -1; text-align: center; padding: 48px; color: var(--text-muted);">
+          Yuklanmoqda...
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Prompt Modal -->
+  <div id="promptModal" class="modal-backdrop">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 data-i18n="modalPromptTitle">GPT saralash va kopirayting prompti</h3>
+        <button class="btn btn-secondary btn-sm close-modal">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label" data-i18n="modalPromptLabel">Prompt matni (har bir nashr tsiklida fayldan qayta o'qiladi)</label>
+          <textarea id="promptTextarea" class="form-control"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary close-modal" data-i18n="btnCancel">Bekor qilish</button>
+        <button id="btnSavePrompt" class="btn btn-primary" data-i18n="btnSave">Saqlash</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config Settings Modal -->
+  <div id="configModal" class="modal-backdrop">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 data-i18n="modalConfigTitle">Tizim sozlamalari</h3>
+        <button class="btn btn-secondary btn-sm close-modal">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label" data-i18n="labelMarkup">Ustama miqdori (Markup)</label>
+          <input type="number" id="inputMarkup" step="0.5" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="labelCurrency">Sotish valyutasi (Target Currency)</label>
+          <input type="text" id="inputCurrency" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="labelMaxItems">Bir tsiklda saralanadigan mahsulotlar soni</label>
+          <input type="number" id="inputMaxItems" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="labelDailyCap">Kunlik nashr limiti (bo'sh qoldirilsa - cheklovsiz)</label>
+          <input type="number" id="inputDailyCap" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="labelScheduleTimes">Nashr qilish vaqtlari (vergul bilan ajratilgan HH:MM)</label>
+          <input type="text" id="inputScheduleTimes" class="form-control" placeholder="10:00, 18:00">
+        </div>
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="checkDryRun">
+            <span data-i18n="labelDryRunCheck">Sinov rejimini yoqish (Telegram/Instagramga yubormasdan tekshirish)</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="checkModeration">
+            <span data-i18n="labelModerationCheck">Qo'lda moderatsiyani yoqish (chop etishdan oldin ko'rib chiqish)</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary close-modal" data-i18n="btnCancel">Bekor qilish</button>
+        <button id="btnSaveConfig" class="btn btn-primary" data-i18n="btnSave">Saqlash</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
