@@ -60,6 +60,19 @@ const translations = {
     toastPromptSaved: "Prompt saqlandi va darhol kuchga kirdi!",
     toastSettingsSaved: "Sozlamalar saqlandi va yangilandi!",
     toastApproved: (id) => `Mahsulot ${id} tasdiqlandi va chop etildi!`,
+
+    btnLock: "Qulflash",
+    modalAuthTitle: "Admin Autentifikatsiyasi",
+    modalAuthSubtitle: "Boshqaruv paneliga kirish uchun xavfsizlik kalitini kiriting",
+    labelAdminKey: "Admin Kaliti (API Key / Password)",
+    labelApiUrl: "Backend API Server Manzili (ixtiyoriy)",
+    hintApiUrl: "Netlify'da ochilgan bo'lsa, backend API server manzilingizni kiriting.",
+    labelRememberKey: "Ushbu brauzerda eslab qolish",
+    btnLogin: "Kirish",
+    authErrorEmpty: "Iltimos, xavfsizlik kalitini kiriting.",
+    authErrorInvalid: "Xavfsizlik kaliti noto'g'ri yoki serverga ulanib bo'lmadi.",
+    authSuccess: "Muvaffaqiyatli autentifikatsiyadan o'tildi!",
+    authLoggedOut: "Boshqaruv paneli qulflandi.",
   },
   ru: {
     brandSubtitle: "Центр управления автопостингом одежды в Telegram и Instagram",
@@ -118,6 +131,19 @@ const translations = {
     toastPromptSaved: "Промпт успешно сохранен и применен!",
     toastSettingsSaved: "Настройки успешно сохранены и применены!",
     toastApproved: (id) => `Товар ${id} одобрен и опубликован!`,
+
+    btnLock: "Заблокировать",
+    modalAuthTitle: "Аутентификация администратора",
+    modalAuthSubtitle: "Введите ключ безопасности для доступа к панели управления",
+    labelAdminKey: "Ключ администратора (API Key / Пароль)",
+    labelApiUrl: "Адрес сервера API (необязательно)",
+    hintApiUrl: "Если панель открыта на Netlify, укажите URL вашего бэкенд сервера.",
+    labelRememberKey: "Запомнить в этом brauzere",
+    btnLogin: "Войти",
+    authErrorEmpty: "Пожалуйста, введите ключ безопасности.",
+    authErrorInvalid: "Неверный ключ безопасности или нет связи с сервером.",
+    authSuccess: "Успешная авторизация!",
+    authLoggedOut: "Панель управления заблокирована.",
   },
   en: {
     brandSubtitle: "Autonomous Telegram & Instagram Publishing Control Center",
@@ -176,6 +202,19 @@ const translations = {
     toastPromptSaved: "Prompt saved and hot-reloaded successfully!",
     toastSettingsSaved: "Settings saved and hot-reloaded!",
     toastApproved: (id) => `Product ${id} approved and published!`,
+
+    btnLock: "Lock",
+    modalAuthTitle: "Admin Authentication",
+    modalAuthSubtitle: "Enter admin security key to access the control panel",
+    labelAdminKey: "Admin Security Key (API Key / Password)",
+    labelApiUrl: "Backend API Server URL (optional)",
+    hintApiUrl: "If loaded on Netlify, specify your live backend API server URL.",
+    labelRememberKey: "Remember on this device",
+    btnLogin: "Unlock Dashboard",
+    authErrorEmpty: "Please enter your security key.",
+    authErrorInvalid: "Invalid security key or server unreachable.",
+    authSuccess: "Authentication successful!",
+    authLoggedOut: "Dashboard locked.",
   }
 };
 
@@ -267,9 +306,64 @@ function updateStatsUI(data) {
   }
 }
 
+// Storage & API Configuration
+const AUTH_KEY_STORAGE = 'fashion_admin_key';
+const API_URL_STORAGE = 'fashion_api_url';
+
+function getAuthKey() {
+  return localStorage.getItem(AUTH_KEY_STORAGE) || sessionStorage.getItem(AUTH_KEY_STORAGE) || '';
+}
+
+function setAuthKey(key, remember = true) {
+  if (remember) {
+    localStorage.setItem(AUTH_KEY_STORAGE, key);
+  } else {
+    sessionStorage.setItem(AUTH_KEY_STORAGE, key);
+  }
+}
+
+function clearAuthKey() {
+  localStorage.removeItem(AUTH_KEY_STORAGE);
+  sessionStorage.removeItem(AUTH_KEY_STORAGE);
+}
+
+function getApiBaseUrl() {
+  return localStorage.getItem(API_URL_STORAGE) || '';
+}
+
+function setApiBaseUrl(url) {
+  if (url) {
+    localStorage.setItem(API_URL_STORAGE, url.trim().replace(/\/$/, ''));
+  } else {
+    localStorage.removeItem(API_URL_STORAGE);
+  }
+}
+
+function getFullApiUrl(endpoint) {
+  const base = getApiBaseUrl();
+  if (!base) return endpoint;
+  return `${base}${endpoint}`;
+}
+
+async function apiFetch(endpoint, options = {}) {
+  const url = getFullApiUrl(endpoint);
+  const token = getAuthKey();
+  const headers = { ...(options.headers || {}) };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+    headers['X-Admin-Key'] = token;
+  }
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    showAuthModal(t('authErrorInvalid'));
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
 async function fetchStats() {
   try {
-    const res = await fetch('/api/stats');
+    const res = await apiFetch('/api/stats');
     const data = await res.json();
     updateStatsUI(data);
     refreshLucide();
@@ -282,7 +376,7 @@ async function fetchProducts() {
   const grid = document.getElementById('productsGrid');
   try {
     const url = currentFilter === 'all' ? '/api/products' : `/api/products?status=${currentFilter}`;
-    const res = await fetch(url);
+    const res = await apiFetch(url);
     const data = await res.json();
 
     if (!data.products || data.products.length === 0) {
@@ -344,13 +438,15 @@ async function fetchProducts() {
 
     refreshLucide();
   } catch (err) {
-    grid.innerHTML = `<div style="grid-column: 1 / -1; color: var(--danger); text-align: center;">Error: ${err.message}</div>`;
+    if (err.message !== 'Unauthorized') {
+      grid.innerHTML = `<div style="grid-column: 1 / -1; color: var(--danger); text-align: center;">Error: ${err.message}</div>`;
+    }
   }
 }
 
 async function approveProduct(externalId) {
   try {
-    const res = await fetch(`/api/products/${externalId}/approve`, { method: 'POST' });
+    const res = await apiFetch(`/api/products/${externalId}/approve`, { method: 'POST' });
     const data = await res.json();
     if (res.ok) {
       showToast(t('toastApproved', externalId));
@@ -360,7 +456,9 @@ async function approveProduct(externalId) {
       showToast(`Error: ${data.detail}`, true);
     }
   } catch (err) {
-    showToast(`Error: ${err.message}`, true);
+    if (err.message !== 'Unauthorized') {
+      showToast(`Error: ${err.message}`, true);
+    }
   }
 }
 
@@ -377,7 +475,7 @@ document.getElementById('btnRunCycle').addEventListener('click', async () => {
 
   try {
     showToast(t('toastExecuting'));
-    const res = await fetch('/api/run-cycle', {
+    const res = await apiFetch('/api/run-cycle', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
@@ -393,7 +491,9 @@ document.getElementById('btnRunCycle').addEventListener('click', async () => {
       showToast(`Error: ${data.detail}`, true);
     }
   } catch (err) {
-    showToast(`Network error: ${err.message}`, true);
+    if (err.message !== 'Unauthorized') {
+      showToast(`Network error: ${err.message}`, true);
+    }
   } finally {
     btn.disabled = false;
     btnText.textContent = t('btnRunCycle');
@@ -406,44 +506,58 @@ document.getElementById('btnRunCycle').addEventListener('click', async () => {
 // Prompt Modal
 const promptModal = document.getElementById('promptModal');
 document.getElementById('btnOpenPrompt').addEventListener('click', async () => {
-  const res = await fetch('/api/config');
-  const data = await res.json();
-  document.getElementById('promptTextarea').value = data.prompt || '';
-  promptModal.classList.add('active');
-  refreshLucide();
+  try {
+    const res = await apiFetch('/api/config');
+    const data = await res.json();
+    document.getElementById('promptTextarea').value = data.prompt || '';
+    promptModal.classList.add('active');
+    refreshLucide();
+  } catch (err) {
+    console.error('Failed to load prompt config:', err);
+  }
 });
 
 document.getElementById('btnSavePrompt').addEventListener('click', async () => {
   const prompt = document.getElementById('promptTextarea').value;
-  const res = await fetch('/api/prompt', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt })
-  });
-  if (res.ok) {
-    showToast(t('toastPromptSaved'));
-    promptModal.classList.remove('active');
-  } else {
-    showToast('Error saving prompt', true);
+  try {
+    const res = await apiFetch('/api/prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt })
+    });
+    if (res.ok) {
+      showToast(t('toastPromptSaved'));
+      promptModal.classList.remove('active');
+    } else {
+      showToast('Error saving prompt', true);
+    }
+  } catch (err) {
+    if (err.message !== 'Unauthorized') {
+      showToast('Error saving prompt: ' + err.message, true);
+    }
   }
 });
 
 // Config Modal
 const configModal = document.getElementById('configModal');
 document.getElementById('btnOpenConfig').addEventListener('click', async () => {
-  const res = await fetch('/api/config');
-  const data = await res.json();
+  try {
+    const res = await apiFetch('/api/config');
+    const data = await res.json();
 
-  document.getElementById('inputMarkup').value = data.markup;
-  document.getElementById('inputCurrency').value = data.target_currency;
-  document.getElementById('inputMaxItems').value = data.max_products_per_run;
-  document.getElementById('inputDailyCap').value = data.daily_publish_cap || '';
-  document.getElementById('inputScheduleTimes').value = data.schedule.times.join(', ');
-  document.getElementById('checkDryRun').checked = !!data.dry_run;
-  document.getElementById('checkModeration').checked = !!data.moderation.enabled;
+    document.getElementById('inputMarkup').value = data.markup;
+    document.getElementById('inputCurrency').value = data.target_currency;
+    document.getElementById('inputMaxItems').value = data.max_products_per_run;
+    document.getElementById('inputDailyCap').value = data.daily_publish_cap || '';
+    document.getElementById('inputScheduleTimes').value = data.schedule.times.join(', ');
+    document.getElementById('checkDryRun').checked = !!data.dry_run;
+    document.getElementById('checkModeration').checked = !!data.moderation.enabled;
 
-  configModal.classList.add('active');
-  refreshLucide();
+    configModal.classList.add('active');
+    refreshLucide();
+  } catch (err) {
+    console.error('Failed to load config:', err);
+  }
 });
 
 document.getElementById('btnSaveConfig').addEventListener('click', async () => {
@@ -461,18 +575,24 @@ document.getElementById('btnSaveConfig').addEventListener('click', async () => {
     moderation_enabled: document.getElementById('checkModeration').checked,
   };
 
-  const res = await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  try {
+    const res = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
 
-  if (res.ok) {
-    showToast(t('toastSettingsSaved'));
-    configModal.classList.remove('active');
-    fetchStats();
-  } else {
-    showToast('Error saving settings', true);
+    if (res.ok) {
+      showToast(t('toastSettingsSaved'));
+      configModal.classList.remove('active');
+      fetchStats();
+    } else {
+      showToast('Error saving settings', true);
+    }
+  } catch (err) {
+    if (err.message !== 'Unauthorized') {
+      showToast('Error saving settings: ' + err.message, true);
+    }
   }
 });
 
@@ -501,7 +621,130 @@ document.querySelectorAll('.lang-btn').forEach(btn => {
   });
 });
 
+// Auth Modal & Security Gate Logic
+const authModal = document.getElementById('authModal');
+const authAlert = document.getElementById('authAlert');
+const inputAdminKey = document.getElementById('inputAdminKey');
+const inputApiUrl = document.getElementById('inputApiUrl');
+const btnLogin = document.getElementById('btnLogin');
+const btnLock = document.getElementById('btnLock');
+const btnTogglePassword = document.getElementById('btnTogglePassword');
+
+function showAuthModal(errorMsg = null) {
+  if (errorMsg) {
+    authAlert.textContent = errorMsg;
+    authAlert.style.display = 'flex';
+  } else {
+    authAlert.style.display = 'none';
+  }
+  inputAdminKey.value = getAuthKey();
+  inputApiUrl.value = getApiBaseUrl();
+  authModal.classList.add('active');
+  refreshLucide();
+}
+
+function hideAuthModal() {
+  authModal.classList.remove('active');
+  authAlert.style.display = 'none';
+}
+
+async function handleLogin() {
+  const key = inputAdminKey.value.trim();
+  const apiUrl = inputApiUrl.value.trim();
+  const remember = document.getElementById('checkRememberKey').checked;
+
+  if (!key) {
+    authAlert.textContent = t('authErrorEmpty');
+    authAlert.style.display = 'flex';
+    return;
+  }
+
+  setApiBaseUrl(apiUrl);
+  setAuthKey(key, remember);
+
+  const loginText = document.getElementById('btnLoginText');
+  btnLogin.disabled = true;
+  loginText.textContent = '...';
+
+  try {
+    const res = await fetch(getFullApiUrl('/api/auth/login'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key })
+    });
+
+    if (res.ok) {
+      hideAuthModal();
+      showToast(t('authSuccess'));
+      await fetchStats();
+      await fetchProducts();
+    } else {
+      clearAuthKey();
+      authAlert.textContent = t('authErrorInvalid');
+      authAlert.style.display = 'flex';
+    }
+  } catch (err) {
+    try {
+      const fallbackRes = await fetch(getFullApiUrl('/api/stats'), {
+        headers: { 'Authorization': `Bearer ${key}`, 'X-Admin-Key': key }
+      });
+      if (fallbackRes.ok) {
+        hideAuthModal();
+        showToast(t('authSuccess'));
+        const statsData = await fallbackRes.json();
+        updateStatsUI(statsData);
+        await fetchProducts();
+      } else {
+        clearAuthKey();
+        authAlert.textContent = t('authErrorInvalid');
+        authAlert.style.display = 'flex';
+      }
+    } catch (fallbackErr) {
+      authAlert.textContent = `${t('authErrorInvalid')} (${err.message})`;
+      authAlert.style.display = 'flex';
+    }
+  } finally {
+    btnLogin.disabled = false;
+    loginText.textContent = t('btnLogin');
+    refreshLucide();
+  }
+}
+
+if (btnLogin) {
+  btnLogin.addEventListener('click', handleLogin);
+}
+
+if (btnLock) {
+  btnLock.addEventListener('click', () => {
+    clearAuthKey();
+    showAuthModal();
+    showToast(t('authLoggedOut'));
+  });
+}
+
+if (btnTogglePassword) {
+  btnTogglePassword.addEventListener('click', () => {
+    const isPass = inputAdminKey.type === 'password';
+    inputAdminKey.type = isPass ? 'text' : 'password';
+    const icon = document.getElementById('iconEye');
+    if (icon) {
+      icon.setAttribute('data-lucide', isPass ? 'eye-off' : 'eye');
+      refreshLucide();
+    }
+  });
+}
+
+if (inputAdminKey) {
+  inputAdminKey.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleLogin();
+  });
+}
+
 // Initial boot
 applyTranslations();
-fetchStats();
-fetchProducts();
+if (!getAuthKey()) {
+  showAuthModal();
+} else {
+  fetchStats();
+  fetchProducts();
+}

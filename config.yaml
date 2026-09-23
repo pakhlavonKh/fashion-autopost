@@ -60,3 +60,8 @@ scraper:
     like Gecko) Chrome/124.0.0.0 Safari/537.36
   wait_after_scroll_ms: 1500
 target_currency: USD
+dashboard:
+  enabled: true
+  host: 0.0.0.0
+  port: 8000
+  admin_key: fashion-admin-2026

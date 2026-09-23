@@ -92,6 +92,7 @@ def test_dashboard_scraper_stores_api(tmp_path: Path) -> None:
 
     app = create_dashboard_app(config=config, runner=mock_runner, repo=repo)
     client = TestClient(app)
+    client.headers["X-Admin-Key"] = config.dashboard.admin_key
 
     # 1. GET /api/scraper/stores
     res = client.get("/api/scraper/stores")

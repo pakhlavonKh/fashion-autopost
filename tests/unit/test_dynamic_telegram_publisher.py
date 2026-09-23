@@ -123,6 +123,7 @@ def test_dashboard_telegram_chat_endpoints(tmp_path: Path) -> None:
 
     app = create_dashboard_app(config=config, runner=mock_runner, repo=repo)
     client = TestClient(app)
+    client.headers["X-Admin-Key"] = config.dashboard.admin_key
 
     # 1. GET /api/telegram/chats
     res = client.get("/api/telegram/chats")

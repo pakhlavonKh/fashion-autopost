@@ -147,6 +147,14 @@ class AlertSettings(BaseModel):
     telegram_chat_id: str | None = None
 
 
+class DashboardSettings(BaseModel):
+    """Settings for the admin dashboard server and security authentication."""
+    enabled: bool = True
+    port: int = 8000
+    host: str = "0.0.0.0"
+    admin_key: str = "fashion-admin-2026"
+
+
 class AppConfig(BaseModel):
     """Root configuration object combining env secrets and YAML parameters."""
 
@@ -171,6 +179,7 @@ class AppConfig(BaseModel):
     schedule: ScheduleSettings = Field(default_factory=ScheduleSettings)
     moderation: ModerationSettings = Field(default_factory=ModerationSettings)
     alert: AlertSettings = Field(default_factory=AlertSettings)
+    dashboard: DashboardSettings = Field(default_factory=DashboardSettings)
 
     # Config file tracking for hot-reload
     _config_path: Path | None = None
@@ -258,6 +267,13 @@ class AppConfig(BaseModel):
         if os.getenv("DRY_RUN") is not None:
             yaml_data["dry_run"] = os.environ["DRY_RUN"].strip().lower() in ("true", "1", "yes")
 
+        dashboard_data = yaml_data.get("dashboard", {})
+        if os.getenv("DASHBOARD_ADMIN_KEY"):
+            dashboard_data["admin_key"] = os.environ["DASHBOARD_ADMIN_KEY"]
+        elif os.getenv("DASHBOARD_PASSWORD"):
+            dashboard_data["admin_key"] = os.environ["DASHBOARD_PASSWORD"]
+        yaml_data["dashboard"] = dashboard_data
+
         config = cls.model_validate(yaml_data)
         config._config_path = cfg_file
         return config
@@ -304,6 +320,8 @@ class AppConfig(BaseModel):
             self.alert = AlertSettings.model_validate(content["alert"])
         if "scraper" in content and isinstance(content["scraper"], dict):
             self.scraper = ScraperSettings.model_validate(content["scraper"])
+        if "dashboard" in content and isinstance(content["dashboard"], dict):
+            self.dashboard = DashboardSettings.model_validate(content["dashboard"])
 
     def validate_live_credentials(self) -> list[str]:
         """Verify that credentials are valid for live non-dry-run operation."""

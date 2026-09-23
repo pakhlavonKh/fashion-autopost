@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -61,6 +61,11 @@ class RunCycleRequest(BaseModel):
     dry_run: Optional[bool] = None
 
 
+class AuthLoginRequest(BaseModel):
+    key: Optional[str] = None
+    password: Optional[str] = None
+
+
 def create_dashboard_app(
     config: AppConfig,
     runner: PipelineRunner,
@@ -82,7 +87,61 @@ def create_dashboard_app(
     def get_index():
         return FileResponse(STATIC_DIR / "index.html")
 
-    @app.get("/api/stats")
+    @app.get("/style.css")
+    def get_style():
+        return FileResponse(STATIC_DIR / "style.css", media_type="text/css")
+
+    @app.get("/app.js")
+    def get_app():
+        return FileResponse(STATIC_DIR / "app.js", media_type="application/javascript")
+
+    def verify_admin(
+        authorization: Optional[str] = Header(None),
+        x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+        admin_key_query: Optional[str] = Query(None, alias="key"),
+    ) -> bool:
+        expected = getattr(getattr(config, "dashboard", None), "admin_key", None)
+        if not expected:
+            return True
+        token = None
+        if authorization:
+            parts = authorization.strip().split()
+            if len(parts) == 2 and parts[0].lower() == "bearer":
+                token = parts[1]
+            elif len(parts) == 1:
+                token = parts[0]
+        elif x_admin_key:
+            token = x_admin_key.strip()
+        elif admin_key_query:
+            token = admin_key_query.strip()
+
+        if not token or token != expected:
+            raise HTTPException(
+                status_code=401,
+                detail="Admin kaliti noto'g'ri yoki taqdim etilmagan (Unauthorized)",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return True
+
+    @app.post("/api/auth/login")
+    def auth_login(req: AuthLoginRequest):
+        """Verify admin key/password and return auth confirmation."""
+        submitted = (req.key or req.password or "").strip()
+        expected = getattr(getattr(config, "dashboard", None), "admin_key", "")
+        if not expected or submitted != expected:
+            raise HTTPException(status_code=401, detail="Xavfsizlik kaliti noto'g'ri")
+        return {
+            "authenticated": True,
+            "token": expected,
+            "message": "Admin tizimiga muvaffaqiyatli ulanildi",
+        }
+
+    @app.get("/api/auth/verify")
+    def auth_verify(_: bool = Depends(verify_admin)):
+        """Check if current session token is valid."""
+        return {"authenticated": True}
+
+    @app.get("/api/stats", dependencies=[Depends(verify_admin)])
     def get_stats():
         """Return system status, counts, and publishing metrics."""
         with repo._get_session() as session:
@@ -122,7 +181,7 @@ def create_dashboard_app(
             "aggregator_mode": config.aggregator.mode,
         }
 
-    @app.get("/api/products")
+    @app.get("/api/products", dependencies=[Depends(verify_admin)])
     def list_products(
         status: Optional[str] = Query(None, description="Filter by status"),
         limit: int = Query(50, ge=1, le=200),
@@ -155,7 +214,7 @@ def create_dashboard_app(
                 })
             return {"products": results}
 
-    @app.post("/api/run-cycle")
+    @app.post("/api/run-cycle", dependencies=[Depends(verify_admin)])
     def trigger_cycle(payload: RunCycleRequest):
         """Trigger an on-demand pipeline execution."""
         original_dry_run = config.dry_run
@@ -181,7 +240,7 @@ def create_dashboard_app(
         finally:
             config.dry_run = original_dry_run
 
-    @app.get("/api/config")
+    @app.get("/api/config", dependencies=[Depends(verify_admin)])
     def get_config():
         """Retrieve current config and prompt content."""
         prompt_content = ""
@@ -206,7 +265,7 @@ def create_dashboard_app(
             "prompt": prompt_content,
         }
 
-    @app.post("/api/config")
+    @app.post("/api/config", dependencies=[Depends(verify_admin)])
     def update_config(req: ConfigUpdateRequest):
         """Update operational parameters in config.yaml and trigger hot-reload."""
         cfg_file = Path(config._config_path or "config.yaml")
@@ -250,14 +309,14 @@ def create_dashboard_app(
         config.reload_hot_fields()
         return {"success": True, "message": "Configuration updated and hot-reloaded."}
 
-    @app.post("/api/prompt")
+    @app.post("/api/prompt", dependencies=[Depends(verify_admin)])
     def update_prompt(req: PromptUpdateRequest):
         """Save new prompt content to prompt.txt."""
         prompt_file = Path(config.prompt_path)
         prompt_file.write_text(req.prompt.strip(), encoding="utf-8")
         return {"success": True, "message": "Prompt updated successfully."}
 
-    @app.get("/api/logs")
+    @app.get("/api/logs", dependencies=[Depends(verify_admin)])
     def get_logs(limit: int = 40):
         """Fetch latest system logs from the database sink."""
         with repo._get_session() as session:
@@ -277,7 +336,7 @@ def create_dashboard_app(
                 ]
             }
 
-    @app.post("/api/products/{external_id}/approve")
+    @app.post("/api/products/{external_id}/approve", dependencies=[Depends(verify_admin)])
     def approve_product(external_id: str):
         """Manually approve and publish an item held in pending_review."""
         rec = repo.get_by_external_id(external_id)
@@ -292,7 +351,7 @@ def create_dashboard_app(
         )
         return {"success": True, "message": f"Product {external_id} approved and published."}
 
-    @app.get("/api/scraper/stores")
+    @app.get("/api/scraper/stores", dependencies=[Depends(verify_admin)])
     def list_scraper_stores():
         """List all configured website scraping targets."""
         stores_data = {}
@@ -300,7 +359,7 @@ def create_dashboard_app(
             stores_data[name] = store_cfg.model_dump()
         return {"stores": stores_data}
 
-    @app.post("/api/scraper/stores")
+    @app.post("/api/scraper/stores", dependencies=[Depends(verify_admin)])
     def upsert_scraper_store(req: StoreUpsertRequest):
         """Add or update an arbitrary website scraping target in config.yaml without code changes."""
         cfg_file = Path(config._config_path or "config.yaml")
@@ -339,7 +398,7 @@ def create_dashboard_app(
             "store": store_entry,
         }
 
-    @app.delete("/api/scraper/stores/{store_name}")
+    @app.delete("/api/scraper/stores/{store_name}", dependencies=[Depends(verify_admin)])
     def delete_scraper_store(store_name: str):
         """Remove a website scraping target from config.yaml."""
         norm_name = store_name.strip().lower()
@@ -363,7 +422,7 @@ def create_dashboard_app(
         config.reload_hot_fields()
         return {"success": True, "message": f"Store '{norm_name}' removed and hot-reloaded."}
 
-    @app.get("/api/telegram/chats")
+    @app.get("/api/telegram/chats", dependencies=[Depends(verify_admin)])
     def list_telegram_chats():
         """List all discovered channels, groups, and admin chats."""
         chats = repo.get_all_telegram_chats()
@@ -384,7 +443,7 @@ def create_dashboard_app(
             ]
         }
 
-    @app.post("/api/telegram/sync")
+    @app.post("/api/telegram/sync", dependencies=[Depends(verify_admin)])
     def sync_telegram_chats():
         """Trigger dynamic discovery of channels and chats via Telegram getUpdates."""
         discovery = TelegramChatDiscoveryService(bot_token=config.telegram.bot_token, repo=repo)
@@ -395,7 +454,7 @@ def create_dashboard_app(
             "active_targets": [t.title for t in active_targets],
         }
 
-    @app.patch("/api/telegram/chats/{chat_id}")
+    @app.patch("/api/telegram/chats/{chat_id}", dependencies=[Depends(verify_admin)])
     def update_telegram_chat(chat_id: str, req: TelegramChatUpdateRequest):
         """Enable, disable, or change the role of a Telegram chat target."""
         with repo._get_session() as session:
@@ -411,7 +470,7 @@ def create_dashboard_app(
             session.commit()
             return {"success": True, "message": f"Chat {chat_id} updated."}
 
-    @app.delete("/api/telegram/chats/{chat_id}")
+    @app.delete("/api/telegram/chats/{chat_id}", dependencies=[Depends(verify_admin)])
     def delete_telegram_chat(chat_id: str):
         """Deactivate a Telegram chat target."""
         repo.deactivate_telegram_chat(chat_id)

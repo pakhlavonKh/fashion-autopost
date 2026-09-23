@@ -10,7 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="./style.css">
 </head>
 <body>
   <div class="app-layout">
@@ -48,6 +48,10 @@
         <button id="btnRunCycle" class="btn btn-primary">
           <i id="btnRunCycleIcon" data-lucide="zap"></i>
           <span id="btnRunCycleText" data-i18n="btnRunCycle">Tsiklni ishga tushirish</span>
+        </button>
+        <button id="btnLock" class="btn btn-secondary" title="Lock Dashboard / Chiqish">
+          <i data-lucide="lock"></i>
+          <span data-i18n="btnLock">Qulflash</span>
         </button>
       </div>
     </header>
@@ -186,9 +190,55 @@
     </div>
   </div>
 
+  <!-- Auth Gate Modal -->
+  <div id="authModal" class="modal-backdrop">
+    <div class="modal-content auth-modal-content" style="max-width: 440px;">
+      <div class="modal-header" style="justify-content: center; text-align: center; border-bottom: none; padding-bottom: 0;">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%;">
+          <div class="auth-shield-badge">
+            <i data-lucide="shield-check" style="width: 32px; height: 32px; color: var(--accent-primary);"></i>
+          </div>
+          <h3 data-i18n="modalAuthTitle" style="font-size: 20px; margin: 0; font-family: 'Outfit', sans-serif;">Admin Autentifikatsiyasi</h3>
+          <p data-i18n="modalAuthSubtitle" style="font-size: 13px; color: var(--text-muted); margin: 0;">Boshqaruv paneliga kirish uchun xavfsizlik kalitini kiriting</p>
+        </div>
+      </div>
+      <div class="modal-body" style="padding-top: 14px;">
+        <div id="authAlert" class="auth-alert" style="display: none;"></div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="labelAdminKey">Admin Kaliti (API Key / Password)</label>
+          <div style="position: relative;">
+            <input type="password" id="inputAdminKey" class="form-control" placeholder="••••••••••••" style="padding-right: 42px;">
+            <button type="button" id="btnTogglePassword" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center;">
+              <i data-lucide="eye" id="iconEye" style="width: 18px; height: 18px;"></i>
+            </button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="labelApiUrl">Backend API Server Manzili (ixtiyoriy)</label>
+          <input type="text" id="inputApiUrl" class="form-control" placeholder="Masalan: https://my-api.railway.app yoki bo'sh qoldiring">
+          <small style="color: var(--text-muted); font-size: 11px; display: block; margin-top: 4px;" data-i18n="hintApiUrl">
+            Netlify'da ochilgan bo'lsa, backend API server manzilingizni kiriting.
+          </small>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text-secondary);">
+            <input type="checkbox" id="checkRememberKey" checked>
+            <span data-i18n="labelRememberKey">Ushbu brauzerda eslab qolish</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer" style="padding-top: 12px;">
+        <button id="btnLogin" class="btn btn-primary" style="width: 100%; justify-content: center; padding: 12px 18px;">
+          <i data-lucide="log-in" id="btnLoginIcon"></i>
+          <span id="btnLoginText" data-i18n="btnLogin">Kirish</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="/static/app.js"></script>
+  <script src="./app.js"></script>
 </body>
 </html>
