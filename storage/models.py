@@ -70,3 +70,31 @@ class LogRecord(Base):
     stage: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     external_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class TelegramChatRecord(Base):
+    """Database entity tracking dynamically discovered Telegram channels, groups, and admin chats."""
+    __tablename__ = "telegram_chats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    chat_type: Mapped[str] = mapped_column(String(32), nullable=False)  # 'channel', 'supergroup', 'group', 'private'
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="publish_target")  # 'publish_target', 'admin_alert'
+    username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("idx_telegram_chats_role_active", "role", "is_active"),
+    )

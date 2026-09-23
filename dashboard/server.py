@@ -4,6 +4,7 @@ Provides REST APIs for monitoring metrics, inspecting products, managing the mod
 triggering pipeline cycles on-demand, and editing prompt/markup/schedule settings live.
 """
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
@@ -17,7 +18,8 @@ from sqlalchemy import select, func, desc
 
 from config.app_config import AppConfig
 from core.pipeline import PipelineRunner
-from storage.models import LogRecord, ProductRecord
+from publishers.telegram_discovery import TelegramChatDiscoveryService
+from storage.models import LogRecord, ProductRecord, TelegramChatRecord
 from storage.repository import SqlAlchemyProductRepository
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -37,6 +39,22 @@ class ConfigUpdateRequest(BaseModel):
 
 class PromptUpdateRequest(BaseModel):
     prompt: str
+
+
+class StoreUpsertRequest(BaseModel):
+    name: str
+    url: str
+    currency: Optional[str] = "EUR"
+    max_items: Optional[int] = 10
+    enabled: Optional[bool] = True
+    selectors: Optional[dict[str, Optional[str]]] = None
+    cookie_button: Optional[str] = None
+    scroll_steps: Optional[int] = None
+
+
+class TelegramChatUpdateRequest(BaseModel):
+    is_active: Optional[bool] = None
+    role: Optional[str] = None
 
 
 class RunCycleRequest(BaseModel):
@@ -191,7 +209,7 @@ def create_dashboard_app(
     @app.post("/api/config")
     def update_config(req: ConfigUpdateRequest):
         """Update operational parameters in config.yaml and trigger hot-reload."""
-        cfg_file = Path("config.yaml")
+        cfg_file = Path(config._config_path or "config.yaml")
         data: dict[str, Any] = {}
         if cfg_file.exists():
             with open(cfg_file, "r", encoding="utf-8") as f:
@@ -273,5 +291,130 @@ def create_dashboard_app(
             instagram_id=f"MANUAL_IG_{external_id}",
         )
         return {"success": True, "message": f"Product {external_id} approved and published."}
+
+    @app.get("/api/scraper/stores")
+    def list_scraper_stores():
+        """List all configured website scraping targets."""
+        stores_data = {}
+        for name, store_cfg in config.scraper.stores.items():
+            stores_data[name] = store_cfg.model_dump()
+        return {"stores": stores_data}
+
+    @app.post("/api/scraper/stores")
+    def upsert_scraper_store(req: StoreUpsertRequest):
+        """Add or update an arbitrary website scraping target in config.yaml without code changes."""
+        cfg_file = Path(config._config_path or "config.yaml")
+        data: dict[str, Any] = {}
+        if cfg_file.exists():
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+
+        scraper_data = data.setdefault("scraper", {})
+        stores_data = scraper_data.setdefault("stores", {})
+
+        store_entry: dict[str, Any] = {
+            "enabled": bool(req.enabled if req.enabled is not None else True),
+            "url": req.url,
+            "currency": req.currency or "EUR",
+            "max_items": int(req.max_items or 10),
+        }
+        if req.selectors:
+            store_entry["selectors"] = {k: v for k, v in req.selectors.items() if v}
+        if req.cookie_button:
+            store_entry["cookie_button"] = req.cookie_button
+        if req.scroll_steps is not None:
+            store_entry["scroll_steps"] = int(req.scroll_steps)
+
+        stores_data[req.name.strip().lower()] = store_entry
+
+        with open(cfg_file, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False)
+
+        config.reload_hot_fields()
+        return {
+            "success": True,
+            "message": f"Website target '{req.name}' successfully configured and hot-reloaded.",
+            "store": store_entry,
+        }
+
+    @app.delete("/api/scraper/stores/{store_name}")
+    def delete_scraper_store(store_name: str):
+        """Remove a website scraping target from config.yaml."""
+        norm_name = store_name.strip().lower()
+        cfg_file = Path(config._config_path or "config.yaml")
+        data: dict[str, Any] = {}
+        if cfg_file.exists():
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+
+        stores_data = data.get("scraper", {}).get("stores", {})
+        if norm_name not in stores_data:
+            raise HTTPException(status_code=404, detail=f"Store '{store_name}' not found")
+
+        del stores_data[norm_name]
+
+        with open(cfg_file, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False)
+
+        config.reload_hot_fields()
+        return {"success": True, "message": f"Store '{norm_name}' removed and hot-reloaded."}
+
+    @app.get("/api/telegram/chats")
+    def list_telegram_chats():
+        """List all discovered channels, groups, and admin chats."""
+        chats = repo.get_all_telegram_chats()
+        return {
+            "chats": [
+                {
+                    "id": c.id,
+                    "chat_id": c.chat_id,
+                    "title": c.title,
+                    "chat_type": c.chat_type,
+                    "role": c.role,
+                    "username": c.username,
+                    "is_active": c.is_active,
+                    "created_at": c.created_at.isoformat() if c.created_at else None,
+                    "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+                }
+                for c in chats
+            ]
+        }
+
+    @app.post("/api/telegram/sync")
+    def sync_telegram_chats():
+        """Trigger dynamic discovery of channels and chats via Telegram getUpdates."""
+        discovery = TelegramChatDiscoveryService(bot_token=config.telegram.bot_token, repo=repo)
+        active_targets = discovery.sync_updates()
+        return {
+            "success": True,
+            "message": f"Telegram synchronization complete. {len(active_targets)} active targets.",
+            "active_targets": [t.title for t in active_targets],
+        }
+
+    @app.patch("/api/telegram/chats/{chat_id}")
+    def update_telegram_chat(chat_id: str, req: TelegramChatUpdateRequest):
+        """Enable, disable, or change the role of a Telegram chat target."""
+        with repo._get_session() as session:
+            stmt = select(TelegramChatRecord).where(TelegramChatRecord.chat_id == str(chat_id))
+            record = session.scalar(stmt)
+            if not record:
+                raise HTTPException(status_code=404, detail="Chat not found")
+            if req.is_active is not None:
+                record.is_active = req.is_active
+            if req.role is not None:
+                record.role = req.role
+            record.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            return {"success": True, "message": f"Chat {chat_id} updated."}
+
+    @app.delete("/api/telegram/chats/{chat_id}")
+    def delete_telegram_chat(chat_id: str):
+        """Deactivate a Telegram chat target."""
+        repo.deactivate_telegram_chat(chat_id)
+        return {"success": True, "message": f"Chat {chat_id} deactivated."}
 
     return app

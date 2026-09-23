@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, select, update, func
 from sqlalchemy.orm import Session, sessionmaker
 
 from adapters.base import RawProduct
-from storage.models import Base, LogRecord, ProductRecord
+from storage.models import Base, LogRecord, ProductRecord, TelegramChatRecord
 
 
 @runtime_checkable
@@ -53,6 +53,34 @@ class ProductRepository(Protocol):
 
     def get_by_external_id(self, external_id: str) -> Optional[ProductRecord]:
         """Retrieve single product record by external_id."""
+        ...
+
+    def get_active_telegram_targets(self) -> list["TelegramChatRecord"]:
+        """Return all active Telegram channels/groups registered for product publishing."""
+        ...
+
+    def get_active_admin_chats(self) -> list["TelegramChatRecord"]:
+        """Return all active Telegram chat IDs registered to receive critical failure alerts."""
+        ...
+
+    def get_all_telegram_chats(self) -> list["TelegramChatRecord"]:
+        """Return all discovered or configured Telegram chats."""
+        ...
+
+    def upsert_telegram_chat(
+        self,
+        chat_id: str,
+        title: str,
+        chat_type: str,
+        role: str = "publish_target",
+        username: str | None = None,
+        is_active: bool = True,
+    ) -> "TelegramChatRecord":
+        """Add or update a Telegram chat registration."""
+        ...
+
+    def deactivate_telegram_chat(self, chat_id: str) -> None:
+        """Deactivate a Telegram chat target."""
         ...
 
 
@@ -192,3 +220,72 @@ class SqlAlchemyProductRepository:
             return session.scalar(
                 select(ProductRecord).where(ProductRecord.external_id == external_id)
             )
+
+    def get_active_telegram_targets(self) -> list[TelegramChatRecord]:
+        with self._get_session() as session:
+            stmt = select(TelegramChatRecord).where(
+                TelegramChatRecord.role == "publish_target",
+                TelegramChatRecord.is_active == True,
+            )
+            return list(session.scalars(stmt).all())
+
+    def get_active_admin_chats(self) -> list[TelegramChatRecord]:
+        with self._get_session() as session:
+            stmt = select(TelegramChatRecord).where(
+                TelegramChatRecord.role == "admin_alert",
+                TelegramChatRecord.is_active == True,
+            )
+            return list(session.scalars(stmt).all())
+
+    def get_all_telegram_chats(self) -> list[TelegramChatRecord]:
+        with self._get_session() as session:
+            stmt = select(TelegramChatRecord).order_by(TelegramChatRecord.created_at.desc())
+            return list(session.scalars(stmt).all())
+
+    def upsert_telegram_chat(
+        self,
+        chat_id: str,
+        title: str,
+        chat_type: str,
+        role: str = "publish_target",
+        username: str | None = None,
+        is_active: bool = True,
+    ) -> TelegramChatRecord:
+        with self._get_session() as session:
+            existing = session.scalar(
+                select(TelegramChatRecord).where(TelegramChatRecord.chat_id == str(chat_id))
+            )
+            if existing:
+                existing.title = title
+                existing.chat_type = chat_type
+                existing.role = role
+                if username is not None:
+                    existing.username = username
+                existing.is_active = is_active
+                existing.updated_at = datetime.now(timezone.utc)
+                session.commit()
+                session.refresh(existing)
+                return existing
+            else:
+                new_chat = TelegramChatRecord(
+                    chat_id=str(chat_id),
+                    title=title,
+                    chat_type=chat_type,
+                    role=role,
+                    username=username,
+                    is_active=is_active,
+                )
+                session.add(new_chat)
+                session.commit()
+                session.refresh(new_chat)
+                return new_chat
+
+    def deactivate_telegram_chat(self, chat_id: str) -> None:
+        with self._get_session() as session:
+            stmt = (
+                update(TelegramChatRecord)
+                .where(TelegramChatRecord.chat_id == str(chat_id))
+                .values(is_active=False, updated_at=datetime.now(timezone.utc))
+            )
+            session.execute(stmt)
+            session.commit()

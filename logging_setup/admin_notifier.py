@@ -6,7 +6,7 @@ Configurable to send alerts via Telegram, print to console, or broadcast to mult
 
 from datetime import datetime, timezone
 import logging
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -35,16 +35,38 @@ class ConsoleAdminNotifier:
 
 
 class TelegramAdminNotifier:
-    """Sends critical alert messages to a designated Telegram admin chat ID."""
+    """Sends critical alert messages to designated or dynamically discovered Telegram admin chat IDs."""
 
-    def __init__(self, bot_token: str, admin_chat_id: str, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        bot_token: str,
+        admin_chat_id: str | None = None,
+        repo: Any | None = None,
+        timeout_seconds: float = 10.0,
+    ) -> None:
         self.bot_token = bot_token
         self.admin_chat_id = admin_chat_id
+        self.repo = repo
         self.timeout_seconds = timeout_seconds
 
     def notify_critical(self, stage: str, message: str, external_id: str | None = None) -> None:
-        if not self.bot_token or not self.admin_chat_id or "mock" in self.bot_token.lower():
-            logger.info("TelegramAdminNotifier: skipping send in mock/unconfigured mode.")
+        if not self.bot_token or "mock" in self.bot_token.lower():
+            logger.info("TelegramAdminNotifier: skipping send in mock mode.")
+            return
+
+        target_chats: list[str] = []
+        if self.repo is not None:
+            try:
+                active_admins = self.repo.get_active_admin_chats()
+                target_chats = [c.chat_id for c in active_admins]
+            except Exception as exc:
+                logger.warning("Failed to fetch admin chats from repository: %s", exc)
+
+        if not target_chats and self.admin_chat_id and "mock" not in self.admin_chat_id.lower():
+            target_chats = [self.admin_chat_id]
+
+        if not target_chats:
+            logger.debug("TelegramAdminNotifier: no admin chats registered, skipping.")
             return
 
         now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -58,15 +80,19 @@ class TelegramAdminNotifier:
         )
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {
-            "chat_id": self.admin_chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-        }
 
         try:
             with httpx.Client(timeout=self.timeout_seconds) as client:
-                client.post(url, json=payload)
+                for chat_id in target_chats:
+                    payload = {
+                        "chat_id": chat_id,
+                        "text": text,
+                        "parse_mode": "HTML",
+                    }
+                    try:
+                        client.post(url, json=payload)
+                    except Exception as chat_exc:
+                        logger.error("Failed to send alert to admin chat %s: %s", chat_id, chat_exc)
         except Exception as exc:
             logger.error("Failed to send Telegram admin notification: %s", exc)
 

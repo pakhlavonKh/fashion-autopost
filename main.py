@@ -16,6 +16,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from adapters.aggregator_adapter import AggregatorAPIAdapter
 from adapters.aggregator_client import HttpAggregatorClient, MockAggregatorClient
+from adapters.base import SourceAdapter
+from adapters.playwright_adapter import PlaywrightScraperAdapter
 from config.app_config import AppConfig
 from core.moderation import ConfigurableModerationGate
 from core.pipeline import PipelineRunner
@@ -31,6 +33,7 @@ from publishers.base import Publisher
 from publishers.dry_run_publisher import DryRunPublisher
 from publishers.image_hosting import PassthroughImageHost, S3ImageHost
 from publishers.instagram_publisher import InstagramPublisher
+from publishers.telegram_discovery import TelegramChatDiscoveryService
 from publishers.telegram_publisher import TelegramPublisher
 from scheduler.build_scheduler import build_scheduler
 from storage.repository import SqlAlchemyProductRepository
@@ -43,17 +46,33 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
     # 1. Storage / Repository
     repo = SqlAlchemyProductRepository(config.db_url)
 
+    # 1.1 Dynamic Telegram Channel & Admin Chat Discovery
+    discovery_service = TelegramChatDiscoveryService(
+        bot_token=config.telegram.bot_token,
+        repo=repo,
+    )
+    try:
+        discovery_service.sync_updates()
+    except Exception as exc:
+        logger.warning("Telegram channel auto-discovery failed: %s", exc)
+
     # 2. Source Adapter & Aggregator Client (SRS §10.1)
-    if config.aggregator.mode == "http":
+    source: SourceAdapter
+    if config.aggregator.mode == "playwright":
+        logger.info("Using PlaywrightScraperAdapter for web scraping fashion catalog items.")
+        source = PlaywrightScraperAdapter(
+            app_config=config,
+        )
+    elif config.aggregator.mode == "http":
         aggregator_client = HttpAggregatorClient(
             base_url=config.aggregator.base_url,
             api_key=config.aggregator.api_key,
             timeout_seconds=config.aggregator.timeout_seconds,
         )
+        source = AggregatorAPIAdapter(client=aggregator_client, stores=config.aggregator.stores)
     else:
         aggregator_client = MockAggregatorClient()
-
-    source = AggregatorAPIAdapter(client=aggregator_client, stores=config.aggregator.stores)
+        source = AggregatorAPIAdapter(client=aggregator_client, stores=config.aggregator.stores)
 
     # 3. LLM Provider & Prompt Loader (SRS FR-2)
     prompt_loader = FilePromptLoader(config.prompt_path)
@@ -85,10 +104,11 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
         else PassthroughImageHost()
     )
 
-    # 6. Real Publishers
+    # 6. Real Publishers (with dynamic Telegram channel resolution)
     telegram_pub = TelegramPublisher(
         bot_token=config.telegram.bot_token,
         channel_id=config.telegram.channel_id,
+        repo=repo,
     )
     instagram_pub = InstagramPublisher(
         access_token=config.instagram.access_token,
@@ -117,13 +137,13 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
         notifiers.append(ConsoleAdminNotifier())
     if config.alert.channel in ("telegram", "both"):
         tg_chat = config.alert.telegram_chat_id or config.telegram.admin_chat_id
-        if tg_chat:
-            notifiers.append(
-                TelegramAdminNotifier(
-                    bot_token=config.telegram.bot_token,
-                    admin_chat_id=tg_chat,
-                )
+        notifiers.append(
+            TelegramAdminNotifier(
+                bot_token=config.telegram.bot_token,
+                admin_chat_id=tg_chat,
+                repo=repo,
             )
+        )
 
     admin_notifier = CompositeAdminNotifier(notifiers) if notifiers else ConsoleAdminNotifier()
 

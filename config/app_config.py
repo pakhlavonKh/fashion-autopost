@@ -16,11 +16,60 @@ from pydantic import BaseModel, Field, field_validator
 
 class AggregatorSettings(BaseModel):
     """Settings for third-party aggregator source."""
-    mode: Literal["mock", "http"] = "mock"
+    mode: Literal["mock", "http", "playwright"] = "mock"
     base_url: str = "https://api.aggregator.example.com"
     api_key: str = Field(default="mock-aggregator-key")
     timeout_seconds: float = 30.0
     stores: list[str] = Field(default_factory=lambda: ["zara", "mango"])
+
+
+class StoreSelectorConfig(BaseModel):
+    """Optional declarative CSS selector overrides for custom or non-standard websites."""
+    item: str | None = None
+    title: str | None = None
+    price: str | None = None
+    image: str | None = None
+    link: str | None = None
+    id_attr: str | None = None
+
+
+class ScraperStoreConfig(BaseModel):
+    """Configuration for an individual store scrape target."""
+    enabled: bool = True
+    url: str
+    currency: str = "EUR"
+    max_items: int = 10
+    selectors: StoreSelectorConfig | None = None
+    cookie_button: str | None = None
+    scroll_steps: int | None = None
+
+
+class ScraperSettings(BaseModel):
+    """Settings for Playwright-based web scraper."""
+    headless: bool = True
+    timeout_seconds: float = 30.0
+    scroll_steps: int = 3
+    wait_after_scroll_ms: int = 1500
+    user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+    stores: dict[str, ScraperStoreConfig] = Field(
+        default_factory=lambda: {
+            "zara": ScraperStoreConfig(
+                enabled=True,
+                url="https://www.zara.com/es/en/woman-new-in-l1180.html",
+                currency="EUR",
+                max_items=10,
+            ),
+            "mango": ScraperStoreConfig(
+                enabled=True,
+                url="https://shop.mango.com/es/en/c/women/new-now",
+                currency="EUR",
+                max_items=10,
+            ),
+        }
+    )
 
 
 class OpenAISettings(BaseModel):
@@ -34,7 +83,7 @@ class OpenAISettings(BaseModel):
 class TelegramSettings(BaseModel):
     """Settings for Telegram Bot publisher."""
     bot_token: str = Field(default="mock-telegram-token")
-    channel_id: str = Field(default="@mock_channel")
+    channel_id: str | None = None
     admin_chat_id: str | None = None
 
 
@@ -113,6 +162,7 @@ class AppConfig(BaseModel):
 
     # Component settings
     aggregator: AggregatorSettings = Field(default_factory=AggregatorSettings)
+    scraper: ScraperSettings = Field(default_factory=ScraperSettings)
     openai: OpenAISettings = Field(default_factory=OpenAISettings)
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
     instagram: InstagramSettings = Field(default_factory=InstagramSettings)
@@ -160,6 +210,16 @@ class AppConfig(BaseModel):
         if os.getenv("OPENAI_MODEL"):
             openai_data["model"] = os.environ["OPENAI_MODEL"]
         yaml_data["openai"] = openai_data
+
+        scraper_data = yaml_data.get("scraper", {})
+        if os.getenv("SCRAPER_HEADLESS") is not None:
+            scraper_data["headless"] = os.environ["SCRAPER_HEADLESS"].strip().lower() in ("true", "1", "yes")
+        if os.getenv("SCRAPER_TIMEOUT_SECONDS"):
+            try:
+                scraper_data["timeout_seconds"] = float(os.environ["SCRAPER_TIMEOUT_SECONDS"])
+            except ValueError:
+                pass
+        yaml_data["scraper"] = scraper_data
 
         telegram_data = yaml_data.get("telegram", {})
         if os.getenv("TELEGRAM_BOT_TOKEN"):
@@ -242,6 +302,8 @@ class AppConfig(BaseModel):
             self.moderation = ModerationSettings.model_validate(content["moderation"])
         if "alert" in content and isinstance(content["alert"], dict):
             self.alert = AlertSettings.model_validate(content["alert"])
+        if "scraper" in content and isinstance(content["scraper"], dict):
+            self.scraper = ScraperSettings.model_validate(content["scraper"])
 
     def validate_live_credentials(self) -> list[str]:
         """Verify that credentials are valid for live non-dry-run operation."""
@@ -250,8 +312,6 @@ class AppConfig(BaseModel):
             missing.append("OPENAI_API_KEY")
         if not self.telegram.bot_token or "mock" in self.telegram.bot_token.lower():
             missing.append("TELEGRAM_BOT_TOKEN")
-        if not self.telegram.channel_id or "mock" in self.telegram.channel_id.lower():
-            missing.append("TELEGRAM_CHANNEL_ID")
         if not self.instagram.access_token or "mock" in self.instagram.access_token.lower():
             missing.append("INSTAGRAM_ACCESS_TOKEN")
         if not self.instagram.account_id or "mock" in self.instagram.account_id.lower():

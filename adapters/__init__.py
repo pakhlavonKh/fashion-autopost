@@ -5,6 +5,7 @@ from adapters.aggregator_client import (
     HttpAggregatorClient,
 )
 from adapters.aggregator_adapter import AggregatorAPIAdapter
+from adapters.playwright_adapter import PlaywrightScraperAdapter
 
 __all__ = [
     "RawProduct",
@@ -13,4 +14,5 @@ __all__ = [
     "MockAggregatorClient",
     "HttpAggregatorClient",
     "AggregatorAPIAdapter",
+    "PlaywrightScraperAdapter",
 ]

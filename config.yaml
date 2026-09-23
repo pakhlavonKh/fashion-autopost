@@ -1,68 +1,62 @@
-# ==============================================================================
-# Fashion Autopost Backend - Operational Configuration
-# Changes to markup, schedule, and prompt_path reload automatically without restart.
-# ==============================================================================
-
-# Sale price calculation: price_final = (price_original converted to target_currency) + markup
-markup: 15.00
-target_currency: "USD"
-
-# Currency conversion settings (SRS §10.3)
-# mode: "fixed" uses fixed_rate; "dynamic" uses rates dictionary or external provider
+aggregator:
+  base_url: https://api.aggregator.example.com
+  mode: playwright
+  stores:
+  - zara
+  - mango
+  timeout_seconds: 30.0
+alert:
+  channel: console
+  telegram_chat_id: null
+daily_publish_cap: null
+db_url: sqlite:///./data/app.db
+dry_run: true
 fx:
-  mode: "fixed"
   fixed_rate: 1.08
+  mode: fixed
   rates:
     EUR: 1.08
-    USD: 1.00
-    TRY: 0.029
     GBP: 1.29
-
-# Maximum products selected and published per cycle
-max_products_per_run: 3
-
-# Optional cap on total items published per calendar day (SRS §10.4)
-# Set to null or a number (e.g., 10)
-daily_publish_cap: null
-
-# Path to the plain text GPT prompt file (SRS FR-2.2, re-read on every cycle)
-prompt_path: "./prompt.txt"
-
-# Dry-run flag: if true, full pipeline runs but publishing is simulated (SRS FR-9)
-dry_run: true
-
-# Include product source URL in the published post
+    TRY: 0.029
+    USD: 1.0
 include_product_link: true
-
-# Publication schedule (SRS FR-8)
+markup: 15.0
+max_products_per_run: 3
+moderation:
+  auto_approve: true
+  enabled: false
+prompt_path: ./prompt.txt
 schedule:
   posts_per_day: 2
   times:
-    - "10:00"
-    - "18:00"
-  timezone: "UTC"
-
-# Database connection URL (SQLite by default, PostgreSQL supported seamlessly)
-db_url: "sqlite:///./data/app.db"
-
-# Aggregator source settings (SRS §10.1)
-# mode: "mock" uses simulated Zara/Mango products; "http" connects to real provider
-aggregator:
-  mode: "mock"
-  base_url: "https://api.aggregator.example.com"
-  timeout_seconds: 30.0
+  - '10:00'
+  - '18:00'
+  timezone: UTC
+scraper:
+  headless: true
+  scroll_steps: 3
   stores:
-    - "zara"
-    - "mango"
-
-# Moderation gate settings (SRS §10.2)
-# If enabled: true and auto_approve: false, selected posts are held as "pending_review"
-moderation:
-  enabled: false
-  auto_approve: true
-
-# Admin alert settings for critical failures (SRS §10.5)
-# channel: "telegram", "console", or "none"
-alert:
-  channel: "console"
-  telegram_chat_id: null
+    asos:
+      currency: GBP
+      enabled: true
+      max_items: 12
+      selectors:
+        item: article[data-auto-id='productTile']
+        price: span[data-auto-id='productTilePrice']
+        title: h2
+      url: https://www.asos.com/women/new-in
+    mango:
+      currency: EUR
+      enabled: true
+      max_items: 10
+      url: https://shop.mango.com/es/en/c/women/new-now
+    zara:
+      currency: EUR
+      enabled: true
+      max_items: 10
+      url: https://www.zara.com/es/en/woman-new-in-l1180.html
+  timeout_seconds: 30.0
+  user_agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+    like Gecko) Chrome/124.0.0.0 Safari/537.36
+  wait_after_scroll_ms: 1500
+target_currency: USD
