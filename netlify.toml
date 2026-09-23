@@ -1,0 +1,10 @@
+# Netlify configuration for Fashion Autopost Dashboard
+[build]
+  publish = "dashboard/static"
+  command = ""
+
+# Single Page App redirect rule
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
