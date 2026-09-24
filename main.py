@@ -210,6 +210,19 @@ def main() -> None:
         default=8000,
         help="Port for the Web Admin Dashboard (default: 8000)",
     )
+    parser.add_argument(
+        "--with-scheduler",
+        dest="with_scheduler",
+        action="store_true",
+        default=True,
+        help="Run background APScheduler publisher along with dashboard (default: True)",
+    )
+    parser.add_argument(
+        "--no-scheduler",
+        dest="with_scheduler",
+        action="store_false",
+        help="Disable background APScheduler publisher when running dashboard",
+    )
 
     args = parser.parse_args()
 
@@ -257,11 +270,18 @@ def main() -> None:
     if not config.dry_run:
         missing = config.validate_live_credentials()
         if missing:
-            logger.error(
-                "Cannot start in LIVE mode: missing or mock credentials for: %s",
-                ", ".join(missing),
-            )
-            sys.exit(1)
+            if args.dashboard:
+                logger.warning(
+                    "Running dashboard in LIVE mode with missing or unconfigured credentials: %s. "
+                    "Publishing to unconfigured channels will be logged.",
+                    ", ".join(missing),
+                )
+            else:
+                logger.error(
+                    "Cannot start in LIVE mode: missing or mock credentials for: %s",
+                    ", ".join(missing),
+                )
+                sys.exit(1)
 
     runner = build_pipeline_runner(config)
 
@@ -269,10 +289,27 @@ def main() -> None:
         import uvicorn
         from dashboard.server import create_dashboard_app
 
-        app = create_dashboard_app(config, runner, runner.repo)
-        print(f"\n[+] Fashion Autopost Admin Dashboard is running at http://localhost:{args.port}\n")
+        scheduler = None
+        if args.with_scheduler:
+            logger.info("Starting background APScheduler publisher alongside dashboard...")
+            scheduler = build_scheduler(config.schedule, runner, blocking=False)
+            scheduler.start()
+            logger.info(
+                "Background APScheduler started: interval=%sm, times=%s (%s)",
+                config.schedule.interval_minutes,
+                config.schedule.times,
+                config.schedule.timezone,
+            )
+
+        app = create_dashboard_app(config, runner, runner.repo, scheduler=scheduler)
+        print(f"\n[+] Fashion Autopost Admin Dashboard is running at http://0.0.0.0:{args.port}\n")
         logger.info("Starting Admin Dashboard web server on port %d...", args.port)
-        uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
+        try:
+            uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
+        finally:
+            if scheduler and getattr(scheduler, "running", False):
+                logger.info("Shutting down background scheduler...")
+                scheduler.shutdown(wait=False)
         return
 
     if args.run_once:

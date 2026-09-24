@@ -1,0 +1,17 @@
+.git
+.gitignore
+.venv
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+tests
+data/*.db
+logs/*
+fashion_autopost.egg-info
+dist
+build
+.coverage
+htmlcov

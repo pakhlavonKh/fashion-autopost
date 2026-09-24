@@ -117,9 +117,10 @@ class FxSettings(BaseModel):
 
 
 class ScheduleSettings(BaseModel):
-    """Settings for cron-like publication schedule."""
-    posts_per_day: int = 2
-    times: list[str] = Field(default_factory=lambda: ["10:00", "18:00"])
+    """Settings for cron-like publication schedule and autonomous intervals."""
+    posts_per_day: int = 96
+    times: list[str] = Field(default_factory=list)
+    interval_minutes: int | None = 15
     timezone: str = "UTC"
 
     @field_validator("times")
@@ -152,6 +153,8 @@ class DashboardSettings(BaseModel):
     enabled: bool = True
     port: int = 8000
     host: str = "0.0.0.0"
+    admin_username: str = "admin"
+    admin_password: str = "fashion-admin-2026"
     admin_key: str = "fashion-admin-2026"
 
 
@@ -164,7 +167,7 @@ class AppConfig(BaseModel):
     max_products_per_run: int = 5
     daily_publish_cap: int | None = None  # SRS §10.4
     prompt_path: str = "./prompt.txt"
-    dry_run: bool = True
+    dry_run: bool = False
     db_url: str = "sqlite:///./data/app.db"
     include_product_link: bool = True
 
@@ -194,7 +197,7 @@ class AppConfig(BaseModel):
         env_file = Path(env_path)
         if env_file.exists():
             load_dotenv(env_file, override=True)
-        else:
+        elif str(env_path) in (".env", ""):
             load_dotenv(override=False)
 
         yaml_data: dict[str, Any] = {}
@@ -268,10 +271,29 @@ class AppConfig(BaseModel):
             yaml_data["dry_run"] = os.environ["DRY_RUN"].strip().lower() in ("true", "1", "yes")
 
         dashboard_data = yaml_data.get("dashboard", {})
-        if os.getenv("DASHBOARD_ADMIN_KEY"):
-            dashboard_data["admin_key"] = os.environ["DASHBOARD_ADMIN_KEY"]
+        # Configurable admin username
+        if os.getenv("DASHBOARD_ADMIN_USERNAME"):
+            dashboard_data["admin_username"] = os.environ["DASHBOARD_ADMIN_USERNAME"].strip()
+        elif os.getenv("DASHBOARD_USERNAME"):
+            dashboard_data["admin_username"] = os.environ["DASHBOARD_USERNAME"].strip()
+
+        # Configurable admin password
+        if os.getenv("DASHBOARD_ADMIN_PASSWORD"):
+            dashboard_data["admin_password"] = os.environ["DASHBOARD_ADMIN_PASSWORD"].strip()
+            dashboard_data["admin_key"] = os.environ["DASHBOARD_ADMIN_PASSWORD"].strip()
         elif os.getenv("DASHBOARD_PASSWORD"):
-            dashboard_data["admin_key"] = os.environ["DASHBOARD_PASSWORD"]
+            dashboard_data["admin_password"] = os.environ["DASHBOARD_PASSWORD"].strip()
+            dashboard_data["admin_key"] = os.environ["DASHBOARD_PASSWORD"].strip()
+        elif os.getenv("DASHBOARD_ADMIN_KEY"):
+            if "admin_password" not in dashboard_data:
+                dashboard_data["admin_password"] = os.environ["DASHBOARD_ADMIN_KEY"].strip()
+            dashboard_data["admin_key"] = os.environ["DASHBOARD_ADMIN_KEY"].strip()
+
+        if "admin_password" in dashboard_data and "admin_key" not in dashboard_data:
+            dashboard_data["admin_key"] = dashboard_data["admin_password"]
+        elif "admin_key" in dashboard_data and "admin_password" not in dashboard_data:
+            dashboard_data["admin_password"] = dashboard_data["admin_key"]
+
         yaml_data["dashboard"] = dashboard_data
 
         config = cls.model_validate(yaml_data)
@@ -321,7 +343,12 @@ class AppConfig(BaseModel):
         if "scraper" in content and isinstance(content["scraper"], dict):
             self.scraper = ScraperSettings.model_validate(content["scraper"])
         if "dashboard" in content and isinstance(content["dashboard"], dict):
-            self.dashboard = DashboardSettings.model_validate(content["dashboard"])
+            d_cfg = dict(content["dashboard"])
+            if "admin_password" in d_cfg and "admin_key" not in d_cfg:
+                d_cfg["admin_key"] = d_cfg["admin_password"]
+            elif "admin_key" in d_cfg and "admin_password" not in d_cfg:
+                d_cfg["admin_password"] = d_cfg["admin_key"]
+            self.dashboard = DashboardSettings.model_validate(d_cfg)
 
     def validate_live_credentials(self) -> list[str]:
         """Verify that credentials are valid for live non-dry-run operation."""

@@ -29,7 +29,18 @@ class ZaraScraper:
     ) -> list[dict[str, Any]]:
         """Navigate to Zara category URL and extract product dictionaries."""
         logger.info("ZaraScraper: navigating to %s", url)
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        if resp and resp.status in (403, 401, 429):
+            logger.warning(
+                "ZaraScraper: received HTTP %d from %s (anti-bot WAF protection)",
+                resp.status,
+                url,
+            )
+        elif "access denied" in (page.title() or "").lower():
+            logger.warning(
+                "ZaraScraper: Access Denied / anti-bot challenge detected at %s",
+                url,
+            )
 
         # Allow initial render & dismiss cookie dialog
         dismiss_cookie_banner(page)

@@ -119,3 +119,80 @@ def test_dashboard_auth_login_endpoint(tmp_path: Path):
     ok_res2 = client.post("/api/auth/login", json={"password": key})
     assert ok_res2.status_code == 200
     assert ok_res2.json()["authenticated"] is True
+
+
+def test_dashboard_auth_configurable_username_and_password(tmp_path: Path, monkeypatch):
+    """Admin username and password can be custom configured via YAML and ENV and validated."""
+    import base64
+    monkeypatch.delenv("DASHBOARD_ADMIN_USERNAME", raising=False)
+    monkeypatch.delenv("DASHBOARD_ADMIN_PASSWORD", raising=False)
+    monkeypatch.delenv("DASHBOARD_ADMIN_KEY", raising=False)
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        yaml.dump({
+            "dashboard": {
+                "admin_username": "fashion_manager",
+                "admin_password": "CustomSecretPass2026!",
+            }
+        }),
+        encoding="utf-8",
+    )
+    config = AppConfig.load(config_path=cfg_file, env_path="non_existent.env")
+    assert config.dashboard.admin_username == "fashion_manager"
+    assert config.dashboard.admin_password == "CustomSecretPass2026!"
+
+    repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / 'auth_custom.db'}")
+    runner = MagicMock()
+    app = create_dashboard_app(config=config, runner=runner, repo=repo)
+    client = TestClient(app)
+
+    # 1. Reject invalid username
+    res_wrong_user = client.post(
+        "/api/auth/login",
+        json={"username": "wrong_user", "password": "CustomSecretPass2026!"},
+    )
+    assert res_wrong_user.status_code == 401
+    assert "Foydalanuvchi nomi" in res_wrong_user.json()["detail"]
+
+    # 2. Reject invalid password
+    res_wrong_pass = client.post(
+        "/api/auth/login",
+        json={"username": "fashion_manager", "password": "wrong_password"},
+    )
+    assert res_wrong_pass.status_code == 401
+    assert "parol" in res_wrong_pass.json()["detail"].lower()
+
+    # 3. Successful login with matching username and password
+    res_ok = client.post(
+        "/api/auth/login",
+        json={"username": "fashion_manager", "password": "CustomSecretPass2026!"},
+    )
+    assert res_ok.status_code == 200
+    data = res_ok.json()
+    assert data["authenticated"] is True
+    assert data["username"] == "fashion_manager"
+    assert data["token"] == "CustomSecretPass2026!"
+
+    # 4. Bearer token access with returned token
+    res_stats = client.get("/api/stats", headers={"Authorization": f"Bearer {data['token']}"})
+    assert res_stats.status_code == 200
+
+    # 5. Basic Auth access
+    creds = base64.b64encode(b"fashion_manager:CustomSecretPass2026!").decode()
+    res_basic = client.get("/api/stats", headers={"Authorization": f"Basic {creds}"})
+    assert res_basic.status_code == 200
+
+    # 6. Verify auth endpoint returns configured username
+    res_verify = client.get("/api/auth/verify", headers={"Authorization": f"Bearer {data['token']}"})
+    assert res_verify.status_code == 200
+    assert res_verify.json()["username"] == "fashion_manager"
+
+    # 7. Test ENV variable override for username and password
+    monkeypatch.setenv("DASHBOARD_ADMIN_USERNAME", "env_director")
+    monkeypatch.setenv("DASHBOARD_ADMIN_PASSWORD", "EnvDirectorPass999!")
+    env_config = AppConfig.load(config_path=cfg_file, env_path="non_existent.env")
+    assert env_config.dashboard.admin_username == "env_director"
+    assert env_config.dashboard.admin_password == "EnvDirectorPass999!"
+
+

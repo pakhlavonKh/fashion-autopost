@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="uz">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,22 +8,55 @@
   <meta name="description" content="Autonomous fashion publishing backend dashboard for Telegram and Instagram.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap"
+    rel="stylesheet">
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
-  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./style.css?v=20260924_pill_round_v3">
+  <style>
+    /* Mandatory 100% round pill buttons across all browsers and cached states */
+    .btn,
+    .btn-primary,
+    .btn-secondary,
+    .btn-sm,
+    button.btn,
+    .tab-btn,
+    .filter-tabs,
+    .lang-switcher,
+    .lang-btn,
+    .mode-badge,
+    .status-pill,
+    .brand-overlay,
+    .toast,
+    .auth-alert,
+    #btnRunCycle,
+    #btnOpenPrompt,
+    #btnOpenConfig,
+    #btnLock,
+    #btnLogin,
+    #btnSavePrompt,
+    #btnSaveConfig,
+    input.form-control {
+      border-radius: 9999px !important;
+    }
+
+    .close-modal,
+    .brand-logo,
+    .auth-shield-badge,
+    #btnTogglePassword {
+      border-radius: 50% !important;
+    }
+  </style>
 </head>
+
 <body>
   <div class="app-layout">
     <!-- Header -->
     <header class="app-header">
       <div class="brand-section">
-        <div class="brand-logo">
-          <i data-lucide="sparkles"></i>
-        </div>
         <div>
           <h1 class="brand-title">Fashion Autopost</h1>
-          <p id="brandSubtitle" class="brand-subtitle" data-i18n="brandSubtitle">Telegram va Instagram uchun avtomatlashtirilgan kiyimlar nashr markazi</p>
         </div>
       </div>
       <div class="header-actions">
@@ -33,10 +67,6 @@
           <button class="lang-btn" data-lang="en">EN</button>
         </div>
 
-        <div id="modePill" class="mode-badge mode-dryrun">
-          <span class="pulse-dot"></span>
-          <span id="modeText" data-i18n="modeDryRun">Sinov rejimi (Dry-Run)</span>
-        </div>
         <button id="btnOpenPrompt" class="btn btn-secondary">
           <i data-lucide="file-edit"></i>
           <span data-i18n="btnPrompt">Promptni tahrirlash</span>
@@ -91,7 +121,7 @@
           <i data-lucide="tag" class="metric-icon"></i>
         </div>
         <div id="metricMarkup" class="metric-value">$15.00</div>
-        <div id="metricScheduleTimes" class="metric-sub">Vaqtlar: 10:00, 18:00 UTC</div>
+        <div id="metricScheduleTimes" class="metric-sub">Har 15 daqiqada avtomatik</div>
       </div>
     </section>
 
@@ -129,7 +159,8 @@
       </div>
       <div class="modal-body">
         <div class="form-group">
-          <label class="form-label" data-i18n="modalPromptLabel">Prompt matni (har bir nashr tsiklida fayldan qayta o'qiladi)</label>
+          <label class="form-label" data-i18n="modalPromptLabel">Prompt matni (har bir nashr tsiklida fayldan qayta
+            o'qiladi)</label>
           <textarea id="promptTextarea" class="form-control"></textarea>
         </div>
       </div>
@@ -163,23 +194,26 @@
           <input type="number" id="inputMaxItems" class="form-control">
         </div>
         <div class="form-group">
-          <label class="form-label" data-i18n="labelDailyCap">Kunlik nashr limiti (bo'sh qoldirilsa - cheklovsiz)</label>
+          <label class="form-label" data-i18n="labelDailyCap">Kunlik nashr limiti (bo'sh qoldirilsa -
+            cheklovsiz)</label>
           <input type="number" id="inputDailyCap" class="form-control">
         </div>
         <div class="form-group">
-          <label class="form-label" data-i18n="labelScheduleTimes">Nashr qilish vaqtlari (vergul bilan ajratilgan HH:MM)</label>
-          <input type="text" id="inputScheduleTimes" class="form-control" placeholder="10:00, 18:00">
+          <label class="form-label" data-i18n="labelIntervalMinutes">Avtomatik skraping va tekshirish intervali (har N
+            daqiqada)</label>
+          <input type="number" id="inputIntervalMinutes" min="1" max="1440" class="form-control" placeholder="15">
         </div>
         <div class="form-group">
-          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-            <input type="checkbox" id="checkDryRun">
-            <span data-i18n="labelDryRunCheck">Sinov rejimini yoqish (Telegram/Instagramga yubormasdan tekshirish)</span>
-          </label>
+          <label class="form-label" data-i18n="labelScheduleTimes">Nashr qilish vaqtlari (ixtiyoriy, vergul bilan
+            ajratilgan HH:MM)</label>
+          <input type="text" id="inputScheduleTimes" class="form-control" placeholder="10:00, 18:00">
         </div>
+
         <div class="form-group">
           <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
             <input type="checkbox" id="checkModeration">
-            <span data-i18n="labelModerationCheck">Qo'lda moderatsiyani yoqish (chop etishdan oldin ko'rib chiqish)</span>
+            <span data-i18n="labelModerationCheck">Qo'lda moderatsiyani yoqish (chop etishdan oldin ko'rib
+              chiqish)</span>
           </label>
         </div>
       </div>
@@ -193,35 +227,40 @@
   <!-- Auth Gate Modal -->
   <div id="authModal" class="modal-backdrop">
     <div class="modal-content auth-modal-content" style="max-width: 440px;">
-      <div class="modal-header" style="justify-content: center; text-align: center; border-bottom: none; padding-bottom: 0;">
+      <div class="modal-header"
+        style="justify-content: center; text-align: center; border-bottom: none; padding-bottom: 0;">
         <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%;">
           <div class="auth-shield-badge">
             <i data-lucide="shield-check" style="width: 32px; height: 32px; color: var(--accent-primary);"></i>
           </div>
-          <h3 data-i18n="modalAuthTitle" style="font-size: 20px; margin: 0; font-family: 'Outfit', sans-serif;">Admin Autentifikatsiyasi</h3>
-          <p data-i18n="modalAuthSubtitle" style="font-size: 13px; color: var(--text-muted); margin: 0;">Boshqaruv paneliga kirish uchun xavfsizlik kalitini kiriting</p>
+          <h3 data-i18n="modalAuthTitle" style="font-size: 20px; margin: 0; font-family: 'Outfit', sans-serif;">Admin
+            Autentifikatsiyasi</h3>
+          <p data-i18n="modalAuthSubtitle" style="font-size: 13px; color: var(--text-muted); margin: 0;">Boshqaruv
+            paneliga kirish uchun foydalanuvchi nomi va parolni kiriting</p>
         </div>
       </div>
       <div class="modal-body" style="padding-top: 14px;">
         <div id="authAlert" class="auth-alert" style="display: none;"></div>
         <div class="form-group">
-          <label class="form-label" data-i18n="labelAdminKey">Admin Kaliti (API Key / Password)</label>
+          <label class="form-label" data-i18n="labelAdminUsername">Foydalanuvchi nomi (Username)</label>
+          <input type="text" id="inputAdminUsername" class="form-control" placeholder="admin" autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label class="form-label" data-i18n="labelAdminPassword">Admin Paroli (Password)</label>
           <div style="position: relative;">
-            <input type="password" id="inputAdminKey" class="form-control" placeholder="••••••••••••" style="padding-right: 42px;">
-            <button type="button" id="btnTogglePassword" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center;">
+            <input type="password" id="inputAdminPassword" class="form-control" placeholder="••••••••••••"
+              autocomplete="current-password" style="padding-right: 42px;">
+            <button type="button" id="btnTogglePassword"
+              style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center;">
               <i data-lucide="eye" id="iconEye" style="width: 18px; height: 18px;"></i>
             </button>
           </div>
+          <input type="hidden" id="inputAdminKey">
         </div>
-        <div class="form-group">
-          <label class="form-label" data-i18n="labelApiUrl">Backend API Server Manzili (ixtiyoriy)</label>
-          <input type="text" id="inputApiUrl" class="form-control" placeholder="Masalan: https://my-api.railway.app yoki bo'sh qoldiring">
-          <small style="color: var(--text-muted); font-size: 11px; display: block; margin-top: 4px;" data-i18n="hintApiUrl">
-            Netlify'da ochilgan bo'lsa, backend API server manzilingizni kiriting.
-          </small>
-        </div>
+
         <div class="form-group" style="margin-bottom: 0;">
-          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text-secondary);">
+          <label
+            style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text-secondary);">
             <input type="checkbox" id="checkRememberKey" checked>
             <span data-i18n="labelRememberKey">Ushbu brauzerda eslab qolish</span>
           </label>
@@ -239,6 +278,7 @@
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="./app.js"></script>
+  <script src="./app.js?v=20260924_v3"></script>
 </body>
+
 </html>

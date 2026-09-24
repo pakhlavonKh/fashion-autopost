@@ -13,6 +13,7 @@ from adapters.base import RawProduct, SourceAdapter
 from config.app_config import AppConfig
 from core.composer import compose_post
 from core.dedup import filter_unseen
+from core.image_downloader import ImageDownloader
 from core.moderation import ConfigurableModerationGate, ModerationGate
 from core.pricing import FxConverter, calculate_final_price
 from llm.base import LLMProvider, PromptLoader
@@ -69,6 +70,7 @@ class PipelineRunner:
             auto_approve=config.moderation.auto_approve,
         )
         self.notifier = notifier
+        self.image_downloader = ImageDownloader()
 
     def run_cycle(self) -> CycleSummary:
         """Execute one complete publishing cycle."""
@@ -211,9 +213,27 @@ class PipelineRunner:
             logger.info("Product %s held in 'pending_review' per ModerationGate.", external_id)
             return
 
+        # Pre-download photo locally for binary posting & local caching
+        local_path = None
+        try:
+            local_path = self.image_downloader.download(product.photo_url, external_id=external_id)
+        except Exception as exc:
+            logger.warning("Failed to pre-download photo for %s: %s", external_id, exc)
+
+        photo_to_use = str(local_path) if (local_path and local_path.is_file()) else product.photo_url
+
         # 7d. Compose platform-agnostic post (FR-4)
         composed = compose_post(
-            product=product,
+            product=RawProduct(
+                external_id=product.external_id,
+                source=product.source,
+                title=product.title,
+                price=product.price,
+                currency=product.currency,
+                photo_url=photo_to_use,
+                product_url=product.product_url,
+                in_stock=product.in_stock,
+            ),
             description=description,
             price=final_price,
             target_currency=self.config.target_currency,

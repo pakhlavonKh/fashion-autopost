@@ -9,6 +9,7 @@ import zoneinfo
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.schedulers.base import BaseScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from config.app_config import ScheduleSettings
 from core.pipeline import PipelineRunner
@@ -21,7 +22,7 @@ def register_schedule_jobs(
     runner: PipelineRunner,
     schedule_cfg: ScheduleSettings,
 ) -> None:
-    """Clear existing cycle jobs and register cron triggers for configured publication times."""
+    """Clear existing cycle jobs and register interval and cron triggers for publication and scrape checks."""
     # Remove previous pipeline jobs
     for job in scheduler.get_jobs():
         if job.id.startswith("pipeline_cycle_"):
@@ -37,11 +38,31 @@ def register_schedule_jobs(
         )
         tz = zoneinfo.ZoneInfo("UTC")
 
+    # 1. Register interval job for autonomous recurrent scraping (e.g. every 15 minutes)
+    if schedule_cfg.interval_minutes and schedule_cfg.interval_minutes > 0:
+        job_id = f"pipeline_cycle_interval_{schedule_cfg.interval_minutes}m"
+        trigger = IntervalTrigger(minutes=schedule_cfg.interval_minutes, timezone=tz)
+        scheduler.add_job(
+            func=runner.run_cycle,
+            trigger=trigger,
+            id=job_id,
+            name=f"Fashion Autopost Run every {schedule_cfg.interval_minutes}m ({schedule_cfg.timezone})",
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
+        logger.info(
+            "Registered interval scheduled job '%s' every %d minutes (%s)",
+            job_id,
+            schedule_cfg.interval_minutes,
+            schedule_cfg.timezone,
+        )
+
+    # 2. Register fixed daily cron times if any configured
     for idx, time_str in enumerate(schedule_cfg.times):
         hour_str, minute_str = time_str.split(":")
         hour, minute = int(hour_str), int(minute_str)
 
-        job_id = f"pipeline_cycle_{idx}_{hour:02d}{minute:02d}"
+        job_id = f"pipeline_cycle_cron_{idx}_{hour:02d}{minute:02d}"
         trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
 
         scheduler.add_job(

@@ -1,0 +1,54 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fashion-autopost-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config.yaml:/app/config.yaml
+      - ./prompt.txt:/app/prompt.txt
+    expose:
+      - "8000"
+    networks:
+      - fashion-network
+    # Optional resource constraints for a 1GB/2GB VPS
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+
+  nginx:
+    image: nginx:alpine
+    container_name: fashion-autopost-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      - app
+    networks:
+      - fashion-network
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: fashion-autopost-certbot
+    restart: unless-stopped
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - fashion-network
+
+networks:
+  fashion-network:
+    driver: bridge

@@ -6,10 +6,12 @@ Uses Telegram Bot API sendPhoto endpoint, enforces caption limits, and retries o
 
 import html
 import logging
+from pathlib import Path
 from typing import Any
 import httpx
 
 from core.composer import ComposedPost
+from core.image_downloader import ImageDownloader
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
 
@@ -33,6 +35,7 @@ class TelegramPublisher:
         self.channel_id = channel_id
         self.repo = repo
         self.timeout_seconds = timeout_seconds
+        self.downloader = ImageDownloader(timeout_seconds=self.timeout_seconds)
 
     @property
     def platform_name(self) -> str:
@@ -64,9 +67,22 @@ class TelegramPublisher:
         successful_ids: list[str] = []
         errors: list[str] = []
 
+        # Determine image to send (use downloaded local path if available)
+        photo_to_send = post.photo_url
+        try:
+            downloaded = self.downloader.download(post.photo_url, external_id=post.title[:20])
+            if downloaded and downloaded.is_file():
+                photo_to_send = str(downloaded)
+        except Exception as exc:
+            logger.warning("Could not pre-download photo '%s' for Telegram: %s", post.photo_url, exc)
+
         for chat_id in target_ids:
             try:
-                msg_id = self._send_photo_with_retry(post.photo_url, caption, chat_id=chat_id)
+                msg_id = self._send_photo_with_retry(
+                    photo_to_send,
+                    caption,
+                    chat_id=chat_id,
+                )
                 successful_ids.append(f"{chat_id}:{msg_id}" if len(target_ids) > 1 else str(msg_id))
             except Exception as exc:
                 logger.error("Telegram publish failed for channel %s (%s): %s", chat_id, post.title, exc)
@@ -78,19 +94,41 @@ class TelegramPublisher:
         return PublishResult(success=False, error="; ".join(errors))
 
     @retry_with_backoff(max_attempts=3, base_delay=2.0, max_delay=10.0, exceptions=(httpx.HTTPError,))
-    def _send_photo_with_retry(self, photo_url: str, caption: str, chat_id: str | None = None) -> str:
-        """Call Telegram Bot API sendPhoto with exponential backoff."""
+    def _send_photo_with_retry(
+        self,
+        photo_url: str,
+        caption: str,
+        chat_id: str | None = None,
+    ) -> str:
+        """Call Telegram Bot API sendPhoto with exponential backoff.
+        
+        Uploads as multipart binary file if photo_url is a local file, avoiding failures
+        when external CDNs block Telegram servers from fetching photo URLs.
+        """
         target_chat = chat_id or self.channel_id
         url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
-        payload: dict[str, Any] = {
-            "chat_id": target_chat,
-            "photo": photo_url,
-            "caption": caption,
-            "parse_mode": "HTML",
-        }
 
+        local_candidate = Path(photo_url)
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            resp = client.post(url, json=payload)
+            if local_candidate.is_file():
+                photo_bytes = local_candidate.read_bytes()
+                filename = local_candidate.name or "photo.jpg"
+                files = {"photo": (filename, photo_bytes, "image/jpeg")}
+                data = {
+                    "chat_id": str(target_chat),
+                    "caption": caption,
+                    "parse_mode": "HTML",
+                }
+                resp = client.post(url, data=data, files=files)
+            else:
+                payload = {
+                    "chat_id": str(target_chat),
+                    "photo": photo_url,
+                    "caption": caption,
+                    "parse_mode": "HTML",
+                }
+                resp = client.post(url, json=payload)
+
             data = resp.json()
 
             if not resp.is_success or not data.get("ok"):

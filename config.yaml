@@ -9,8 +9,15 @@ alert:
   channel: console
   telegram_chat_id: null
 daily_publish_cap: null
+dashboard:
+  admin_key: fashion-admin-2026
+  admin_password: fashion-admin-2026
+  admin_username: admin
+  enabled: true
+  host: 0.0.0.0
+  port: 8000
 db_url: sqlite:///./data/app.db
-dry_run: true
+dry_run: false
 fx:
   fixed_rate: 1.08
   mode: fixed
@@ -27,10 +34,9 @@ moderation:
   enabled: false
 prompt_path: ./prompt.txt
 schedule:
-  posts_per_day: 2
-  times:
-  - '10:00'
-  - '18:00'
+  interval_minutes: 15
+  posts_per_day: 96
+  times: []
   timezone: UTC
 scraper:
   headless: true
@@ -60,8 +66,3 @@ scraper:
     like Gecko) Chrome/124.0.0.0 Safari/537.36
   wait_after_scroll_ms: 1500
 target_currency: USD
-dashboard:
-  enabled: true
-  host: 0.0.0.0
-  port: 8000
-  admin_key: fashion-admin-2026

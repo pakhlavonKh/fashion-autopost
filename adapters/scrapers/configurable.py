@@ -38,7 +38,21 @@ class ConfigurableStoreScraper:
     ) -> list[dict[str, Any]]:
         """Navigate to store URL and extract products using custom selectors or universal fallback."""
         logger.info("ConfigurableStoreScraper (%s): navigating to %s", self.brand_name, url)
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        if resp and resp.status in (403, 401, 429):
+            logger.warning(
+                "ConfigurableStoreScraper (%s): received HTTP %d from %s (anti-bot WAF protection)",
+                self.brand_name,
+                resp.status,
+                url,
+            )
+        elif "access denied" in (page.title() or "").lower() or "forbidden" in (page.title() or "").lower():
+            logger.warning(
+                "ConfigurableStoreScraper (%s): anti-bot challenge detected at %s (Title: '%s')",
+                self.brand_name,
+                url,
+                page.title(),
+            )
 
         cookie_button = self.config.cookie_button if self.config else None
         dismiss_cookie_banner(page, custom_button=cookie_button)

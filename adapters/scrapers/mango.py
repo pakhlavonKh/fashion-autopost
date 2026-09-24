@@ -29,7 +29,19 @@ class MangoScraper:
     ) -> list[dict[str, Any]]:
         """Navigate to Mango category URL and extract product records."""
         logger.info("MangoScraper: navigating to %s", url)
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        if resp and resp.status in (403, 401, 429):
+            logger.warning(
+                "MangoScraper: received HTTP %d from %s (anti-bot WAF protection)",
+                resp.status,
+                url,
+            )
+        elif "forbidden" in (page.title() or "").lower() or "access denied" in (page.title() or "").lower():
+            logger.warning(
+                "MangoScraper: anti-bot challenge detected at %s (Title: '%s')",
+                url,
+                page.title(),
+            )
 
         # Allow initial render & dismiss cookie banner
         dismiss_cookie_banner(page)

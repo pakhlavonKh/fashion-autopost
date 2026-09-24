@@ -6,6 +6,7 @@ triggering pipeline cycles on-demand, and editing prompt/markup/schedule setting
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import logging
 from pathlib import Path
 from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Query, Header, Depends
@@ -23,6 +24,7 @@ from storage.models import LogRecord, ProductRecord, TelegramChatRecord
 from storage.repository import SqlAlchemyProductRepository
 
 STATIC_DIR = Path(__file__).parent / "static"
+logger = logging.getLogger(__name__)
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -32,6 +34,7 @@ class ConfigUpdateRequest(BaseModel):
     daily_publish_cap: Optional[int] = None
     dry_run: Optional[bool] = None
     schedule_times: Optional[list[str]] = None
+    interval_minutes: Optional[int] = None
     timezone: Optional[str] = None
     moderation_enabled: Optional[bool] = None
     auto_approve: Optional[bool] = None
@@ -62,14 +65,16 @@ class RunCycleRequest(BaseModel):
 
 
 class AuthLoginRequest(BaseModel):
-    key: Optional[str] = None
+    username: Optional[str] = None
     password: Optional[str] = None
+    key: Optional[str] = None
 
 
 def create_dashboard_app(
     config: AppConfig,
     runner: PipelineRunner,
     repo: SqlAlchemyProductRepository,
+    scheduler: Optional[Any] = None,
 ) -> FastAPI:
     app = FastAPI(title="Fashion Autopost Admin Dashboard", version="1.0.0")
 
@@ -81,33 +86,63 @@ def create_dashboard_app(
         allow_headers=["*"],
     )
 
+    images_dir = Path("data/images")
+    images_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/images", StaticFiles(directory=str(images_dir)), name="images")
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/")
     def get_index():
-        return FileResponse(STATIC_DIR / "index.html")
+        return FileResponse(
+            STATIC_DIR / "index.html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
+        )
 
     @app.get("/style.css")
     def get_style():
-        return FileResponse(STATIC_DIR / "style.css", media_type="text/css")
+        return FileResponse(
+            STATIC_DIR / "style.css",
+            media_type="text/css",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
+        )
 
     @app.get("/app.js")
     def get_app():
-        return FileResponse(STATIC_DIR / "app.js", media_type="application/javascript")
+        return FileResponse(
+            STATIC_DIR / "app.js",
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
+        )
 
     def verify_admin(
         authorization: Optional[str] = Header(None),
         x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
         admin_key_query: Optional[str] = Query(None, alias="key"),
     ) -> bool:
-        expected = getattr(getattr(config, "dashboard", None), "admin_key", None)
-        if not expected:
+        expected_pass = (
+            getattr(getattr(config, "dashboard", None), "admin_password", "")
+            or getattr(getattr(config, "dashboard", None), "admin_key", "")
+        )
+        expected_user = getattr(getattr(config, "dashboard", None), "admin_username", "admin")
+
+        if not expected_pass:
             return True
+
         token = None
         if authorization:
-            parts = authorization.strip().split()
+            parts = authorization.strip().split(maxsplit=1)
             if len(parts) == 2 and parts[0].lower() == "bearer":
                 token = parts[1]
+            elif len(parts) == 2 and parts[0].lower() == "basic":
+                import base64
+                try:
+                    decoded = base64.b64decode(parts[1]).decode("utf-8")
+                    if ":" in decoded:
+                        u, p = decoded.split(":", 1)
+                        if u == expected_user and p == expected_pass:
+                            return True
+                except Exception:
+                    pass
             elif len(parts) == 1:
                 token = parts[0]
         elif x_admin_key:
@@ -115,7 +150,7 @@ def create_dashboard_app(
         elif admin_key_query:
             token = admin_key_query.strip()
 
-        if not token or token != expected:
+        if not token or token != expected_pass:
             raise HTTPException(
                 status_code=401,
                 detail="Admin kaliti noto'g'ri yoki taqdim etilmagan (Unauthorized)",
@@ -125,21 +160,41 @@ def create_dashboard_app(
 
     @app.post("/api/auth/login")
     def auth_login(req: AuthLoginRequest):
-        """Verify admin key/password and return auth confirmation."""
-        submitted = (req.key or req.password or "").strip()
-        expected = getattr(getattr(config, "dashboard", None), "admin_key", "")
-        if not expected or submitted != expected:
-            raise HTTPException(status_code=401, detail="Xavfsizlik kaliti noto'g'ri")
+        """Verify admin username and password and return auth confirmation."""
+        submitted_user = (req.username or "").strip()
+        submitted_pass = (req.password or req.key or "").strip()
+
+        expected_user = getattr(getattr(config, "dashboard", None), "admin_username", "admin")
+        expected_pass = (
+            getattr(getattr(config, "dashboard", None), "admin_password", "")
+            or getattr(getattr(config, "dashboard", None), "admin_key", "")
+        )
+
+        # If username is provided, it must match
+        if submitted_user and submitted_user != expected_user:
+            raise HTTPException(
+                status_code=401,
+                detail="Foydalanuvchi nomi noto'g'ri (Invalid username)",
+            )
+
+        if not expected_pass or submitted_pass != expected_pass:
+            raise HTTPException(
+                status_code=401,
+                detail="Xavfsizlik paroli noto'g'ri (Invalid password)",
+            )
+
         return {
             "authenticated": True,
-            "token": expected,
+            "username": expected_user,
+            "token": expected_pass,
             "message": "Admin tizimiga muvaffaqiyatli ulanildi",
         }
 
     @app.get("/api/auth/verify")
     def auth_verify(_: bool = Depends(verify_admin)):
         """Check if current session token is valid."""
-        return {"authenticated": True}
+        username = getattr(getattr(config, "dashboard", None), "admin_username", "admin")
+        return {"authenticated": True, "username": username}
 
     @app.get("/api/stats", dependencies=[Depends(verify_admin)])
     def get_stats():
@@ -172,6 +227,7 @@ def create_dashboard_app(
                 "times": config.schedule.times,
                 "timezone": config.schedule.timezone,
                 "posts_per_day": config.schedule.posts_per_day,
+                "interval_minutes": config.schedule.interval_minutes,
             },
             "daily_publish_cap": config.daily_publish_cap,
             "moderation": {
@@ -179,6 +235,17 @@ def create_dashboard_app(
                 "auto_approve": config.moderation.auto_approve,
             },
             "aggregator_mode": config.aggregator.mode,
+            "scheduler": {
+                "running": getattr(scheduler, "running", False) if scheduler else False,
+                "jobs": [
+                    {
+                        "id": job.id,
+                        "name": job.name,
+                        "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
+                    }
+                    for job in (scheduler.get_jobs() if (scheduler and getattr(scheduler, "running", False)) else [])
+                ],
+            },
         }
 
     @app.get("/api/products", dependencies=[Depends(verify_admin)])
@@ -257,6 +324,8 @@ def create_dashboard_app(
             "schedule": {
                 "times": config.schedule.times,
                 "timezone": config.schedule.timezone,
+                "posts_per_day": config.schedule.posts_per_day,
+                "interval_minutes": config.schedule.interval_minutes,
             },
             "moderation": {
                 "enabled": config.moderation.enabled,
@@ -287,12 +356,14 @@ def create_dashboard_app(
         if req.dry_run is not None:
             data["dry_run"] = bool(req.dry_run)
 
-        if req.schedule_times is not None or req.timezone is not None:
+        if req.schedule_times is not None or req.timezone is not None or req.interval_minutes is not None:
             schedule_dict = data.get("schedule", {})
             if req.schedule_times is not None:
                 schedule_dict["times"] = req.schedule_times
             if req.timezone is not None:
                 schedule_dict["timezone"] = req.timezone
+            if req.interval_minutes is not None:
+                schedule_dict["interval_minutes"] = req.interval_minutes
             data["schedule"] = schedule_dict
 
         if req.moderation_enabled is not None or req.auto_approve is not None:
@@ -307,6 +378,13 @@ def create_dashboard_app(
             yaml.dump(data, f, default_flow_style=False)
 
         config.reload_hot_fields()
+        if scheduler is not None and getattr(scheduler, "running", False):
+            try:
+                from scheduler.build_scheduler import register_schedule_jobs
+                register_schedule_jobs(scheduler, runner, config.schedule)
+                logger.info("APScheduler jobs dynamically updated with new schedule.")
+            except Exception as exc:
+                logger.warning("Could not dynamically update scheduler jobs: %s", exc)
         return {"success": True, "message": "Configuration updated and hot-reloaded."}
 
     @app.post("/api/prompt", dependencies=[Depends(verify_admin)])

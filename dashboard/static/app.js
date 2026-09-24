@@ -43,9 +43,12 @@ const translations = {
     labelCurrency: "Sotish valyutasi (Target Currency)",
     labelMaxItems: "Bir tsiklda saralanadigan mahsulotlar soni",
     labelDailyCap: "Kunlik nashr limiti (bo'sh qoldirilsa - cheklovsiz)",
+    labelIntervalMinutes: "Avtomatik skraping va tekshirish intervali (har N daqiqada)",
     labelScheduleTimes: "Nashr qilish vaqtlari (vergul bilan ajratilgan HH:MM)",
     labelDryRunCheck: "Sinov rejimini yoqish (Telegram/Instagramga yubormasdan tekshirish)",
     labelModerationCheck: "Qo'lda moderatsiyani yoqish (chop etishdan oldin ko'rib chiqish)",
+    intervalAuto: (min) => `Har ${min} daqiqada avtomatik`,
+    scheduleManualOnly: "Faqat qo'lda ishga tushirish",
     btnCancel: "Bekor qilish",
     btnSave: "Saqlash",
 
@@ -63,14 +66,16 @@ const translations = {
 
     btnLock: "Qulflash",
     modalAuthTitle: "Admin Autentifikatsiyasi",
-    modalAuthSubtitle: "Boshqaruv paneliga kirish uchun xavfsizlik kalitini kiriting",
-    labelAdminKey: "Admin Kaliti (API Key / Password)",
+    modalAuthSubtitle: "Boshqaruv paneliga kirish uchun foydalanuvchi nomi va parolni kiriting",
+    labelAdminUsername: "Foydalanuvchi nomi (Username)",
+    labelAdminPassword: "Admin Paroli (Password)",
+    labelAdminKey: "Admin Kaliti / Parol",
     labelApiUrl: "Backend API Server Manzili (ixtiyoriy)",
     hintApiUrl: "Netlify'da ochilgan bo'lsa, backend API server manzilingizni kiriting.",
     labelRememberKey: "Ushbu brauzerda eslab qolish",
     btnLogin: "Kirish",
-    authErrorEmpty: "Iltimos, xavfsizlik kalitini kiriting.",
-    authErrorInvalid: "Xavfsizlik kaliti noto'g'ri yoki serverga ulanib bo'lmadi.",
+    authErrorEmpty: "Iltimos, foydalanuvchi nomi va parolni kiriting.",
+    authErrorInvalid: "Foydalanuvchi nomi yoki parol noto'g'ri yoki serverga ulanib bo'lmadi.",
     authSuccess: "Muvaffaqiyatli autentifikatsiyadan o'tildi!",
     authLoggedOut: "Boshqaruv paneli qulflandi.",
   },
@@ -114,9 +119,12 @@ const translations = {
     labelCurrency: "Валюта продажи (Target Currency)",
     labelMaxItems: "Максимум товаров за один прогон",
     labelDailyCap: "Дневной лимит публикаций (пусто — без ограничений)",
+    labelIntervalMinutes: "Интервал автопроверки и скрапинга (каждые N минут)",
     labelScheduleTimes: "Время публикаций (через запятую HH:MM)",
     labelDryRunCheck: "Включить тестовый режим (без отправки в Telegram/Instagram)",
     labelModerationCheck: "Включить ручную модерацию (удерживать посты перед публикацией)",
+    intervalAuto: (min) => `Каждые ${min} мин авто`,
+    scheduleManualOnly: "Только вручную",
     btnCancel: "Отмена",
     btnSave: "Сохранить",
 
@@ -134,14 +142,16 @@ const translations = {
 
     btnLock: "Заблокировать",
     modalAuthTitle: "Аутентификация администратора",
-    modalAuthSubtitle: "Введите ключ безопасности для доступа к панели управления",
-    labelAdminKey: "Ключ администратора (API Key / Пароль)",
+    modalAuthSubtitle: "Введите имя пользователя и пароль для доступа к панели управления",
+    labelAdminUsername: "Имя пользователя (Логин)",
+    labelAdminPassword: "Пароль администратора",
+    labelAdminKey: "Ключ администратора / Пароль",
     labelApiUrl: "Адрес сервера API (необязательно)",
     hintApiUrl: "Если панель открыта на Netlify, укажите URL вашего бэкенд сервера.",
-    labelRememberKey: "Запомнить в этом brauzere",
+    labelRememberKey: "Запомнить в этом браузере",
     btnLogin: "Войти",
-    authErrorEmpty: "Пожалуйста, введите ключ безопасности.",
-    authErrorInvalid: "Неверный ключ безопасности или нет связи с сервером.",
+    authErrorEmpty: "Пожалуйста, введите имя пользователя и пароль.",
+    authErrorInvalid: "Неверное имя пользователя или пароль.",
     authSuccess: "Успешная авторизация!",
     authLoggedOut: "Панель управления заблокирована.",
   },
@@ -185,9 +195,12 @@ const translations = {
     labelCurrency: "Target Sale Currency",
     labelMaxItems: "Max Items Per Run",
     labelDailyCap: "Daily Publish Cap (leave empty for unlimited)",
+    labelIntervalMinutes: "Autonomous Scrape & Check Interval (every N minutes)",
     labelScheduleTimes: "Schedule Times (comma-separated HH:MM)",
     labelDryRunCheck: "Enable Dry-Run Mode (Simulate without publishing)",
     labelModerationCheck: "Enable Manual Moderation Gate (hold items for review)",
+    intervalAuto: (min) => `Every ${min}m auto`,
+    scheduleManualOnly: "Manual only",
     btnCancel: "Cancel",
     btnSave: "Save Settings",
 
@@ -205,14 +218,16 @@ const translations = {
 
     btnLock: "Lock",
     modalAuthTitle: "Admin Authentication",
-    modalAuthSubtitle: "Enter admin security key to access the control panel",
-    labelAdminKey: "Admin Security Key (API Key / Password)",
+    modalAuthSubtitle: "Enter admin username and password to unlock the dashboard",
+    labelAdminUsername: "Username",
+    labelAdminPassword: "Password",
+    labelAdminKey: "Admin Security Key / Password",
     labelApiUrl: "Backend API Server URL (optional)",
     hintApiUrl: "If loaded on Netlify, specify your live backend API server URL.",
     labelRememberKey: "Remember on this device",
     btnLogin: "Unlock Dashboard",
-    authErrorEmpty: "Please enter your security key.",
-    authErrorInvalid: "Invalid security key or server unreachable.",
+    authErrorEmpty: "Please enter your username and password.",
+    authErrorInvalid: "Invalid username or password.",
     authSuccess: "Authentication successful!",
     authLoggedOut: "Dashboard locked.",
   }
@@ -293,25 +308,44 @@ function updateStatsUI(data) {
 
   const symbol = data.target_currency === 'USD' ? '$' : `${data.target_currency} `;
   document.getElementById('metricMarkup').textContent = `${symbol}${data.markup.toFixed(2)}`;
-  document.getElementById('metricScheduleTimes').textContent = `${t('timesPrefix')}${data.schedule.times.join(', ')} (${data.schedule.timezone})`;
+
+  let scheduleText = '';
+  if (data.schedule && data.schedule.interval_minutes) {
+    scheduleText = t('intervalAuto', data.schedule.interval_minutes);
+    if (data.schedule.times && data.schedule.times.length > 0) {
+      scheduleText += ` (${data.schedule.times.join(', ')})`;
+    }
+  } else if (data.schedule && data.schedule.times && data.schedule.times.length > 0) {
+    scheduleText = `${t('timesPrefix')}${data.schedule.times.join(', ')} (${data.schedule.timezone})`;
+  } else {
+    scheduleText = t('scheduleManualOnly');
+  }
+  document.getElementById('metricScheduleTimes').textContent = scheduleText;
 
   const modePill = document.getElementById('modePill');
   const modeText = document.getElementById('modeText');
-  if (data.dry_run) {
-    modePill.className = 'mode-badge mode-dryrun';
-    modeText.textContent = t('modeDryRun');
-  } else {
-    modePill.className = 'mode-badge mode-live';
-    modeText.textContent = t('modeLive');
+  if (modePill && modeText) {
+    if (data.dry_run) {
+      modePill.className = 'mode-badge mode-dryrun';
+      modeText.textContent = t('modeDryRun');
+    } else {
+      modePill.className = 'mode-badge mode-live';
+      modeText.textContent = t('modeLive');
+    }
   }
 }
 
 // Storage & API Configuration
 const AUTH_KEY_STORAGE = 'fashion_admin_key';
+const AUTH_USER_STORAGE = 'fashion_admin_username';
 const API_URL_STORAGE = 'fashion_api_url';
 
 function getAuthKey() {
   return localStorage.getItem(AUTH_KEY_STORAGE) || sessionStorage.getItem(AUTH_KEY_STORAGE) || '';
+}
+
+function getAuthUser() {
+  return localStorage.getItem(AUTH_USER_STORAGE) || sessionStorage.getItem(AUTH_USER_STORAGE) || '';
 }
 
 function setAuthKey(key, remember = true) {
@@ -322,9 +356,19 @@ function setAuthKey(key, remember = true) {
   }
 }
 
+function setAuthUser(user, remember = true) {
+  if (remember) {
+    localStorage.setItem(AUTH_USER_STORAGE, user);
+  } else {
+    sessionStorage.setItem(AUTH_USER_STORAGE, user);
+  }
+}
+
 function clearAuthKey() {
   localStorage.removeItem(AUTH_KEY_STORAGE);
   sessionStorage.removeItem(AUTH_KEY_STORAGE);
+  localStorage.removeItem(AUTH_USER_STORAGE);
+  sessionStorage.removeItem(AUTH_USER_STORAGE);
 }
 
 function getApiBaseUrl() {
@@ -549,8 +593,13 @@ document.getElementById('btnOpenConfig').addEventListener('click', async () => {
     document.getElementById('inputCurrency').value = data.target_currency;
     document.getElementById('inputMaxItems').value = data.max_products_per_run;
     document.getElementById('inputDailyCap').value = data.daily_publish_cap || '';
-    document.getElementById('inputScheduleTimes').value = data.schedule.times.join(', ');
-    document.getElementById('checkDryRun').checked = !!data.dry_run;
+    const intervalEl = document.getElementById('inputIntervalMinutes');
+    if (intervalEl) {
+      intervalEl.value = (data.schedule && data.schedule.interval_minutes) ? data.schedule.interval_minutes : 15;
+    }
+    document.getElementById('inputScheduleTimes').value = (data.schedule && data.schedule.times) ? data.schedule.times.join(', ') : '';
+    const checkDryRunEl = document.getElementById('checkDryRun');
+    if (checkDryRunEl) checkDryRunEl.checked = !!data.dry_run;
     document.getElementById('checkModeration').checked = !!data.moderation.enabled;
 
     configModal.classList.add('active');
@@ -564,14 +613,18 @@ document.getElementById('btnSaveConfig').addEventListener('click', async () => {
   const timesStr = document.getElementById('inputScheduleTimes').value;
   const times = timesStr.split(',').map(s => s.trim()).filter(Boolean);
   const dailyCapVal = document.getElementById('inputDailyCap').value;
+  const checkDryRunEl = document.getElementById('checkDryRun');
+  const intervalEl = document.getElementById('inputIntervalMinutes');
+  const intervalVal = intervalEl ? intervalEl.value.trim() : '';
 
   const payload = {
     markup: parseFloat(document.getElementById('inputMarkup').value),
     target_currency: document.getElementById('inputCurrency').value.trim().toUpperCase(),
     max_products_per_run: parseInt(document.getElementById('inputMaxItems').value),
     daily_publish_cap: dailyCapVal ? parseInt(dailyCapVal) : null,
+    interval_minutes: intervalVal ? parseInt(intervalVal, 10) : null,
     schedule_times: times,
-    dry_run: document.getElementById('checkDryRun').checked,
+    dry_run: checkDryRunEl ? checkDryRunEl.checked : false,
     moderation_enabled: document.getElementById('checkModeration').checked,
   };
 
@@ -624,11 +677,26 @@ document.querySelectorAll('.lang-btn').forEach(btn => {
 // Auth Modal & Security Gate Logic
 const authModal = document.getElementById('authModal');
 const authAlert = document.getElementById('authAlert');
+const inputAdminUsername = document.getElementById('inputAdminUsername');
+const inputAdminPassword = document.getElementById('inputAdminPassword');
 const inputAdminKey = document.getElementById('inputAdminKey');
 const inputApiUrl = document.getElementById('inputApiUrl');
 const btnLogin = document.getElementById('btnLogin');
 const btnLock = document.getElementById('btnLock');
 const btnTogglePassword = document.getElementById('btnTogglePassword');
+const userBadge = document.getElementById('userBadge');
+const userNameText = document.getElementById('userNameText');
+
+function updateUserBadge(username) {
+  if (userBadge && userNameText) {
+    if (username) {
+      userNameText.textContent = username;
+      userBadge.style.display = 'inline-flex';
+    } else {
+      userBadge.style.display = 'none';
+    }
+  }
+}
 
 function showAuthModal(errorMsg = null) {
   if (errorMsg) {
@@ -637,8 +705,18 @@ function showAuthModal(errorMsg = null) {
   } else {
     authAlert.style.display = 'none';
   }
-  inputAdminKey.value = getAuthKey();
-  inputApiUrl.value = getApiBaseUrl();
+  if (inputAdminUsername) {
+    inputAdminUsername.value = getAuthUser() || 'admin';
+  }
+  if (inputAdminPassword) {
+    inputAdminPassword.value = getAuthKey();
+  }
+  if (inputAdminKey) {
+    inputAdminKey.value = getAuthKey();
+  }
+  if (inputApiUrl) {
+    inputApiUrl.value = getApiBaseUrl();
+  }
   authModal.classList.add('active');
   refreshLucide();
 }
@@ -649,18 +727,22 @@ function hideAuthModal() {
 }
 
 async function handleLogin() {
-  const key = inputAdminKey.value.trim();
-  const apiUrl = inputApiUrl.value.trim();
+  const username = (inputAdminUsername ? inputAdminUsername.value : '').trim() || 'admin';
+  const password = (inputAdminPassword ? inputAdminPassword.value : (inputAdminKey ? inputAdminKey.value : '')).trim();
+  const apiUrl = inputApiUrl ? inputApiUrl.value.trim() : '';
   const remember = document.getElementById('checkRememberKey').checked;
 
-  if (!key) {
+  if (!password) {
     authAlert.textContent = t('authErrorEmpty');
     authAlert.style.display = 'flex';
     return;
   }
 
-  setApiBaseUrl(apiUrl);
-  setAuthKey(key, remember);
+  if (apiUrl) {
+    setApiBaseUrl(apiUrl);
+  }
+  setAuthUser(username, remember);
+  setAuthKey(password, remember);
 
   const loginText = document.getElementById('btnLoginText');
   btnLogin.disabled = true;
@@ -670,25 +752,31 @@ async function handleLogin() {
     const res = await fetch(getFullApiUrl('/api/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key })
+      body: JSON.stringify({ username, password, key: password })
     });
 
     if (res.ok) {
+      const authData = await res.json();
+      const confirmedUser = authData.username || username;
+      setAuthUser(confirmedUser, remember);
+      updateUserBadge(confirmedUser);
       hideAuthModal();
       showToast(t('authSuccess'));
       await fetchStats();
       await fetchProducts();
     } else {
       clearAuthKey();
+      updateUserBadge(null);
       authAlert.textContent = t('authErrorInvalid');
       authAlert.style.display = 'flex';
     }
   } catch (err) {
     try {
       const fallbackRes = await fetch(getFullApiUrl('/api/stats'), {
-        headers: { 'Authorization': `Bearer ${key}`, 'X-Admin-Key': key }
+        headers: { 'Authorization': `Bearer ${password}`, 'X-Admin-Key': password }
       });
       if (fallbackRes.ok) {
+        updateUserBadge(username);
         hideAuthModal();
         showToast(t('authSuccess'));
         const statsData = await fallbackRes.json();
@@ -696,6 +784,7 @@ async function handleLogin() {
         await fetchProducts();
       } else {
         clearAuthKey();
+        updateUserBadge(null);
         authAlert.textContent = t('authErrorInvalid');
         authAlert.style.display = 'flex';
       }
@@ -717,6 +806,7 @@ if (btnLogin) {
 if (btnLock) {
   btnLock.addEventListener('click', () => {
     clearAuthKey();
+    updateUserBadge(null);
     showAuthModal();
     showToast(t('authLoggedOut'));
   });
@@ -724,13 +814,33 @@ if (btnLock) {
 
 if (btnTogglePassword) {
   btnTogglePassword.addEventListener('click', () => {
-    const isPass = inputAdminKey.type === 'password';
-    inputAdminKey.type = isPass ? 'text' : 'password';
+    const targetInput = inputAdminPassword || inputAdminKey;
+    if (!targetInput) return;
+    const isPass = targetInput.type === 'password';
+    targetInput.type = isPass ? 'text' : 'password';
     const icon = document.getElementById('iconEye');
     if (icon) {
       icon.setAttribute('data-lucide', isPass ? 'eye-off' : 'eye');
       refreshLucide();
     }
+  });
+}
+
+if (inputAdminUsername) {
+  inputAdminUsername.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      if (inputAdminPassword) {
+        inputAdminPassword.focus();
+      } else {
+        handleLogin();
+      }
+    }
+  });
+}
+
+if (inputAdminPassword) {
+  inputAdminPassword.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleLogin();
   });
 }
 
@@ -743,8 +853,10 @@ if (inputAdminKey) {
 // Initial boot
 applyTranslations();
 if (!getAuthKey()) {
+  updateUserBadge(null);
   showAuthModal();
 } else {
+  updateUserBadge(getAuthUser() || 'admin');
   fetchStats();
   fetchProducts();
 }
