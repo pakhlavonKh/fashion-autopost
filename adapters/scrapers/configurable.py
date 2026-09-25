@@ -148,12 +148,20 @@ class ConfigurableStoreScraper:
                     continue
                 product_url = urljoin(base_url, href)
 
+                aria = ""
+                if link_el.count() > 0:
+                    aria = link_el.get_attribute("aria-label") or ""
+                if not aria:
+                    aria = el.get_attribute("aria-label") or ""
+
                 # Title
                 title = ""
                 if selectors.title:
                     t_el = el.locator(selectors.title).first
                     if t_el.count() > 0:
                         title = t_el.inner_text().strip()
+                if not title and ", Price " in aria:
+                    title = aria.split(", Price ")[0].strip()
                 if not title:
                     t_el = el.locator("h1, h2, h3, h4, .title, .product-title, .name, a").first
                     if t_el.count() > 0:
@@ -172,9 +180,11 @@ class ConfigurableStoreScraper:
                     p_el = el.locator(selectors.price).first
                     if p_el.count() > 0:
                         price_text = p_el.inner_text().strip()
+                if not price_text and ", Price " in aria:
+                    price_text = aria.split(", Price ")[1].strip()
                 if not price_text:
                     all_text = el.inner_text()
-                    price_match = re.search(r"(\d+[\d.,]*\s*[€$£]|[\d.,]+\s*EUR|[\d.,]+\s*USD|[€$£]\s*[\d.,]+)", all_text)
+                    price_match = re.search(r"(\d+[\d.,]*\s*[€$£]|[\d.,]+\s*EUR|[\d.,]+\s*USD|[€$£]\s*[\d.,]+|\d+[\d.,]*\s*TL)", all_text)
                     if price_match:
                         price_text = price_match.group(0)
                 if not price_text:
@@ -363,6 +373,8 @@ class ConfigurableStoreScraper:
         """Fallback card-based extraction using common fashion e-commerce selectors."""
         card_selectors = [
             "[itemtype*='Product']",
+            "form[class*='productCard']",
+            "[class*='ProductCard']",
             ".product-card",
             ".product-item",
             "article.product",
@@ -371,6 +383,7 @@ class ConfigurableStoreScraper:
             ".card-product",
             "[data-component='product-card']",
             "li[class*='product']",
+            "[class*='productTile']",
         ]
 
         elements = []
@@ -392,8 +405,12 @@ class ConfigurableStoreScraper:
                 href = link_el.get_attribute("href") or ""
                 product_url = urljoin(base_url, href)
 
+                aria = link_el.get_attribute("aria-label") or el.get_attribute("aria-label") or ""
+
                 title_el = el.locator("h2, h3, h4, .product-title, .title, a").first
                 title = title_el.inner_text().strip() if title_el.count() > 0 else ""
+                if not title and ", Price " in aria:
+                    title = aria.split(", Price ")[0].strip()
                 if not title:
                     img_alt = el.locator("img[alt]").first
                     if img_alt.count() > 0:
@@ -401,11 +418,17 @@ class ConfigurableStoreScraper:
                 if not title:
                     continue
 
-                all_text = el.inner_text()
-                price_match = re.search(r"(\d+[\d.,]*\s*[€$£]|[\d.,]+\s*EUR|[\d.,]+\s*USD|[€$£]\s*[\d.,]+)", all_text)
-                if not price_match:
+                price_text = ""
+                if ", Price " in aria:
+                    price_text = aria.split(", Price ")[1].strip()
+                if not price_text:
+                    all_text = el.inner_text()
+                    price_match = re.search(r"(\d+[\d.,]*\s*[€$£]|[\d.,]+\s*EUR|[\d.,]+\s*USD|[€$£]\s*[\d.,]+|\d+[\d.,]*\s*TL)", all_text)
+                    if price_match:
+                        price_text = price_match.group(0)
+                if not price_text:
                     continue
-                price, currency = parse_price(price_match.group(0), default_currency=default_currency)
+                price, currency = parse_price(price_text, default_currency=default_currency)
 
                 img_el = el.locator("img").first
                 img_src = img_el.get_attribute("src") or img_el.get_attribute("data-src") if img_el.count() > 0 else ""

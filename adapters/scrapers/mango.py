@@ -32,16 +32,32 @@ class MangoScraper:
         resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
         if resp and resp.status in (403, 401, 429):
             logger.warning(
-                "MangoScraper: received HTTP %d from %s (anti-bot WAF protection)",
+                "MangoScraper: received HTTP %d from %s (anti-bot WAF protection / geo-restriction)",
                 resp.status,
                 url,
             )
         elif "forbidden" in (page.title() or "").lower() or "access denied" in (page.title() or "").lower():
             logger.warning(
-                "MangoScraper: anti-bot challenge detected at %s (Title: '%s')",
+                "MangoScraper: anti-bot / geo challenge detected at %s (Title: '%s')",
                 url,
                 page.title(),
             )
+
+        # If blocked by regional WAF (e.g. cross-border 403 on shop.mango.com/es/en), fallback to local regional store
+        if (resp and resp.status in (403, 401, 429)) or "forbidden" in (page.title() or "").lower():
+            logger.info("MangoScraper: attempting regional catalog discovery from home domain")
+            try:
+                page.goto("https://www.mango.com", wait_until="domcontentloaded", timeout=15000)
+                page.wait_for_timeout(2000)
+                cat_link = page.locator("a[href*='new-now'], a[href*='yeni'], a[href*='novedades'], a[href*='kadin/new']").first
+                if cat_link.count() > 0:
+                    new_url = cat_link.get_attribute("href") or ""
+                    if new_url:
+                        new_url = urljoin(page.url, new_url)
+                        logger.info("MangoScraper: navigating to regional category: %s", new_url)
+                        page.goto(new_url, wait_until="domcontentloaded", timeout=20000)
+            except Exception as exc:
+                logger.debug("Mango regional fallback failed: %s", exc)
 
         # Allow initial render & dismiss cookie banner
         dismiss_cookie_banner(page)
@@ -49,12 +65,15 @@ class MangoScraper:
 
         # Candidate product card selectors on Mango
         card_selectors = [
+            "form[class*='productCard']",
+            "[class*='ProductCard']",
+            "[class*='productCard']",
+            "div[class*='ProductDetails']",
             "li[data-testid*='plp.product']",
             "article[data-testid*='product']",
             "div.product-card",
             "li.product-card",
             "article.product-card",
-            "div[class*='ProductCard']",
             "li[class*='productItem']",
         ]
 
@@ -125,11 +144,11 @@ class MangoScraper:
 
         # 2. Product Name / Title
         title_el = el.locator(
-            "[data-testid*='product.title'], .text-title-m, .product-name, h2, h3, [class*='title']"
+            "p[class*='productTitle'], [class*='productTitle'], [data-testid*='product.title'], meta[itemprop='name'], .text-title-m, .product-name, h2, h3, [class*='title']"
         ).first
         title = ""
         if title_el.count() > 0:
-            title = title_el.inner_text().strip()
+            title = title_el.get_attribute("content") or title_el.inner_text().strip()
         if not title and link_el.count() > 0:
             title = link_el.inner_text().strip()
         if not title:
@@ -144,7 +163,7 @@ class MangoScraper:
 
         # 3. Price
         price_el = el.locator(
-            "[data-testid*='product.price'], .current-price, span.price, [class*='price'], [class*='Price']"
+            "div[class*='priceSlot'], span[class*='SinglePrice'], [data-testid*='product.price'], .current-price, span.price, [class*='price'], [class*='Price']"
         ).first
         price_text = ""
         if price_el.count() > 0:
@@ -152,7 +171,7 @@ class MangoScraper:
 
         if not price_text:
             all_text = el.inner_text()
-            price_match = re.search(r"(\d+[\d.,]*\s*[€$£]|[\d.,]+\s*EUR|[\d.,]+\s*USD|[€$£]\s*[\d.,]+)", all_text)
+            price_match = re.search(r"(\d+[\d.,]*\s*[€$£]|[\d.,]+\s*EUR|[\d.,]+\s*USD|[€$£]\s*[\d.,]+|\d+[\d.,]*\s*TL)", all_text)
             if price_match:
                 price_text = price_match.group(0)
 
@@ -163,13 +182,14 @@ class MangoScraper:
 
         # 4. Image URL
         img_el = el.locator(
-            "img[data-testid*='product.image'], picture img, img"
+            "meta[itemprop='image'], img[data-testid*='product.image'], picture img, img"
         ).first
         img_src = ""
         srcset = ""
         if img_el.count() > 0:
             img_src = (
-                img_el.get_attribute("src")
+                img_el.get_attribute("content")
+                or img_el.get_attribute("src")
                 or img_el.get_attribute("data-src")
                 or ""
             )

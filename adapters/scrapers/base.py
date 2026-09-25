@@ -49,7 +49,7 @@ def parse_price(text: str, default_currency: str = "EUR") -> tuple[Decimal, str]
                 break
 
     clean_text = clean_text.strip()
-    match = re.search(r"[\d\s.,]+", clean_text)
+    match = re.search(r"\d[\d\s.,]*\d|\d+", clean_text)
     if not match:
         raise ValueError(f"Could not parse numerical price from: '{text}'")
 

@@ -39,30 +39,20 @@ schedule:
   times: []
   timezone: UTC
 scraper:
-  headless: true
+  headless: false
   scroll_steps: 3
   stores:
-    asos:
-      currency: GBP
-      enabled: true
-      max_items: 12
-      selectors:
-        item: article[data-auto-id='productTile']
-        price: span[data-auto-id='productTilePrice']
-        title: h2
-      url: https://www.asos.com/women/new-in
     mango:
-      currency: EUR
+      currency: TRY
       enabled: true
       max_items: 10
-      url: https://shop.mango.com/es/en/c/women/new-now
+      url: https://shop.mango.com/tr/tr/c/kadin/new-now/56b5c5ed
     zara:
       currency: EUR
       enabled: true
       max_items: 10
       url: https://www.zara.com/es/en/woman-new-in-l1180.html
   timeout_seconds: 30.0
-  user_agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
-    like Gecko) Chrome/124.0.0.0 Safari/537.36
+  user_agent: null
   wait_after_scroll_ms: 1500
 target_currency: USD

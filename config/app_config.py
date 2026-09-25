@@ -50,10 +50,7 @@ class ScraperSettings(BaseModel):
     timeout_seconds: float = 30.0
     scroll_steps: int = 3
     wait_after_scroll_ms: int = 1500
-    user_agent: str = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    )
+    user_agent: str | None = None
     stores: dict[str, ScraperStoreConfig] = Field(
         default_factory=lambda: {
             "zara": ScraperStoreConfig(

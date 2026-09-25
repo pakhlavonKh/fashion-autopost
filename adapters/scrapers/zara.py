@@ -1,7 +1,7 @@
-"""Playwright scraper for Zara product catalog pages."""
-
+import json
 import logging
 import re
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urljoin
 
@@ -46,7 +46,13 @@ class ZaraScraper:
         dismiss_cookie_banner(page)
         scroll_page_down(page, steps=3, wait_ms=1200)
 
-        # Candidate item selectors on Zara
+        # 1. Attempt high-fidelity Schema.org ItemList JSON-LD extraction
+        ld_products = self._extract_from_json_ld(page, base_url=url, max_items=max_items, default_currency=default_currency)
+        if ld_products:
+            logger.info("ZaraScraper: successfully extracted %d products from JSON-LD on %s", len(ld_products), url)
+            return ld_products
+
+        # 2. Candidate item selectors on Zara DOM
         item_selectors = [
             "li.product-grid-product",
             "article.product-grid-product-info",
@@ -196,3 +202,85 @@ class ZaraScraper:
             "url": product_url,
             "available": in_stock,
         }
+
+    def _extract_from_json_ld(
+        self,
+        page: Any,
+        base_url: str,
+        max_items: int = 10,
+        default_currency: str = "EUR",
+    ) -> list[dict[str, Any]]:
+        """Extract high-fidelity product listings from Schema.org ItemList JSON-LD."""
+        products: list[dict[str, Any]] = []
+        try:
+            scripts = page.locator("script[type='application/ld+json']").all()
+            for s in scripts:
+                txt = s.inner_text().strip()
+                if not txt:
+                    continue
+                try:
+                    data = json.loads(txt)
+                except Exception:
+                    continue
+
+                items_raw: list[Any] = []
+                if isinstance(data, dict):
+                    if data.get("@type") == "ItemList" and "itemListElement" in data:
+                        items_raw = data["itemListElement"]
+                    elif data.get("@type") in ("Product", "ProductGroup"):
+                        items_raw = [{"item": data}]
+                elif isinstance(data, list):
+                    items_raw = [{"item": x} for x in data if isinstance(x, dict)]
+
+                for item_entry in items_raw:
+                    if len(products) >= max_items:
+                        break
+                    it = item_entry.get("item", item_entry) if isinstance(item_entry, dict) else {}
+                    if not isinstance(it, dict):
+                        continue
+
+                    name = it.get("name")
+                    if not name:
+                        continue
+
+                    offers = it.get("offers", {})
+                    if isinstance(offers, list) and offers:
+                        offers = offers[0]
+
+                    price_val = offers.get("price") if isinstance(offers, dict) else None
+                    if price_val is None:
+                        continue
+
+                    try:
+                        price = Decimal(str(price_val)).quantize(Decimal("0.01"))
+                    except Exception:
+                        continue
+
+                    curr = (offers.get("priceCurrency") or default_currency).upper() if isinstance(offers, dict) else default_currency
+                    prod_url = offers.get("url") or it.get("url") or "" if isinstance(offers, dict) else it.get("url") or ""
+                    if prod_url:
+                        prod_url = urljoin(base_url, prod_url)
+
+                    image = it.get("image")
+                    if isinstance(image, list) and image:
+                        image = image[0]
+                    if not image or not isinstance(image, str):
+                        continue
+
+                    match = re.search(r"-p([0-9A-Za-z]+)\.html", prod_url) or re.search(r"p(\d{5,})", prod_url)
+                    ext_id = f"zara-{match.group(1)}" if match else f"zara-{abs(hash(prod_url)) % 10000000}"
+
+                    products.append({
+                        "id": ext_id,
+                        "brand": self.BRAND_NAME,
+                        "name": str(name).strip(),
+                        "price": price,
+                        "currency": curr,
+                        "image": image,
+                        "url": prod_url,
+                        "available": True,
+                    })
+        except Exception as exc:
+            logger.debug("ZaraScraper: JSON-LD extraction error: %s", exc)
+
+        return products
