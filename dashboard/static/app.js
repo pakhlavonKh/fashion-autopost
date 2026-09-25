@@ -29,6 +29,25 @@ const translations = {
     tabSelected: "Tanlangan",
     tabNew: "Yangi",
     tabFailed: "Xato",
+    storeAll: "Barcha brendlar",
+    catAll: "Barcha toifalar",
+    catJackets: "Palto va kurtkalar",
+    catTrousers: "Shim va jinsilar",
+    catDresses: "Ko'ylaklar",
+    catKnitwear: "Triko va sviterlar",
+    catTops: "Top va ko'ylaklar",
+    catSkirts: "Yubkalar",
+    catShoes: "Poyabzallar",
+    catAccessories: "Sumka va aksessuarlar",
+    cat_jackets: "Kurtka / Palto",
+    cat_trousers: "Shim / Jinsi",
+    cat_dresses: "Ko'ylak",
+    cat_knitwear: "Triko",
+    cat_tops: "Top / Ko'ylak",
+    cat_skirts: "Yubka",
+    cat_shoes: "Poyabzal",
+    cat_accessories: "Aksessuar",
+    cat_other: "Kiyim",
 
     noProductsTitle: "Ushbu toifada mahsulot topilmadi",
     noProductsSub: "Agregator orqali mahsulotlarni yuklash uchun 'Tsiklni ishga tushirish' tugmasini bosing.",
@@ -105,6 +124,25 @@ const translations = {
     tabSelected: "Отобрано",
     tabNew: "Новые",
     tabFailed: "Ошибки",
+    storeAll: "Все бренды",
+    catAll: "Все категории",
+    catJackets: "Пальто и куртки",
+    catTrousers: "Брюки и джинсы",
+    catDresses: "Платья",
+    catKnitwear: "Трикотаж и свитера",
+    catTops: "Топы и рубашки",
+    catSkirts: "Юбки",
+    catShoes: "Обувь",
+    catAccessories: "Сумки и аксессуары",
+    cat_jackets: "Куртки / Пальто",
+    cat_trousers: "Брюки / Джинсы",
+    cat_dresses: "Платья",
+    cat_knitwear: "Трикотаж",
+    cat_tops: "Топы / Рубашки",
+    cat_skirts: "Юбки",
+    cat_shoes: "Обувь",
+    cat_accessories: "Аксессуары",
+    cat_other: "Одежда",
 
     noProductsTitle: "Товары в этой категории не найдены",
     noProductsSub: "Нажмите 'Запустить цикл', чтобы загрузить товары из агрегатора.",
@@ -181,6 +219,25 @@ const translations = {
     tabSelected: "Selected",
     tabNew: "New",
     tabFailed: "Failed",
+    storeAll: "All Brands",
+    catAll: "All Categories",
+    catJackets: "Coats & Jackets",
+    catTrousers: "Trousers & Jeans",
+    catDresses: "Dresses",
+    catKnitwear: "Knitwear & Sweaters",
+    catTops: "Tops & Shirts",
+    catSkirts: "Skirts",
+    catShoes: "Shoes",
+    catAccessories: "Bags & Accessories",
+    cat_jackets: "Coats & Jackets",
+    cat_trousers: "Trousers & Jeans",
+    cat_dresses: "Dresses",
+    cat_knitwear: "Knitwear",
+    cat_tops: "Tops & Shirts",
+    cat_skirts: "Skirts",
+    cat_shoes: "Shoes",
+    cat_accessories: "Accessories",
+    cat_other: "Clothing",
 
     noProductsTitle: "No products found in this category",
     noProductsSub: "Click 'Run Cycle Now' to ingest items from the aggregator.",
@@ -235,6 +292,8 @@ const translations = {
 
 let currentLang = localStorage.getItem('fashion_autopost_lang') || 'uz';
 let currentFilter = 'all';
+let currentStore = 'all';
+let currentCategory = 'all';
 let latestStats = null;
 
 function t(key, ...args) {
@@ -416,14 +475,61 @@ async function fetchStats() {
   }
 }
 
+async function updateCategoryCounts(status, store) {
+  try {
+    const params = new URLSearchParams();
+    if (status !== 'all') params.append('status', status);
+    if (store !== 'all') params.append('source', store);
+    params.append('limit', '1000');
+    const res = await apiFetch(`/api/products?${params.toString()}`);
+    const data = await res.json();
+    const items = data.products || [];
+
+    const counts = {
+      all: items.length,
+      jackets: 0,
+      trousers: 0,
+      dresses: 0,
+      knitwear: 0,
+      tops: 0,
+      skirts: 0,
+      shoes: 0,
+      accessories: 0,
+    };
+
+    items.forEach(it => {
+      const cat = it.category || 'other';
+      if (counts[cat] !== undefined) {
+        counts[cat]++;
+      }
+    });
+
+    Object.keys(counts).forEach(cat => {
+      const el = document.getElementById(`count_${cat}`);
+      if (el) el.textContent = counts[cat];
+    });
+  } catch (e) {
+    console.error('Failed to update category counts:', e);
+  }
+}
+
 async function fetchProducts() {
   const grid = document.getElementById('productsGrid');
   try {
-    const url = currentFilter === 'all' ? '/api/products' : `/api/products?status=${currentFilter}`;
-    const res = await apiFetch(url);
-    const data = await res.json();
+    const params = new URLSearchParams();
+    if (currentFilter !== 'all') params.append('status', currentFilter);
+    if (currentStore !== 'all') params.append('source', currentStore);
+    if (currentCategory !== 'all') params.append('category', currentCategory);
+    params.append('limit', '500');
 
-    if (!data.products || data.products.length === 0) {
+    const res = await apiFetch(`/api/products?${params.toString()}`);
+    const data = await res.json();
+    const products = data.products || [];
+
+    // Dynamically refresh counts across current status & store
+    updateCategoryCounts(currentFilter, currentStore);
+
+    if (products.length === 0) {
       grid.innerHTML = `
         <div style="grid-column: 1 / -1; text-align: center; padding: 64px 20px; color: var(--text-muted); background: var(--bg-card); border-radius: var(--radius-md); border: 1px dashed var(--border-subtle);">
           <div style="display: flex; justify-content: center; margin-bottom: 12px;">
@@ -437,7 +543,7 @@ async function fetchProducts() {
       return;
     }
 
-    grid.innerHTML = data.products.map(p => {
+    grid.innerHTML = products.map(p => {
       const isPending = p.status === 'pending_review';
       const approveBtn = isPending
         ? `<button class="btn btn-primary btn-sm" onclick="approveProduct('${p.external_id}')" style="margin-top: 12px; width: 100%;">
@@ -449,11 +555,14 @@ async function fetchProducts() {
       const priceFinal = p.price_final ? `$${p.price_final.toFixed(2)}` : '—';
       const desc = p.description_gpt || t('awaitingGpt');
       const statusText = t(`status_${p.status}`) || p.status;
+      const catKey = p.category || 'other';
+      const catLabel = t(`cat_${catKey}`) || p.category || '';
 
       return `
         <div class="product-card">
           <div class="product-image-container">
             <span class="brand-overlay">${p.source}</span>
+            ${catLabel ? `<span class="category-overlay">${catLabel}</span>` : ''}
             <div class="product-badge-overlay">
               <span class="status-pill status-${p.status}">${statusText}</span>
             </div>
@@ -657,12 +766,35 @@ document.querySelectorAll('.close-modal').forEach(btn => {
   });
 });
 
-// Filter tabs
+// Filter tabs (Status)
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', (e) => {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    e.target.classList.add('active');
-    currentFilter = e.target.dataset.filter;
+    const target = e.currentTarget || e.target.closest('.tab-btn');
+    target.classList.add('active');
+    currentFilter = target.dataset.filter;
+    fetchProducts();
+  });
+});
+
+// Store filter pills
+document.querySelectorAll('.store-pill').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    document.querySelectorAll('.store-pill').forEach(b => b.classList.remove('active'));
+    const target = e.currentTarget || e.target.closest('.store-pill');
+    target.classList.add('active');
+    currentStore = target.dataset.store;
+    fetchProducts();
+  });
+});
+
+// Category filter pills
+document.querySelectorAll('.cat-pill').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    document.querySelectorAll('.cat-pill').forEach(b => b.classList.remove('active'));
+    const target = e.currentTarget || e.target.closest('.cat-pill');
+    target.classList.add('active');
+    currentCategory = target.dataset.category;
     fetchProducts();
   });
 });

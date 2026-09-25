@@ -70,6 +70,26 @@ class AuthLoginRequest(BaseModel):
     key: Optional[str] = None
 
 
+CATEGORIES_MAP = {
+    "dresses": ["elbise", "dress", "vestido", "kombine", "robe", "платье", "сарафан"],
+    "skirts": ["etek", "skirt", "falda", "юбка"],
+    "jackets": ["blazer", "ceket", "kaban", "palto", "trençkot", "trench", "jacket", "coat", "mont", "pelerin", "cape", "parka", "anorak", "жакет", "пиджак", "пальто", "куртка"],
+    "knitwear": ["kazak", "triko", "jumper", "sweater", "cardigan", "hırka", "hirka", "süveter", "suveter", "knit", "pullover", "свитер", "джемпер", "кардиган", "трикотаж"],
+    "tops": ["gömlek", "gomlek", "t-shirt", "tişört", "tisort", "bluz", "blouse", "top", "shirt", "body", "büstiyer", "bustiyer", "polo", "рубашка", "блузка", "футболка"],
+    "trousers": ["pantolon", "trousers", "pants", "jean", "denim", "tayt", "legging", "bermuda", "şort", "sort", "short", "брюки", "джинсы", "шорты"],
+    "shoes": ["ayakkabı", "ayakkabi", "bot", "boot", "çizme", "cizme", "sandalet", "sandal", "terlik", "sneaker", "topuklu", "shoes", "loafer", "mule", "обувь", "туфли", "ботинки", "сапоги"],
+    "accessories": ["çanta", "canta", "bag", "tote", "bere", "şapka", "sapka", "hat", "kemer", "belt", "atkı", "atki", "scarf", "fular", "küpe", "kupe", "kolye", "gözlük", "gozluk", "сумка", "ремень", "шапка", "шарф"],
+}
+
+
+def detect_product_category(title: str, url: str = "") -> str:
+    combined = f"{title} {url}".lower()
+    for cat, keywords in CATEGORIES_MAP.items():
+        if any(kw in combined for kw in keywords):
+            return cat
+    return "other"
+
+
 def create_dashboard_app(
     config: AppConfig,
     runner: PipelineRunner,
@@ -251,21 +271,29 @@ def create_dashboard_app(
     @app.get("/api/products", dependencies=[Depends(verify_admin)])
     def list_products(
         status: Optional[str] = Query(None, description="Filter by status"),
-        limit: int = Query(50, ge=1, le=200),
+        source: Optional[str] = Query(None, description="Filter by store/source"),
+        category: Optional[str] = Query(None, description="Filter by category"),
+        limit: int = Query(250, ge=1, le=1000),
     ):
-        """List products with optional status filter."""
+        """List products with optional status, store, and category filter."""
         with repo._get_session() as session:
             stmt = select(ProductRecord).order_by(desc(ProductRecord.created_at)).limit(limit)
             if status and status != "all":
                 stmt = stmt.where(ProductRecord.status == status)
+            if source and source != "all":
+                stmt = stmt.where(ProductRecord.source == source.lower())
             records = session.scalars(stmt).all()
 
             results = []
             for r in records:
+                detected_cat = detect_product_category(r.title, r.product_url or "")
+                if category and category != "all" and detected_cat != category:
+                    continue
                 results.append({
                     "id": r.id,
                     "external_id": r.external_id,
                     "source": r.source,
+                    "category": detected_cat,
                     "title": r.title,
                     "price_original": float(r.price_original),
                     "currency_original": r.currency_original,

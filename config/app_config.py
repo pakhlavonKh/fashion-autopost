@@ -55,8 +55,8 @@ class ScraperSettings(BaseModel):
         default_factory=lambda: {
             "zara": ScraperStoreConfig(
                 enabled=True,
-                url="https://www.zara.com/es/en/woman-new-in-l1180.html",
-                currency="EUR",
+                url="https://www.zara.com/tr/tr/kadin-yeni-l1180.html",
+                currency="TRY",
                 max_items=10,
             ),
             "mango": ScraperStoreConfig(

@@ -40,18 +40,18 @@ schedule:
   timezone: UTC
 scraper:
   headless: false
-  scroll_steps: 3
+  scroll_steps: 6
   stores:
     mango:
       currency: TRY
       enabled: true
-      max_items: 10
+      max_items: 60
       url: https://shop.mango.com/tr/tr/c/kadin/new-now/56b5c5ed
     zara:
-      currency: EUR
+      currency: TRY
       enabled: true
-      max_items: 10
-      url: https://www.zara.com/es/en/woman-new-in-l1180.html
+      max_items: 60
+      url: https://www.zara.com/tr/tr/kadin-yeni-l1180.html
   timeout_seconds: 30.0
   user_agent: null
   wait_after_scroll_ms: 1500

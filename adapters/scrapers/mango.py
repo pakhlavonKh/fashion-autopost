@@ -61,7 +61,8 @@ class MangoScraper:
 
         # Allow initial render & dismiss cookie banner
         dismiss_cookie_banner(page)
-        scroll_page_down(page, steps=3, wait_ms=1200)
+        scroll_steps = max(4, min(10, max_items // 6))
+        scroll_page_down(page, steps=scroll_steps, wait_ms=1200)
 
         # Candidate product card selectors on Mango
         card_selectors = [
