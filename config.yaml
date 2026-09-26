@@ -34,12 +34,15 @@ moderation:
   enabled: false
 prompt_path: ./prompt.txt
 schedule:
-  interval_minutes: 15
-  posts_per_day: 96
-  times: []
+  interval_minutes: 30
+  posts_per_day: 10
+  times:
+  - "09:30"
+  - "14:00"
+  - "18:30"
   timezone: UTC
 scraper:
-  headless: false
+  headless: true
   scroll_steps: 6
   stores:
     mango:
@@ -56,3 +59,7 @@ scraper:
   user_agent: null
   wait_after_scroll_ms: 1500
 target_currency: USD
+telegram:
+  enabled: true
+instagram:
+  enabled: false

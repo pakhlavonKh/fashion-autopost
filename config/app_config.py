@@ -79,6 +79,7 @@ class OpenAISettings(BaseModel):
 
 class TelegramSettings(BaseModel):
     """Settings for Telegram Bot publisher."""
+    enabled: bool = True
     bot_token: str = Field(default="mock-telegram-token")
     channel_id: str | None = None
     admin_chat_id: str | None = None
@@ -86,6 +87,7 @@ class TelegramSettings(BaseModel):
 
 class InstagramSettings(BaseModel):
     """Settings for Instagram Graph API publisher."""
+    enabled: bool = True
     access_token: str = Field(default="mock-instagram-token")
     account_id: str = Field(default="mock-account-id")
 
@@ -231,6 +233,8 @@ class AppConfig(BaseModel):
         yaml_data["scraper"] = scraper_data
 
         telegram_data = yaml_data.get("telegram", {})
+        if os.getenv("TELEGRAM_ENABLED") is not None:
+            telegram_data["enabled"] = os.environ["TELEGRAM_ENABLED"].strip().lower() in ("true", "1", "yes")
         if os.getenv("TELEGRAM_BOT_TOKEN"):
             telegram_data["bot_token"] = os.environ["TELEGRAM_BOT_TOKEN"]
         if os.getenv("TELEGRAM_CHANNEL_ID"):
@@ -240,6 +244,8 @@ class AppConfig(BaseModel):
         yaml_data["telegram"] = telegram_data
 
         instagram_data = yaml_data.get("instagram", {})
+        if os.getenv("INSTAGRAM_ENABLED") is not None:
+            instagram_data["enabled"] = os.environ["INSTAGRAM_ENABLED"].strip().lower() in ("true", "1", "yes")
         if os.getenv("INSTAGRAM_ACCESS_TOKEN"):
             instagram_data["access_token"] = os.environ["INSTAGRAM_ACCESS_TOKEN"]
         if os.getenv("INSTAGRAM_ACCOUNT_ID"):
@@ -337,6 +343,10 @@ class AppConfig(BaseModel):
             self.moderation = ModerationSettings.model_validate(content["moderation"])
         if "alert" in content and isinstance(content["alert"], dict):
             self.alert = AlertSettings.model_validate(content["alert"])
+        if "telegram" in content and isinstance(content["telegram"], dict):
+            self.telegram = TelegramSettings.model_validate(content["telegram"])
+        if "instagram" in content and isinstance(content["instagram"], dict):
+            self.instagram = InstagramSettings.model_validate(content["instagram"])
         if "scraper" in content and isinstance(content["scraper"], dict):
             self.scraper = ScraperSettings.model_validate(content["scraper"])
         if "dashboard" in content and isinstance(content["dashboard"], dict):
@@ -352,10 +362,18 @@ class AppConfig(BaseModel):
         missing = []
         if not self.openai.api_key or "mock" in self.openai.api_key.lower():
             missing.append("OPENAI_API_KEY")
-        if not self.telegram.bot_token or "mock" in self.telegram.bot_token.lower():
-            missing.append("TELEGRAM_BOT_TOKEN")
-        if not self.instagram.access_token or "mock" in self.instagram.access_token.lower():
-            missing.append("INSTAGRAM_ACCESS_TOKEN")
-        if not self.instagram.account_id or "mock" in self.instagram.account_id.lower():
-            missing.append("INSTAGRAM_ACCOUNT_ID")
+
+        if self.telegram.enabled:
+            if not self.telegram.bot_token or "mock" in self.telegram.bot_token.lower():
+                missing.append("TELEGRAM_BOT_TOKEN")
+
+        if self.instagram.enabled:
+            if not self.instagram.access_token or "mock" in self.instagram.access_token.lower():
+                missing.append("INSTAGRAM_ACCESS_TOKEN")
+            if not self.instagram.account_id or "mock" in self.instagram.account_id.lower():
+                missing.append("INSTAGRAM_ACCOUNT_ID")
+
+        if not self.telegram.enabled and not self.instagram.enabled:
+            missing.append("NO_PUBLISHERS_ENABLED (enable at least telegram or instagram)")
+
         return missing

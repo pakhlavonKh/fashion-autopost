@@ -69,3 +69,17 @@ def test_validate_live_credentials() -> None:
     assert "OPENAI_API_KEY" in missing
     assert "TELEGRAM_BOT_TOKEN" in missing
     assert "INSTAGRAM_ACCESS_TOKEN" in missing
+
+
+def test_channel_toggles_and_credential_validation() -> None:
+    """When a channel is disabled, its missing credentials do not block live operation."""
+    cfg = AppConfig()
+    cfg.openai.api_key = "sk-real-valid-openai-key"
+    cfg.telegram.bot_token = "123456:real-valid-bot-token"
+    cfg.instagram.enabled = False  # Disable Instagram
+
+    missing = cfg.validate_live_credentials()
+    assert "INSTAGRAM_ACCESS_TOKEN" not in missing
+    assert "INSTAGRAM_ACCOUNT_ID" not in missing
+    assert missing == []  # Completely ready for Telegram-only live publishing!
+

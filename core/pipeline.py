@@ -245,14 +245,52 @@ class PipelineRunner:
             logger.warning("Product %s was published concurrently! Skipping duplicate.", external_id)
             return
 
-        # 7e. Publish to each configured channel (FR-5)
-        telegram_post_id: str | None = None
-        instagram_post_id: str | None = None
+        # Filter to only currently enabled publishers
+        active_publishers = [
+            p for p in self.publishers
+            if (p.platform_name.lower() == "telegram" and self.config.telegram.enabled)
+            or (p.platform_name.lower() == "instagram" and self.config.instagram.enabled)
+            or (p.platform_name.lower() not in ("telegram", "instagram"))
+        ]
+
+        if not active_publishers:
+            err_msg = f"No active publishers enabled to publish product {external_id}."
+            logger.warning(err_msg)
+            self.repo.mark_failed(external_id, err_msg)
+            summary.failed += 1
+            return
+
+        # Check existing publication records to prevent re-posting on partial retries
+        existing_record = None
+        try:
+            existing_record = self.repo.get_by_external_id(external_id)
+        except Exception as exc:
+            logger.warning("Could not fetch existing record for %s: %s", external_id, exc)
+
+        existing_post_ids = {
+            "telegram": getattr(existing_record, "telegram_post_id", None) if existing_record else None,
+            "instagram": getattr(existing_record, "instagram_post_id", None) if existing_record else None,
+        }
+
+        # 7e. Publish to each active configured channel (FR-5)
+        telegram_post_id: str | None = existing_post_ids.get("telegram")
+        instagram_post_id: str | None = existing_post_ids.get("instagram")
         all_succeeded = True
         publish_errors: list[str] = []
 
-        for publisher in self.publishers:
+        for publisher in active_publishers:
             pub_name = publisher.platform_name.lower()
+            already_id = existing_post_ids.get(pub_name)
+
+            if already_id:
+                logger.info(
+                    "Product %s was already published to %s (post_id=%s). Skipping duplicate publish.",
+                    external_id,
+                    pub_name,
+                    already_id,
+                )
+                continue
+
             res = publisher.publish(composed)
 
             if res.success:
@@ -266,6 +304,11 @@ class PipelineRunner:
                     pub_name,
                     res.platform_post_id,
                 )
+                # Persist platform post ID immediately so subsequent retries never duplicate
+                try:
+                    self.repo.update_platform_post_id(external_id, pub_name, res.platform_post_id)
+                except Exception as exc:
+                    logger.warning("Could not save platform post ID for %s (%s): %s", external_id, pub_name, exc)
             else:
                 all_succeeded = False
                 err_msg = f"{pub_name} publish failed for {external_id}: {res.error}"

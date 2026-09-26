@@ -57,6 +57,13 @@ class FakeProductRepository:
             self.products[external_id]["telegram_post_id"] = telegram_id
             self.products[external_id]["instagram_post_id"] = instagram_id
 
+    def update_platform_post_id(self, external_id: str, platform: str, post_id: str) -> None:
+        if external_id in self.products:
+            if platform.lower() == "telegram":
+                self.products[external_id]["telegram_post_id"] = post_id
+            elif platform.lower() == "instagram":
+                self.products[external_id]["instagram_post_id"] = post_id
+
     def mark_failed(self, external_id: str, error: str) -> None:
         if external_id in self.products:
             self.products[external_id]["status"] = "failed"
@@ -89,6 +96,8 @@ class FakeProductRepository:
             photo_url="https://example.com/photo.jpg",
             description_gpt=data.get("description"),
             status=data["status"],
+            telegram_post_id=data.get("telegram_post_id"),
+            instagram_post_id=data.get("instagram_post_id"),
         )
         return rec
 

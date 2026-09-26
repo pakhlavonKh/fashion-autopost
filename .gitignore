@@ -6,5 +6,8 @@ env/
 venv/
 .pytest_cache/
 data/*.db
+data/images/
+certbot/
 logs/*.log
 .env
+

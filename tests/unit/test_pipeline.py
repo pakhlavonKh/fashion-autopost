@@ -160,3 +160,98 @@ def test_pipeline_runner_moderation_gate(sample_products: list[RawProduct]) -> N
     assert summary.pending_review == 1
     assert len(pub.published_posts) == 0
     assert repo.products["p-1"]["status"] == "pending_review"
+
+
+def test_partial_failure_does_not_duplicate_successful_channel(sample_products: list[RawProduct]) -> None:
+    """If Telegram succeeds but Instagram fails in cycle 1, cycle 2 must NOT re-post to Telegram."""
+    from publishers.base import PublishResult
+
+    repo = FakeProductRepository()
+    source = FakeSourceAdapter([sample_products[0]])  # Only p-1
+    llm = FakeLLMProvider(select_count=1)
+    fx = FixedRateConverter()
+    config = AppConfig()
+
+    pub_telegram = FakePublisher("telegram")
+
+    class FlakyInstagramPublisher(FakePublisher):
+        def __init__(self, platform_name: str) -> None:
+            super().__init__(platform_name)
+            self.should_fail = True
+
+        def publish(self, post):
+            if self.should_fail:
+                return PublishResult(success=False, error="Simulated Meta 500 error")
+            return super().publish(post)
+
+    pub_instagram = FlakyInstagramPublisher("instagram")
+
+    runner = PipelineRunner(
+        source=source,
+        repo=repo,
+        llm=llm,
+        fx=fx,
+        publishers=[pub_telegram, pub_instagram],
+        config=config,
+        prompt_loader=MockPromptLoader(),
+    )
+
+    # Cycle 1: Telegram succeeds, Instagram fails
+    summary1 = runner.run_cycle()
+    assert summary1.selected == 1
+    assert summary1.published == 0
+    assert summary1.failed == 1
+    assert len(pub_telegram.published_posts) == 1
+    assert len(pub_instagram.published_posts) == 0
+    # Telegram post ID must already be recorded in DB
+    assert repo.products["p-1"]["telegram_post_id"] is not None
+    assert repo.products["p-1"]["status"] == "failed"
+
+    # Cycle 2: Instagram is now working
+    pub_instagram.should_fail = False
+    summary2 = runner.run_cycle()
+
+    assert summary2.selected == 1
+    assert summary2.published == 1
+    assert summary2.failed == 0
+    # Telegram was SKIPPED in cycle 2 because it already succeeded in cycle 1!
+    assert len(pub_telegram.published_posts) == 1
+    # Instagram was published in cycle 2
+    assert len(pub_instagram.published_posts) == 1
+    # Both post IDs are now present and status is published
+    assert repo.products["p-1"]["status"] == "published"
+    assert repo.products["p-1"]["telegram_post_id"] is not None
+    assert repo.products["p-1"]["instagram_post_id"] is not None
+
+
+def test_pipeline_runner_channel_disabled(sample_products: list[RawProduct]) -> None:
+    """When a channel is disabled in config, it is not called and the cycle succeeds."""
+    repo = FakeProductRepository()
+    source = FakeSourceAdapter([sample_products[0]])
+    llm = FakeLLMProvider(select_count=1)
+    fx = FixedRateConverter()
+
+    config = AppConfig()
+    config.telegram.enabled = True
+    config.instagram.enabled = False  # Disable Instagram
+
+    pub_tg = FakePublisher("telegram")
+    pub_ig = FakePublisher("instagram")
+
+    runner = PipelineRunner(
+        source=source,
+        repo=repo,
+        llm=llm,
+        fx=fx,
+        publishers=[pub_tg, pub_ig],
+        config=config,
+        prompt_loader=MockPromptLoader(),
+    )
+
+    summary = runner.run_cycle()
+    assert summary.selected == 1
+    assert summary.published == 1
+    assert len(pub_tg.published_posts) == 1
+    assert len(pub_ig.published_posts) == 0  # Instagram never called!
+    assert repo.products["p-1"]["status"] == "published"
+

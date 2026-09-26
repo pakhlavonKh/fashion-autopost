@@ -38,6 +38,8 @@ class ConfigUpdateRequest(BaseModel):
     timezone: Optional[str] = None
     moderation_enabled: Optional[bool] = None
     auto_approve: Optional[bool] = None
+    telegram_enabled: Optional[bool] = None
+    instagram_enabled: Optional[bool] = None
 
 
 class PromptUpdateRequest(BaseModel):
@@ -359,6 +361,12 @@ def create_dashboard_app(
                 "enabled": config.moderation.enabled,
                 "auto_approve": config.moderation.auto_approve,
             },
+            "telegram": {
+                "enabled": config.telegram.enabled,
+            },
+            "instagram": {
+                "enabled": config.instagram.enabled,
+            },
             "prompt": prompt_content,
         }
 
@@ -401,6 +409,16 @@ def create_dashboard_app(
             if req.auto_approve is not None:
                 mod_dict["auto_approve"] = req.auto_approve
             data["moderation"] = mod_dict
+
+        if req.telegram_enabled is not None:
+            tg_dict = data.get("telegram", {})
+            tg_dict["enabled"] = req.telegram_enabled
+            data["telegram"] = tg_dict
+
+        if req.instagram_enabled is not None:
+            ig_dict = data.get("instagram", {})
+            ig_dict["enabled"] = req.instagram_enabled
+            data["instagram"] = ig_dict
 
         with open(cfg_file, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False)

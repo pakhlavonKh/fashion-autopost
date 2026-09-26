@@ -105,25 +105,39 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
     )
 
     # 6. Real Publishers (with dynamic Telegram channel resolution)
-    telegram_pub = TelegramPublisher(
-        bot_token=config.telegram.bot_token,
-        channel_id=config.telegram.channel_id,
-        repo=repo,
-    )
-    instagram_pub = InstagramPublisher(
-        access_token=config.instagram.access_token,
-        account_id=config.instagram.account_id,
-        image_host=image_host,
-    )
+    publishers: list[Publisher] = []
+    if config.telegram.enabled:
+        telegram_pub = TelegramPublisher(
+            bot_token=config.telegram.bot_token,
+            channel_id=config.telegram.channel_id,
+            repo=repo,
+        )
+        publishers.append(telegram_pub)
+        logger.info("Telegram publisher is ENABLED.")
+    else:
+        logger.info("Telegram publisher is DISABLED in configuration.")
 
-    publishers: list[Publisher] = [telegram_pub, instagram_pub]
+    if config.instagram.enabled:
+        instagram_pub = InstagramPublisher(
+            access_token=config.instagram.access_token,
+            account_id=config.instagram.account_id,
+            image_host=image_host,
+        )
+        publishers.append(instagram_pub)
+        logger.info("Instagram publisher is ENABLED.")
+    else:
+        logger.info("Instagram publisher is DISABLED in configuration.")
 
     # 7. Dry-Run Wrapping (SRS FR-9)
     if config.dry_run:
-        logger.info("Dry-run mode is ENABLED: wrapping all publishers in DryRunPublisher.")
+        logger.info("Dry-run mode is ENABLED: wrapping all active publishers in DryRunPublisher.")
         publishers = [DryRunPublisher(p) for p in publishers]
     else:
-        logger.warning("LIVE PUBLISHING MODE: Real posts will be sent to Telegram and Instagram!")
+        enabled_names = [p.platform_name for p in publishers]
+        logger.warning(
+            "LIVE PUBLISHING MODE: Real posts will be sent to: %s",
+            ", ".join(enabled_names) if enabled_names else "NONE (all publishers disabled)",
+        )
 
     # 8. Moderation Gate (SRS §10.2)
     moderation_gate = ConfigurableModerationGate(

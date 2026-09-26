@@ -39,6 +39,10 @@ class ProductRepository(Protocol):
         """Mark product as published with social media post IDs and current timestamp."""
         ...
 
+    def update_platform_post_id(self, external_id: str, platform: str, post_id: str) -> None:
+        """Update platform post ID (e.g. telegram_post_id or instagram_post_id) immediately upon success."""
+        ...
+
     def mark_failed(self, external_id: str, error: str) -> None:
         """Mark product publication as failed, recording error details."""
         ...
@@ -175,6 +179,23 @@ class SqlAlchemyProductRepository:
             )
             session.execute(stmt)
             session.commit()
+
+    def update_platform_post_id(self, external_id: str, platform: str, post_id: str) -> None:
+        """Update platform post ID immediately upon platform publish success to prevent duplicates on retries."""
+        with self._get_session() as session:
+            values = {}
+            if platform.lower() == "telegram":
+                values["telegram_post_id"] = post_id
+            elif platform.lower() == "instagram":
+                values["instagram_post_id"] = post_id
+            if values:
+                stmt = (
+                    update(ProductRecord)
+                    .where(ProductRecord.external_id == external_id)
+                    .values(**values)
+                )
+                session.execute(stmt)
+                session.commit()
 
     def mark_failed(self, external_id: str, error: str) -> None:
         with self._get_session() as session:
