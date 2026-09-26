@@ -36,3 +36,74 @@ def test_filter_unseen_retains_failed_or_selected(fake_repo: FakeProductReposito
     result = filter_unseen(sample_products, fake_repo)
     assert len(result) == 3
     assert "p-1" in [p.external_id for p in result]
+
+
+def test_filter_unseen_drops_by_canonical_url(fake_repo: FakeProductRepository) -> None:
+    """When a product has a different external_id but matches a published product's canonical URL, it must be dropped."""
+    published_item = RawProduct(
+        external_id="mango-8957033",  # Old randomized hash ID
+        source="mango",
+        title="Kruvaze saf yün palto - Siyah",
+        price=Decimal("199.99"),
+        currency="USD",
+        photo_url="https://example.com/photo.jpg",
+        product_url="https://shop.mango.com/tr/tr/p/kadın/palto/palto/kruvaze-saf-yun-palto/37016751/99/00?c=99",
+        in_stock=True,
+    )
+    fake_repo.upsert_new(published_item)
+    fake_repo.mark_published("mango-8957033", "tg-10", None)
+
+    # Scraped candidate has the new deterministic ID and clean URL
+    new_candidate = RawProduct(
+        external_id="mango-37016751",  # New deterministic SKU ID
+        source="mango",
+        title="Kruvaze saf yün palto - Siyah",
+        price=Decimal("199.99"),
+        currency="USD",
+        photo_url="https://example.com/photo.jpg",
+        product_url="https://shop.mango.com/tr/tr/p/kadın/palto/palto/kruvaze-saf-yun-palto/37016751/99/00",
+        in_stock=True,
+    )
+
+    unseen = filter_unseen([new_candidate], fake_repo)
+    assert len(unseen) == 0, "Duplicate with matching canonical URL/SKU must be discarded!"
+
+
+def test_filter_unseen_in_batch_duplicates(fake_repo: FakeProductRepository) -> None:
+    """Duplicate items within the same scraped batch must be deduplicated to a single item."""
+    p1 = RawProduct(
+        external_id="mango-37016751",
+        source="mango",
+        title="Kruvaze saf yün palto - Siyah",
+        price=Decimal("199.99"),
+        currency="USD",
+        photo_url="https://example.com/photo1.jpg",
+        product_url="https://shop.mango.com/tr/tr/p/kadın/palto/palto/kruvaze-saf-yun-palto/37016751/99/00",
+        in_stock=True,
+    )
+    # Duplicate item in the batch (e.g. from variant card or scraper re-fetch)
+    p2 = RawProduct(
+        external_id="mango-37016751",
+        source="mango",
+        title="Kruvaze saf yün palto - Siyah",
+        price=Decimal("199.99"),
+        currency="USD",
+        photo_url="https://example.com/photo2.jpg",
+        product_url="https://shop.mango.com/tr/tr/p/kadın/palto/palto/kruvaze-saf-yun-palto/37016751/99/00",
+        in_stock=True,
+    )
+    p3 = RawProduct(
+        external_id="mango-9999999",
+        source="mango",
+        title="Different Coat",
+        price=Decimal("149.99"),
+        currency="USD",
+        photo_url="https://example.com/photo3.jpg",
+        product_url="https://shop.mango.com/tr/tr/p/kadın/palto/palto/different-coat/9999999/99/00",
+        in_stock=True,
+    )
+
+    result = filter_unseen([p1, p2, p3], fake_repo)
+    assert len(result) == 2
+    assert [p.external_id for p in result] == ["mango-37016751", "mango-9999999"]
+

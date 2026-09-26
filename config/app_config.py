@@ -77,12 +77,26 @@ class OpenAISettings(BaseModel):
     max_retries: int = 2
 
 
+DEFAULT_TELEGRAM_BIO_FOOTER = (
+    "Европейское качество\n"
+    "Обращаться: @nigora_7\n"
+    "Тел:+998998484044\n"
+    "✨Отзывы: @otzivi_fashbou\n"
+    "Товары в наличии: @vnalichiifash\n\n"
+    "Наш Instagram:\n"
+    "https://www.instagram.com/fashionnestboutique?igsh=Z29pN2tscmJhd3Mx\n\n"
+    "Наш основной Telegram-канал:\n"
+    "https://t.me/fashionalleyb"
+)
+
+
 class TelegramSettings(BaseModel):
     """Settings for Telegram Bot publisher."""
     enabled: bool = True
     bot_token: str = Field(default="mock-telegram-token")
     channel_id: str | None = None
     admin_chat_id: str | None = None
+    bio_footer: str = Field(default=DEFAULT_TELEGRAM_BIO_FOOTER)
 
 
 class InstagramSettings(BaseModel):

@@ -111,6 +111,7 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
             bot_token=config.telegram.bot_token,
             channel_id=config.telegram.channel_id,
             repo=repo,
+            bio_footer=getattr(config.telegram, "bio_footer", None),
         )
         publishers.append(telegram_pub)
         logger.info("Telegram publisher is ENABLED.")

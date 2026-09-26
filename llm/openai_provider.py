@@ -39,7 +39,8 @@ class FilePromptLoader:
 
 class _SelectedItemSchema(BaseModel):
     external_id: str = Field(description="The unique external_id of the selected product")
-    description: str = Field(description="Captivating marketing description for Telegram/Instagram")
+    title: str | None = Field(default=None, description="Refined, accurate product title translated into Russian")
+    description: str = Field(description="Captivating marketing description in Russian for Telegram/Instagram")
 
 
 class _SelectionResponseSchema(BaseModel):
@@ -94,10 +95,11 @@ class OpenAIProvider:
         system_instruction = (
             f"{prompt}\n\n"
             f"You may select at most {max_items} products.\n"
+            "Both product name (title) and description MUST be written in Russian.\n"
             "You MUST respond ONLY with a valid JSON object matching this structure:\n"
             "{\n"
             '  "selected_products": [\n'
-            '    {"external_id": "<id>", "description": "<description>"}\n'
+            '    {"external_id": "<id>", "title": "<translated Russian title>", "description": "<description in Russian>"}\n'
             "  ]\n"
             "}"
         )
@@ -141,6 +143,14 @@ class OpenAIProvider:
                     exc,
                 )
 
+        if last_error and any(err_token in str(last_error).lower() for err_token in ("insufficient_quota", "credit_balance_exhausted", "quota")):
+            logger.warning(
+                "OpenAI credit balance is exhausted ($0 balance on platform.openai.com). "
+                "Falling back to template descriptions so publishing to Telegram completes. Error: %s",
+                last_error,
+            )
+            return self._mock_selection(candidates, max_items)
+
         logger.error(
             "OpenAI selection exhausted all %d attempts. Skipping cycle gracefully per FR-2.6. Last error: %s",
             self.max_retries + 1,
@@ -162,6 +172,7 @@ class OpenAIProvider:
                     SelectionResult(
                         external_id=item.external_id,
                         description=item.description.strip(),
+                        title=item.title.strip() if item.title else None,
                     )
                 )
             else:
@@ -174,8 +185,8 @@ class OpenAIProvider:
         selected: list[SelectionResult] = []
         for product in candidates[:max_items]:
             desc = (
-                f"Elevate your wardrobe with this exquisite {product.title} from {product.source.upper()}. "
-                "Tailored to perfection with premium finishes for effortless seasonal elegance."
+                f"Элегантная модель от {product.source.upper()}. "
+                "Безупречный силуэт, премиальные материалы и идеальная посадка для современного гардероба."
             )
-            selected.append(SelectionResult(external_id=product.external_id, description=desc))
+            selected.append(SelectionResult(external_id=product.external_id, description=desc, title=product.title))
         return selected

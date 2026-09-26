@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 from adapters.scrapers.base import (
     dismiss_cookie_banner,
     extract_best_image_url,
+    generate_deterministic_id,
     parse_price,
     scroll_page_down,
 )
@@ -139,20 +140,12 @@ class ZaraScraper:
         product_url = urljoin(base_url, href)
 
         # External ID
-        ext_id = (
+        raw_id = (
             el.get_attribute("data-product-id")
             or el.get_attribute("data-id")
             or ""
         )
-        if not ext_id:
-            # Parse from URL, e.g., "-p01234567.html" or "p12345"
-            match = re.search(r"-p([0-9A-Za-z]+)\.html", product_url) or re.search(r"p(\d{5,})", product_url)
-            if match:
-                ext_id = f"zara-{match.group(1)}"
-            else:
-                ext_id = f"zara-{abs(hash(product_url)) % 10000000}"
-        else:
-            ext_id = f"zara-{ext_id}"
+        ext_id = generate_deterministic_id(self.BRAND_NAME, raw_id=raw_id, url=product_url)
 
         # 2. Product Name / Title
         name_el = el.locator(
@@ -297,8 +290,7 @@ class ZaraScraper:
                     if not image or not isinstance(image, str):
                         continue
 
-                    match = re.search(r"-p([0-9A-Za-z]+)\.html", prod_url) or re.search(r"p(\d{5,})", prod_url)
-                    ext_id = f"zara-{match.group(1)}" if match else f"zara-{abs(hash(prod_url)) % 10000000}"
+                    ext_id = generate_deterministic_id(self.BRAND_NAME, url=prod_url)
 
                     products.append({
                         "id": ext_id,

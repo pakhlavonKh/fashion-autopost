@@ -23,6 +23,14 @@ class ProductRepository(Protocol):
         """Return the set of all external_ids that have already been published."""
         ...
 
+    def get_published_signatures(self) -> set[str]:
+        """Return the set of all duplicate signatures (IDs, canonical URLs, SKUs) for published products."""
+        ...
+
+    def get_unposted_products(self, limit: int = 50) -> list[RawProduct]:
+        """Return candidate products from the database that have not been published yet."""
+        ...
+
     def get_published_count_today(self, timezone_str: str = "UTC") -> int:
         """Count products published today in the specified timezone (for daily cap check)."""
         ...
@@ -31,8 +39,8 @@ class ProductRepository(Protocol):
         """Store newly ingested candidate product with status 'new' if not already present."""
         ...
 
-    def mark_selected(self, external_id: str, description: str, price_final: Decimal) -> None:
-        """Update candidate with GPT description and final price, set status to 'selected'."""
+    def mark_selected(self, external_id: str, description: str, price_final: Decimal, title: str | None = None) -> None:
+        """Update candidate with GPT description, final price, and optional translated title, set status to 'selected'."""
         ...
 
     def mark_published(self, external_id: str, telegram_id: str | None, instagram_id: str | None) -> None:
@@ -114,6 +122,56 @@ class SqlAlchemyProductRepository:
             results = session.scalars(stmt).all()
             return set(results)
 
+    def get_published_signatures(self) -> set[str]:
+        from core.dedup import extract_duplicate_signatures
+        with self._get_session() as session:
+            stmt = select(
+                ProductRecord.external_id,
+                ProductRecord.source,
+                ProductRecord.product_url,
+                ProductRecord.title,
+            ).where(ProductRecord.status == "published")
+            rows = session.execute(stmt).all()
+            signatures: set[str] = set()
+            for ext_id, source, prod_url, title in rows:
+                signatures.update(
+                    extract_duplicate_signatures(
+                        source=source,
+                        external_id=ext_id,
+                        product_url=prod_url,
+                        title=title,
+                    )
+                )
+            return signatures
+
+    def get_unposted_products(self, limit: int = 50) -> list[RawProduct]:
+        with self._get_session() as session:
+            stmt = (
+                select(ProductRecord)
+                .where(
+                    (ProductRecord.status == "new")
+                    & (ProductRecord.telegram_post_id.is_(None))
+                )
+                .order_by(ProductRecord.id.asc())
+                .limit(limit)
+            )
+            records = session.scalars(stmt).all()
+            products: list[RawProduct] = []
+            for r in records:
+                products.append(
+                    RawProduct(
+                        external_id=r.external_id,
+                        source=r.source,
+                        title=r.title,
+                        price=r.price_original,
+                        currency=r.currency_original,
+                        photo_url=r.photo_url,
+                        product_url=r.product_url or "",
+                        in_stock=True,
+                    )
+                )
+            return products
+
     def get_published_count_today(self, timezone_str: str = "UTC") -> int:
         try:
             tz = zoneinfo.ZoneInfo(timezone_str)
@@ -151,16 +209,19 @@ class SqlAlchemyProductRepository:
                 session.add(record)
                 session.commit()
 
-    def mark_selected(self, external_id: str, description: str, price_final: Decimal) -> None:
+    def mark_selected(self, external_id: str, description: str, price_final: Decimal, title: str | None = None) -> None:
         with self._get_session() as session:
+            values: dict[str, Any] = {
+                "description_gpt": description,
+                "price_final": price_final,
+                "status": "selected",
+            }
+            if title:
+                values["title"] = title
             stmt = (
                 update(ProductRecord)
                 .where(ProductRecord.external_id == external_id)
-                .values(
-                    description_gpt=description,
-                    price_final=price_final,
-                    status="selected",
-                )
+                .values(**values)
             )
             session.execute(stmt)
             session.commit()

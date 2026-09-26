@@ -4,7 +4,7 @@ Per SDD §3.5 and SRS FR-4.
 Constructs a platform-agnostic ComposedPost containing photo URL, copy, price, and link.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from adapters.base import RawProduct
@@ -20,6 +20,7 @@ class ComposedPost:
     product_url: str | None
     title: str
     source: str
+    photo_urls: list[str] = field(default_factory=list)
 
 
 def compose_post(
@@ -43,14 +44,18 @@ def compose_post(
         "",
         clean_desc,
         "",
-        f"🏷 Price: {price_str}",
+        f"🏷 Цена: {price_str}",
     ]
 
     link_to_include = product.product_url if (include_link and product.product_url) else None
     if link_to_include:
-        lines.extend(["", f"🔗 Product Link: {link_to_include}"])
+        lines.extend(["", f"🔗 Ссылка на товар: {link_to_include}"])
 
     text = "\n".join(lines)
+
+    photos = list(product.photo_urls) if getattr(product, "photo_urls", None) else []
+    if not photos and product.photo_url:
+        photos = [product.photo_url]
 
     return ComposedPost(
         photo_url=product.photo_url,
@@ -60,4 +65,5 @@ def compose_post(
         product_url=link_to_include,
         title=clean_title,
         source=product.source,
+        photo_urls=photos,
     )

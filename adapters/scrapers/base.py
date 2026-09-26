@@ -148,6 +148,42 @@ def scroll_page_down(page: Any, steps: int = 3, wait_ms: int = 1200) -> None:
             break
 
 
+def generate_deterministic_id(brand: str, raw_id: str | None = None, url: str = "") -> str:
+    """Generate a stable, deterministic external_id for a product across process runs.
+    
+    Never uses Python's randomized hash() function.
+    """
+    import hashlib
+
+    clean_brand = brand.strip().lower()
+    if raw_id:
+        clean_raw = str(raw_id).strip()
+        if clean_raw.lower().startswith(f"{clean_brand}-"):
+            return clean_raw
+        return f"{clean_brand}-{clean_raw}"
+
+    if url:
+        # Pattern 1: Mango style (/37016751/)
+        match = re.search(r"/(\d{7,10})(?:/|$)", url)
+        if match:
+            return f"{clean_brand}-{match.group(1)}"
+        # Pattern 2: Zara style (-p01234567.html or p12345)
+        match = re.search(r"-p([0-9A-Za-z]+)\.html", url) or re.search(r"p(\d{5,})", url)
+        if match:
+            return f"{clean_brand}-{match.group(1)}"
+        # Pattern 3: Any 6+ digits in path
+        match = re.search(r"[-_/](\d{6,})", url)
+        if match:
+            return f"{clean_brand}-{match.group(1)}"
+
+        # Deterministic SHA-256 fallback from canonical URL
+        canon = url.split("?")[0].rstrip("/").lower()
+        sha = hashlib.sha256(canon.encode("utf-8")).hexdigest()[:10]
+        return f"{clean_brand}-{sha}"
+
+    return f"{clean_brand}-item"
+
+
 @runtime_checkable
 class StoreScraper(Protocol):
     """Protocol for store-specific scrapers."""

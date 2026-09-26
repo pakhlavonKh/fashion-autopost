@@ -12,7 +12,7 @@ from typing import Any, Protocol, runtime_checkable
 from adapters.base import RawProduct, SourceAdapter
 from config.app_config import AppConfig
 from core.composer import compose_post
-from core.dedup import filter_unseen
+from core.dedup import extract_duplicate_signatures, filter_unseen
 from core.image_downloader import ImageDownloader
 from core.moderation import ConfigurableModerationGate, ModerationGate
 from core.pricing import FxConverter, calculate_final_price
@@ -99,19 +99,32 @@ class PipelineRunner:
         else:
             max_to_select = self.config.max_products_per_run
 
-        # 3. Ingestion from aggregator source (FR-1.1, FR-1.2)
-        try:
-            raw_products = self.source.fetch_products()
+        # 3. Check for unposted products in database queue first (FR-1.4 / DB queue mode)
+        db_candidates: list[RawProduct] = []
+        if hasattr(self.repo, "get_unposted_products"):
+            try:
+                db_candidates = self.repo.get_unposted_products(limit=50)
+            except Exception as exc:
+                logger.warning("Could not fetch unposted products from repository: %s", exc)
+
+        if db_candidates:
+            logger.info("Found %d unposted products in database queue. Publishing from DB.", len(db_candidates))
+            raw_products = db_candidates
             summary.fetched = len(raw_products)
-        except Exception as exc:
-            err_msg = f"Failed to fetch products from source adapter: {exc}"
-            logger.error(err_msg, exc_info=True)
-            summary.errors.append(err_msg)
-            self._notify_error("ingestion", err_msg)
-            return summary
+        else:
+            logger.info("No unposted products remaining in database. Scraping catalog to replenish queue...")
+            try:
+                raw_products = self.source.fetch_products()
+                summary.fetched = len(raw_products)
+            except Exception as exc:
+                err_msg = f"Failed to fetch products from source adapter: {exc}"
+                logger.error(err_msg, exc_info=True)
+                summary.errors.append(err_msg)
+                self._notify_error("ingestion", err_msg)
+                return summary
 
         if not raw_products:
-            logger.info("No in-stock products returned by source adapter. Cycle complete.")
+            logger.info("No in-stock products returned by source adapter or database queue. Cycle complete.")
             return summary
 
         # 4. Deduplication against repository (FR-1.4, FR-6.2)
@@ -147,8 +160,24 @@ class PipelineRunner:
             return summary
 
         if not selections:
-            logger.info("No products were selected by LLM. Cycle complete.")
-            return summary
+            if unseen_products:
+                logger.info(
+                    "No products chosen by LLM filter; selecting first candidate %s to maintain publishing schedule.",
+                    unseen_products[0].external_id,
+                )
+                from llm.base import SelectionResult
+                first = unseen_products[0]
+                selections = [
+                    SelectionResult(
+                        external_id=first.external_id,
+                        title=first.title,
+                        description="Размеры от XS до XL.\nЦвет: классический.",
+                    )
+                ]
+                summary.selected = 1
+            else:
+                logger.info("No products were selected by LLM and no unseen candidates remain. Cycle complete.")
+                return summary
 
         # 7. Process each selected product with per-product error isolation (SDD §6, NFR-3)
         for selection in selections:
@@ -159,7 +188,12 @@ class PipelineRunner:
                 continue
 
             try:
-                self._process_single_product(product, selection.description, summary)
+                self._process_single_product(
+                    product,
+                    selection.description,
+                    summary,
+                    title_override=selection.title,
+                )
             except Exception as exc:
                 summary.failed += 1
                 err_msg = f"Unhandled error processing product {external_id}: {exc}"
@@ -190,6 +224,7 @@ class PipelineRunner:
         product: RawProduct,
         description: str,
         summary: CycleSummary,
+        title_override: str | None = None,
     ) -> None:
         """Process price calculation, moderation, composition, and publishing for one item."""
         external_id = product.external_id
@@ -204,7 +239,7 @@ class PipelineRunner:
         )
 
         # 7b. Update status to 'selected'
-        self.repo.mark_selected(external_id, description, final_price)
+        self.repo.mark_selected(external_id, description, final_price, title=title_override)
 
         # 7c. Moderation gate check (SRS §10.2)
         if not self.moderation_gate.should_publish(external_id):
@@ -213,26 +248,43 @@ class PipelineRunner:
             logger.info("Product %s held in 'pending_review' per ModerationGate.", external_id)
             return
 
-        # Pre-download photo locally for binary posting & local caching
-        local_path = None
-        try:
-            local_path = self.image_downloader.download(product.photo_url, external_id=external_id)
-        except Exception as exc:
-            logger.warning("Failed to pre-download photo for %s: %s", external_id, exc)
+        # Collect all gallery photos for the product card
+        photo_urls = list(product.photo_urls) if getattr(product, "photo_urls", None) else []
+        if len(photo_urls) <= 1 and product.product_url:
+            from core.gallery import extract_gallery_photos
+            try:
+                gallery = extract_gallery_photos(product.product_url, brand=product.source)
+                if gallery:
+                    photo_urls = gallery
+            except Exception as exc:
+                logger.debug("Failed to extract gallery photos from %s: %s", product.product_url, exc)
 
-        photo_to_use = str(local_path) if (local_path and local_path.is_file()) else product.photo_url
+        if not photo_urls and product.photo_url:
+            photo_urls = [product.photo_url]
+
+        # Download all photos locally for binary posting & multi-photo albums
+        downloaded_paths = []
+        try:
+            downloaded_paths = self.image_downloader.download_all(photo_urls, external_id=external_id)
+        except Exception as exc:
+            logger.warning("Failed to download gallery photos for %s: %s", external_id, exc)
+
+        photo_to_use = str(downloaded_paths[0]) if downloaded_paths else product.photo_url
+        downloaded_strings = [str(p) for p in downloaded_paths] if downloaded_paths else photo_urls
 
         # 7d. Compose platform-agnostic post (FR-4)
+        product_title = title_override.strip() if title_override else product.title
         composed = compose_post(
             product=RawProduct(
                 external_id=product.external_id,
                 source=product.source,
-                title=product.title,
+                title=product_title,
                 price=product.price,
                 currency=product.currency,
                 photo_url=photo_to_use,
                 product_url=product.product_url,
                 in_stock=product.in_stock,
+                photo_urls=downloaded_strings,
             ),
             description=description,
             price=final_price,
@@ -241,7 +293,9 @@ class PipelineRunner:
         )
 
         # Double check idempotency right before publishing (FR-6.2)
-        if external_id in self.repo.get_published_ids():
+        sigs = extract_duplicate_signatures(product.source, external_id, product.product_url, product.title)
+        published_sigs = getattr(self.repo, "get_published_signatures", lambda: set())()
+        if (external_id in self.repo.get_published_ids()) or bool(sigs & published_sigs):
             logger.warning("Product %s was published concurrently! Skipping duplicate.", external_id)
             return
 

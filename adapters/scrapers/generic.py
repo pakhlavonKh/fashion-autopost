@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlparse
 from adapters.scrapers.base import (
     dismiss_cookie_banner,
     extract_best_image_url,
+    generate_deterministic_id,
     parse_price,
     scroll_page_down,
 )
@@ -147,11 +148,8 @@ class GenericFashionScraper:
         # Product URL & ID
         prod_url = str(data.get("url") or offers.get("url") or base_url)
         prod_url = urljoin(base_url, prod_url)
-        ext_id = str(data.get("sku") or data.get("productID") or data.get("id") or "")
-        if not ext_id:
-            ext_id = f"{self.brand_name}-{abs(hash(prod_url)) % 10000000}"
-        else:
-            ext_id = f"{self.brand_name}-{ext_id}"
+        raw_id = str(data.get("sku") or data.get("productID") or data.get("id") or "")
+        ext_id = generate_deterministic_id(self.brand_name, raw_id=raw_id, url=prod_url)
 
         # Availability
         availability = str(offers.get("availability", "")).lower()
@@ -219,7 +217,7 @@ class GenericFashionScraper:
                 if not photo_url:
                     continue
 
-                ext_id = f"{self.brand_name}-{abs(hash(product_url)) % 10000000}"
+                ext_id = generate_deterministic_id(self.brand_name, url=product_url)
                 products.append({
                     "id": ext_id,
                     "brand": self.brand_name,

@@ -21,7 +21,7 @@ BROWSER_HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
     ),
-    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept": "image/webp,image/png,image/jpeg,image/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
     "Sec-Ch-Ua-Mobile": "?0",
@@ -58,22 +58,16 @@ class ImageDownloader:
         if not (stripped.startswith("http://") or stripped.startswith("https://")):
             return None
 
-        # Build local target file path
+        # Build local target file path prefix
         url_hash = hashlib.sha256(stripped.encode("utf-8")).hexdigest()[:12]
         clean_id = sanitize_filename(external_id) if external_id else "item"
-        extension = ".jpg"
-        if ".png" in stripped.lower():
-            extension = ".png"
-        elif ".webp" in stripped.lower():
-            extension = ".webp"
 
-        filename = f"{clean_id}_{url_hash}{extension}"
-        target_path = self.dest_dir / filename
-
-        # Return cached copy if already downloaded
-        if target_path.is_file() and target_path.stat().st_size > 500:
-            logger.debug("Using cached downloaded image: %s", target_path)
-            return target_path
+        # Check if cached with any common extension
+        for ext in (".webp", ".jpg", ".png"):
+            cached_candidate = self.dest_dir / f"{clean_id}_{url_hash}{ext}"
+            if cached_candidate.is_file() and cached_candidate.stat().st_size > 500:
+                logger.debug("Using cached downloaded image: %s", cached_candidate)
+                return cached_candidate
 
         # Download remote image with browser headers
         headers = dict(BROWSER_HEADERS)
@@ -87,9 +81,27 @@ class ImageDownloader:
                     logger.warning("Downloaded image content suspiciously small (%d bytes) for %s", len(content), stripped)
                     return None
 
+                # Determine extension from magic bytes
+                extension = ".jpg"
+                if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+                    extension = ".webp"
+                elif len(content) >= 8 and content[:8] == b"\x89PNG\r\n\x1a\n":
+                    extension = ".png"
+
+                target_path = self.dest_dir / f"{clean_id}_{url_hash}{extension}"
                 target_path.write_bytes(content)
                 logger.info("Successfully downloaded product image to %s (%d bytes)", target_path, len(content))
                 return target_path
         except Exception as exc:
             logger.warning("Failed to download image from %s: %s", stripped, exc)
             return None
+
+    def download_all(self, photo_urls: list[str], external_id: str = "") -> list[Path]:
+        """Download multiple photos for a product card, returning successfully downloaded local paths."""
+        downloaded: list[Path] = []
+        for i, url in enumerate(photo_urls):
+            sub_id = f"{external_id}_{i}" if external_id else f"item_{i}"
+            path = self.download(url, external_id=sub_id)
+            if path and path.is_file():
+                downloaded.append(path)
+        return downloaded

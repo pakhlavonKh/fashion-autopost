@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 from adapters.scrapers.base import (
     dismiss_cookie_banner,
     extract_best_image_url,
+    generate_deterministic_id,
     parse_price,
     scroll_page_down,
 )
@@ -128,20 +129,12 @@ class MangoScraper:
         product_url = urljoin(base_url, href)
 
         # External ID
-        ext_id = (
+        raw_id = (
             el.get_attribute("data-product-id")
             or el.get_attribute("data-id")
             or ""
         )
-        if not ext_id:
-            # Parse from URL or testid, e.g. "_67012345" or "/p/women/67012345"
-            match = re.search(r"[-_](\d{6,})", product_url) or re.search(r"/p/[^/]+/(\d{6,})", product_url)
-            if match:
-                ext_id = f"mango-{match.group(1)}"
-            else:
-                ext_id = f"mango-{abs(hash(product_url)) % 10000000}"
-        else:
-            ext_id = f"mango-{ext_id}"
+        ext_id = generate_deterministic_id(self.BRAND_NAME, raw_id=raw_id, url=product_url)
 
         # 2. Product Name / Title
         title_el = el.locator(

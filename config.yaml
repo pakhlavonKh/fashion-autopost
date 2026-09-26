@@ -8,7 +8,7 @@ aggregator:
 alert:
   channel: console
   telegram_chat_id: null
-daily_publish_cap: null
+daily_publish_cap: 300
 dashboard:
   admin_key: fashion-admin-2026
   admin_password: fashion-admin-2026
@@ -27,19 +27,18 @@ fx:
     TRY: 0.029
     USD: 1.0
 include_product_link: true
-markup: 15.0
-max_products_per_run: 3
+instagram:
+  enabled: false
+markup: 10.0
+max_products_per_run: 1
 moderation:
   auto_approve: true
   enabled: false
 prompt_path: ./prompt.txt
 schedule:
-  interval_minutes: 30
-  posts_per_day: 10
-  times:
-  - "09:30"
-  - "14:00"
-  - "18:30"
+  interval_minutes: 1
+  posts_per_day: 500
+  times: []
   timezone: UTC
 scraper:
   headless: true
@@ -60,6 +59,12 @@ scraper:
   wait_after_scroll_ms: 1500
 target_currency: USD
 telegram:
+  bio_footer: "\u0415\u0432\u0440\u043E\u043F\u0435\u0439\u0441\u043A\u043E\u0435\
+    \ \u043A\u0430\u0447\u0435\u0441\u0442\u0432\u043E\n\u041E\u0431\u0440\u0430\u0449\
+    \u0430\u0442\u044C\u0441\u044F: @nigora_7\n\u0422\u0435\u043B:+998998484044\n\u2728\
+    \u041E\u0442\u0437\u044B\u0432\u044B: @otzivi_fashbou\n\u0422\u043E\u0432\u0430\
+    \u0440\u044B \u0432 \u043D\u0430\u043B\u0438\u0447\u0438\u0438: @vnalichiifash\n\
+    \n\u041D\u0430\u0448 Instagram:\nhttps://www.instagram.com/fashionnestboutique?igsh=Z29pN2tscmJhd3Mx\n\
+    \n\u041D\u0430\u0448 \u043E\u0441\u043D\u043E\u0432\u043D\u043E\u0439 Telegram-\u043A\
+    \u0430\u043D\u0430\u043B:\nhttps://t.me/fashionalleyb\n"
   enabled: true
-instagram:
-  enabled: false

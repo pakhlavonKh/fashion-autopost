@@ -29,6 +29,41 @@ class FakeProductRepository:
             if data.get("status") == "published"
         }
 
+    def get_published_signatures(self) -> set[str]:
+        from core.dedup import extract_duplicate_signatures
+        signatures: set[str] = set()
+        for ext_id, data in self.products.items():
+            if data.get("status") == "published":
+                signatures.update(
+                    extract_duplicate_signatures(
+                        source=data.get("source", ""),
+                        external_id=ext_id,
+                        product_url=data.get("product_url"),
+                        title=data.get("title"),
+                    )
+                )
+        return signatures
+
+    def get_unposted_products(self, limit: int = 50) -> list[RawProduct]:
+        candidates: list[RawProduct] = []
+        for ext_id, data in self.products.items():
+            if data.get("status") == "new" and not data.get("telegram_post_id"):
+                candidates.append(
+                    RawProduct(
+                        external_id=ext_id,
+                        source=data.get("source", "generic"),
+                        title=data.get("title", ""),
+                        price=data.get("price", Decimal("0.00")),
+                        currency=data.get("currency", "USD"),
+                        photo_url=data.get("photo_url", "https://example.com/photo.jpg"),
+                        product_url=data.get("product_url", ""),
+                        in_stock=True,
+                    )
+                )
+                if len(candidates) >= limit:
+                    break
+        return candidates
+
     def get_published_count_today(self, timezone_str: str = "UTC") -> int:
         return len(self.get_published_ids())
 
@@ -40,16 +75,19 @@ class FakeProductRepository:
                 "title": product.title,
                 "price": product.price,
                 "currency": product.currency,
+                "product_url": product.product_url,
                 "status": "new",
                 "description": None,
                 "price_final": None,
             }
 
-    def mark_selected(self, external_id: str, description: str, price_final: Decimal) -> None:
+    def mark_selected(self, external_id: str, description: str, price_final: Decimal, title: str | None = None) -> None:
         if external_id in self.products:
             self.products[external_id]["status"] = "selected"
             self.products[external_id]["description"] = description
             self.products[external_id]["price_final"] = price_final
+            if title:
+                self.products[external_id]["title"] = title
 
     def mark_published(self, external_id: str, telegram_id: str | None, instagram_id: str | None) -> None:
         if external_id in self.products:

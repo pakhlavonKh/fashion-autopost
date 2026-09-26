@@ -14,6 +14,7 @@ class SelectionResult:
     """Product selected by LLM along with generated marketing description."""
     external_id: str
     description: str
+    title: str | None = None
 
 
 @runtime_checkable

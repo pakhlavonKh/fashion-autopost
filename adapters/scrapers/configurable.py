@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 from adapters.scrapers.base import (
     dismiss_cookie_banner,
     extract_best_image_url,
+    generate_deterministic_id,
     parse_price,
     scroll_page_down,
 )
@@ -211,19 +212,17 @@ class ConfigurableStoreScraper:
                     continue
 
                 # ID
-                ext_id = ""
+                raw_id = ""
                 if selectors.id_attr:
-                    ext_id = el.get_attribute(selectors.id_attr) or ""
-                    if not ext_id:
+                    raw_id = el.get_attribute(selectors.id_attr) or ""
+                    if not raw_id:
                         id_el = el.locator(f"[{selectors.id_attr}]").first
                         if id_el.count() > 0:
-                            ext_id = id_el.get_attribute(selectors.id_attr) or ""
-                if not ext_id:
-                    ext_id = el.get_attribute("data-product-id") or el.get_attribute("data-sku") or el.get_attribute("data-id") or ""
-                if not ext_id:
-                    ext_id = f"{abs(hash(product_url)) % 10000000}"
+                            raw_id = id_el.get_attribute(selectors.id_attr) or ""
+                if not raw_id:
+                    raw_id = el.get_attribute("data-product-id") or el.get_attribute("data-sku") or el.get_attribute("data-id") or ""
 
-                ext_id = f"{self.brand_name}-{ext_id}"
+                ext_id = generate_deterministic_id(self.brand_name, raw_id=raw_id, url=product_url)
 
                 # Stock
                 card_text_lower = el.inner_text().lower()
@@ -343,11 +342,8 @@ class ConfigurableStoreScraper:
 
         prod_url = str(data.get("url") or offers.get("url") or base_url)
         prod_url = urljoin(base_url, prod_url)
-        ext_id = str(data.get("sku") or data.get("productID") or data.get("id") or "")
-        if not ext_id:
-            ext_id = f"{self.brand_name}-{abs(hash(prod_url)) % 10000000}"
-        else:
-            ext_id = f"{self.brand_name}-{ext_id}"
+        raw_id = str(data.get("sku") or data.get("productID") or data.get("id") or "")
+        ext_id = generate_deterministic_id(self.brand_name, raw_id=raw_id, url=prod_url)
 
         availability = str(offers.get("availability", "")).lower()
         in_stock = "outofstock" not in availability
@@ -436,7 +432,7 @@ class ConfigurableStoreScraper:
                 if not photo_url:
                     continue
 
-                ext_id = f"{self.brand_name}-{abs(hash(product_url)) % 10000000}"
+                ext_id = generate_deterministic_id(self.brand_name, url=product_url)
                 products.append({
                     "id": ext_id,
                     "brand": self.brand_name,

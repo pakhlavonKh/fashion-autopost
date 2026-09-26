@@ -3,7 +3,7 @@
 Per SDD §3.1 and SRS FR-1.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
@@ -19,6 +19,7 @@ class RawProduct:
     photo_url: str          # may need re-hosting later for Instagram if not public HTTPS
     product_url: str
     in_stock: bool
+    photo_urls: list[str] = field(default_factory=list)
 
 
 @runtime_checkable

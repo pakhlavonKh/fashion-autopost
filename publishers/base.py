@@ -4,10 +4,12 @@ Per SDD §3.6 and SRS FR-5.
 Decouples core business logic from specific social media network APIs.
 """
 
+from __future__ import annotations
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from core.composer import ComposedPost
+if TYPE_CHECKING:
+    from core.composer import ComposedPost
 
 
 @dataclass(frozen=True)
