@@ -16,6 +16,8 @@ config/app_config.py
 core/__init__.py
 core/composer.py
 core/dedup.py
+core/gallery.py
+core/image_downloader.py
 core/moderation.py
 core/pipeline.py
 core/pricing.py

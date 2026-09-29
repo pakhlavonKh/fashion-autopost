@@ -11,8 +11,9 @@ from typing import Any
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
 
 from adapters.base import RawProduct, SourceAdapter
+from adapters.europe_markets import is_european_store_url, next_region_index
 from adapters.scrapers import get_scraper_for_store
-from config.app_config import ScraperSettings, ScraperStoreConfig
+from config.app_config import EuropeanMarketConfig, ScraperSettings, ScraperStoreConfig
 import os
 import sys
 
@@ -56,10 +57,11 @@ class PlaywrightScraperAdapter:
         does not prevent scraping remaining stores.
         """
         active_config = self.current_config
+        resolved_stores = self._resolve_store_targets(active_config)
         stores_to_scrape = (
             self._selected_stores
             if self._selected_stores is not None
-            else list(active_config.stores.keys())
+            else list(resolved_stores.keys())
         )
 
         all_raw_items: list[dict[str, Any]] = []
@@ -104,7 +106,7 @@ class PlaywrightScraperAdapter:
                     )
 
                     for store_name in stores_to_scrape:
-                        store_cfg = active_config.stores.get(store_name)
+                        store_cfg = resolved_stores.get(store_name)
                         if not store_cfg:
                             logger.warning(
                                 "No scraper configuration found for store '%s', using default URL",
@@ -119,6 +121,14 @@ class PlaywrightScraperAdapter:
 
                         if not store_cfg.enabled:
                             logger.info("Store '%s' is disabled in scraper configuration, skipping", store_name)
+                            continue
+
+                        if not is_european_store_url(store_cfg.url):
+                            logger.info(
+                                "Skipping store '%s': %s is outside Europe",
+                                store_name,
+                                store_cfg.url,
+                            )
                             continue
 
                         try:
@@ -153,6 +163,54 @@ class PlaywrightScraperAdapter:
             len(all_raw_items),
         )
         return normalized
+
+    def _resolve_store_targets(self, active_config: ScraperSettings) -> dict[str, ScraperStoreConfig]:
+        """Point Zara and Mango at one European country for this scrape.
+
+        Countries rotate across scrapes. A storefront outside Europe is dropped.
+        """
+        stores = {
+            name: cfg.model_copy(deep=True)
+            for name, cfg in active_config.stores.items()
+        }
+        regions = [region for region in active_config.regions if self._region_is_european(region)]
+        if regions:
+            region = regions[next_region_index(len(regions))]
+            logger.info(
+                "PlaywrightScraperAdapter: European market this scrape is %s (%s)",
+                region.code,
+                region.currency,
+            )
+            for brand, url in region.urls.items():
+                if not is_european_store_url(url):
+                    logger.info("Skipping non-European URL for %s: %s", brand, url)
+                    continue
+                current = stores.get(brand)
+                if current is not None and not current.enabled:
+                    continue
+                if current is None:
+                    stores[brand] = ScraperStoreConfig(
+                        enabled=True,
+                        url=url,
+                        currency=region.currency,
+                        max_items=60,
+                    )
+                else:
+                    stores[brand] = current.model_copy(update={"url": url, "currency": region.currency})
+
+        allowed: dict[str, ScraperStoreConfig] = {}
+        for name, cfg in stores.items():
+            if is_european_store_url(cfg.url):
+                allowed[name] = cfg
+            else:
+                logger.info("Dropping store '%s': %s is outside Europe", name, cfg.url)
+        return allowed
+
+    @staticmethod
+    def _region_is_european(region: EuropeanMarketConfig) -> bool:
+        if not region.urls:
+            return False
+        return all(is_european_store_url(url) for url in region.urls.values())
 
     def _scrape_single_store(
         self,

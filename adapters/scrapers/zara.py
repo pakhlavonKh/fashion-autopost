@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import urljoin
 
+from adapters.europe_markets import is_european_store_url, same_market
 from adapters.scrapers.base import (
     dismiss_cookie_banner,
     extract_best_image_url,
@@ -83,13 +84,24 @@ class ZaraScraper:
 
         # 3. Discover and crawl subcategories across the website if more items are needed
         if len(products_by_id) < max_items:
-            cat_loc = page.locator("a.layout-categories-category-wrapper, a[href*='kadin-'][href*='-l']")
+            cat_loc = page.locator(
+                "a.layout-categories-category-wrapper, "
+                "a[href*='mujer-'][href*='-l'], a[href*='femme-'][href*='-l'], "
+                "a[href*='damen-'][href*='-l'], a[href*='donna-'][href*='-l'], "
+                "a[href*='woman-'][href*='-l']"
+            )
             cat_urls = []
             try:
                 for i in range(min(cat_loc.count(), 25)):
                     href = cat_loc.nth(i).get_attribute("href")
-                    if href and "-l" in href and href not in cat_urls and href != url:
-                        cat_urls.append(urljoin(url, href))
+                    if not href or "-l" not in href:
+                        continue
+                    full = urljoin(url, href)
+                    if full == url or full in cat_urls:
+                        continue
+                    if not same_market(url, full) or not is_european_store_url(full):
+                        continue
+                    cat_urls.append(full)
             except Exception as e:
                 logger.debug("ZaraScraper: category discovery error: %s", e)
 

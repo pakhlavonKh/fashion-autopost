@@ -44,6 +44,58 @@ class ScraperStoreConfig(BaseModel):
     scroll_steps: int | None = None
 
 
+class EuropeanMarketConfig(BaseModel):
+    """One European Zara + Mango storefront visited on a single scrape."""
+    code: str
+    currency: str = "EUR"
+    urls: dict[str, str]
+
+
+def _default_european_markets() -> list[EuropeanMarketConfig]:
+    return [
+        EuropeanMarketConfig(
+            code="es",
+            currency="EUR",
+            urls={
+                "zara": "https://www.zara.com/es/es/mujer-nuevo-l1180.html",
+                "mango": "https://shop.mango.com/es/es/c/mujer/new-now/56b5c5ed",
+            },
+        ),
+        EuropeanMarketConfig(
+            code="fr",
+            currency="EUR",
+            urls={
+                "zara": "https://www.zara.com/fr/fr/femme-nouveau-l1180.html",
+                "mango": "https://shop.mango.com/fr/fr/c/femme/new-now/56b5c5ed",
+            },
+        ),
+        EuropeanMarketConfig(
+            code="de",
+            currency="EUR",
+            urls={
+                "zara": "https://www.zara.com/de/de/damen-neuware-l1180.html",
+                "mango": "https://shop.mango.com/de/de/c/damen/new-now/56b5c5ed",
+            },
+        ),
+        EuropeanMarketConfig(
+            code="it",
+            currency="EUR",
+            urls={
+                "zara": "https://www.zara.com/it/it/donna-nuovi-arrivi-l1180.html",
+                "mango": "https://shop.mango.com/it/it/c/donna/new-now/56b5c5ed",
+            },
+        ),
+        EuropeanMarketConfig(
+            code="gb",
+            currency="GBP",
+            urls={
+                "zara": "https://www.zara.com/uk/en/woman-new-in-l1180.html",
+                "mango": "https://shop.mango.com/gb/en/c/women/new-now/56b5c5ed",
+            },
+        ),
+    ]
+
+
 class ScraperSettings(BaseModel):
     """Settings for Playwright-based web scraper."""
     headless: bool = True
@@ -51,17 +103,18 @@ class ScraperSettings(BaseModel):
     scroll_steps: int = 3
     wait_after_scroll_ms: int = 1500
     user_agent: str | None = None
+    regions: list[EuropeanMarketConfig] = Field(default_factory=_default_european_markets)
     stores: dict[str, ScraperStoreConfig] = Field(
         default_factory=lambda: {
             "zara": ScraperStoreConfig(
                 enabled=True,
-                url="https://www.zara.com/tr/tr/kadin-yeni-l1180.html",
-                currency="TRY",
+                url="https://www.zara.com/es/es/mujer-nuevo-l1180.html",
+                currency="EUR",
                 max_items=10,
             ),
             "mango": ScraperStoreConfig(
                 enabled=True,
-                url="https://shop.mango.com/es/en/c/women/new-now",
+                url="https://shop.mango.com/es/es/c/mujer/new-now/56b5c5ed",
                 currency="EUR",
                 max_items=10,
             ),
@@ -99,11 +152,24 @@ class TelegramSettings(BaseModel):
     bio_footer: str = Field(default=DEFAULT_TELEGRAM_BIO_FOOTER)
 
 
+DEFAULT_INSTAGRAM_CAPTION_FOOTER = (
+    "Европейское качество\n"
+    "Обращаться: @nigora_7\n"
+    "Тел:+998998484044\n"
+    "✨Отзывы: @otzivi_fashbou\n"
+    "Товары в наличии: @vnalichiifash\n\n"
+    "Наш Telegram-канал:\n"
+    "https://t.me/fashionalleyb"
+)
+
+
 class InstagramSettings(BaseModel):
     """Settings for Instagram Graph API publisher."""
     enabled: bool = True
     access_token: str = Field(default="mock-instagram-token")
     account_id: str = Field(default="mock-account-id")
+    username: str | None = None
+    caption_footer: str = Field(default=DEFAULT_INSTAGRAM_CAPTION_FOOTER)
 
 
 class S3Settings(BaseModel):
@@ -264,6 +330,8 @@ class AppConfig(BaseModel):
             instagram_data["access_token"] = os.environ["INSTAGRAM_ACCESS_TOKEN"]
         if os.getenv("INSTAGRAM_ACCOUNT_ID"):
             instagram_data["account_id"] = os.environ["INSTAGRAM_ACCOUNT_ID"]
+        if os.getenv("INSTAGRAM_USERNAME"):
+            instagram_data["username"] = os.environ["INSTAGRAM_USERNAME"].strip().lstrip("@")
         yaml_data["instagram"] = instagram_data
 
         s3_data = yaml_data.get("s3", {})

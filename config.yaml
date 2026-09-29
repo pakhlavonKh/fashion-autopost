@@ -29,6 +29,10 @@ fx:
 include_product_link: true
 instagram:
   enabled: false
+  username: mukhsinius
+  caption_footer: "Европейское качество\nОбращаться: @nigora_7\nТел:+998998484044\n\
+    \u2728Отзывы: @otzivi_fashbou\nТовары в наличии: @vnalichiifash\n\nНаш Telegram-канал:\n\
+    https://t.me/fashionalleyb\n"
 markup: 10.0
 max_products_per_run: 1
 moderation:
@@ -43,17 +47,43 @@ schedule:
 scraper:
   headless: true
   scroll_steps: 6
+  regions:
+  - code: es
+    currency: EUR
+    urls:
+      mango: https://shop.mango.com/es/es/c/mujer/new-now/56b5c5ed
+      zara: https://www.zara.com/es/es/mujer-nuevo-l1180.html
+  - code: fr
+    currency: EUR
+    urls:
+      mango: https://shop.mango.com/fr/fr/c/femme/new-now/56b5c5ed
+      zara: https://www.zara.com/fr/fr/femme-nouveau-l1180.html
+  - code: de
+    currency: EUR
+    urls:
+      mango: https://shop.mango.com/de/de/c/damen/new-now/56b5c5ed
+      zara: https://www.zara.com/de/de/damen-neuware-l1180.html
+  - code: it
+    currency: EUR
+    urls:
+      mango: https://shop.mango.com/it/it/c/donna/new-now/56b5c5ed
+      zara: https://www.zara.com/it/it/donna-nuovi-arrivi-l1180.html
+  - code: gb
+    currency: GBP
+    urls:
+      mango: https://shop.mango.com/gb/en/c/women/new-now/56b5c5ed
+      zara: https://www.zara.com/uk/en/woman-new-in-l1180.html
   stores:
     mango:
-      currency: TRY
+      currency: EUR
       enabled: true
       max_items: 60
-      url: https://shop.mango.com/tr/tr/c/kadin/new-now/56b5c5ed
+      url: https://shop.mango.com/es/es/c/mujer/new-now/56b5c5ed
     zara:
-      currency: TRY
+      currency: EUR
       enabled: true
       max_items: 60
-      url: https://www.zara.com/tr/tr/kadin-yeni-l1180.html
+      url: https://www.zara.com/es/es/mujer-nuevo-l1180.html
   timeout_seconds: 30.0
   user_agent: null
   wait_after_scroll_ms: 1500

@@ -3,8 +3,9 @@
 import logging
 import re
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
+from adapters.europe_markets import is_european_store_url, market_code_from_url
 from adapters.scrapers.base import (
     dismiss_cookie_banner,
     extract_best_image_url,
@@ -44,21 +45,34 @@ class MangoScraper:
                 page.title(),
             )
 
-        # If blocked by regional WAF (e.g. cross-border 403 on shop.mango.com/es/en), fallback to local regional store
+        # Stay on the same European storefront. The geo homepage can land outside Europe.
         if (resp and resp.status in (403, 401, 429)) or "forbidden" in (page.title() or "").lower():
-            logger.info("MangoScraper: attempting regional catalog discovery from home domain")
-            try:
-                page.goto("https://www.mango.com", wait_until="domcontentloaded", timeout=15000)
-                page.wait_for_timeout(2000)
-                cat_link = page.locator("a[href*='new-now'], a[href*='yeni'], a[href*='novedades'], a[href*='kadin/new']").first
-                if cat_link.count() > 0:
-                    new_url = cat_link.get_attribute("href") or ""
-                    if new_url:
-                        new_url = urljoin(page.url, new_url)
-                        logger.info("MangoScraper: navigating to regional category: %s", new_url)
-                        page.goto(new_url, wait_until="domcontentloaded", timeout=20000)
-            except Exception as exc:
-                logger.debug("Mango regional fallback failed: %s", exc)
+            market = market_code_from_url(url)
+            if not market or not is_european_store_url(url):
+                logger.info("MangoScraper: blocked outside a European storefront, not following geo redirect")
+            else:
+                logger.info("MangoScraper: attempting catalog discovery inside %s", market)
+                try:
+                    parts = [part for part in urlparse(url).path.split("/") if part]
+                    lang = parts[1] if len(parts) > 1 else market
+                    page.goto(
+                        f"https://shop.mango.com/{market}/{lang}",
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                    page.wait_for_timeout(2000)
+                    cat_link = page.locator(
+                        "a[href*='new-now'], a[href*='novedades'], a[href*='nouveaut'], a[href*='neuheiten']"
+                    ).first
+                    if cat_link.count() > 0:
+                        new_url = cat_link.get_attribute("href") or ""
+                        if new_url:
+                            new_url = urljoin(page.url, new_url)
+                            if is_european_store_url(new_url) and market_code_from_url(new_url) in (None, market):
+                                logger.info("MangoScraper: navigating to regional category: %s", new_url)
+                                page.goto(new_url, wait_until="domcontentloaded", timeout=20000)
+                except Exception as exc:
+                    logger.debug("Mango regional fallback failed: %s", exc)
 
         # Allow initial render & dismiss cookie banner
         dismiss_cookie_banner(page)

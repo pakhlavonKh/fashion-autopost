@@ -30,12 +30,22 @@ class DryRunPublisher:
         fake_id = f"DRYRUN_{self.platform_name.upper()}_{uuid.uuid4().hex[:8]}"
         timestamp = datetime.now(timezone.utc).isoformat()
 
+        caption = post.text
+        formatter = getattr(self.inner_publisher, "format_caption", None)
+        if callable(formatter):
+            try:
+                caption = formatter(post)
+            except Exception as exc:
+                logger.warning("Could not format %s caption for dry-run: %s", self.platform_name, exc)
+
+        photo_count = len(post.photo_urls) if post.photo_urls else (1 if post.photo_url else 0)
         logger.info(
             "\n"
             "===================== [DRY-RUN SIMULATION: %s] =====================\n"
             "Time:       %s\n"
             "Platform:   %s\n"
             "Post ID:    %s\n"
+            "Photos:     %d\n"
             "Photo URL:  %s\n"
             "Price:      %s %.2f\n"
             "Link:       %s\n"
@@ -46,11 +56,12 @@ class DryRunPublisher:
             timestamp,
             self.platform_name,
             fake_id,
+            photo_count,
             post.photo_url,
             post.currency,
             post.price,
             post.product_url or "None",
-            post.text,
+            caption,
         )
 
         return PublishResult(success=True, platform_post_id=fake_id)

@@ -31,7 +31,7 @@ from logging_setup.admin_notifier import (
 from logging_setup.logger import setup_logging
 from publishers.base import Publisher
 from publishers.dry_run_publisher import DryRunPublisher
-from publishers.image_hosting import PassthroughImageHost, S3ImageHost
+from publishers.image_hosting import LitterboxImageHost, S3ImageHost
 from publishers.instagram_publisher import InstagramPublisher
 from publishers.telegram_discovery import TelegramChatDiscoveryService
 from publishers.telegram_publisher import TelegramPublisher
@@ -101,7 +101,7 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
             public_url_prefix=config.s3.public_url_prefix,
         )
         if config.s3.bucket_name
-        else PassthroughImageHost()
+        else LitterboxImageHost()
     )
 
     # 6. Real Publishers (with dynamic Telegram channel resolution)
@@ -123,9 +123,14 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
             access_token=config.instagram.access_token,
             account_id=config.instagram.account_id,
             image_host=image_host,
+            caption_footer=config.instagram.caption_footer,
+            username=config.instagram.username,
         )
         publishers.append(instagram_pub)
-        logger.info("Instagram publisher is ENABLED.")
+        logger.info(
+            "Instagram publisher is ENABLED for @%s.",
+            config.instagram.username or config.instagram.account_id,
+        )
     else:
         logger.info("Instagram publisher is DISABLED in configuration.")
 

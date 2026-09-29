@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 import uuid
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,41 @@ class ImageHostingService(Protocol):
     def ensure_public_url(self, photo_url_or_path: str) -> str:
         """Return a verified public HTTPS URL for the image."""
         ...
+
+
+class LitterboxImageHost:
+    """Uploads a local JPEG to litterbox.catbox.moe so Instagram can fetch it.
+
+    Meta's content publishing API downloads images from a public HTTPS URL.
+    Local files and store CDNs that block datacenter IPs are rejected.
+    The upload expires after 24 hours, which is enough for Instagram to fetch it.
+    """
+
+    UPLOAD_URL = "https://litterbox.catbox.moe/resources/internals/api.php"
+
+    def __init__(self, timeout_seconds: float = 60.0) -> None:
+        self.timeout_seconds = timeout_seconds
+
+    def ensure_public_url(self, photo_url_or_path: str) -> str:
+        local_path = Path(photo_url_or_path)
+        if not local_path.is_file():
+            url = photo_url_or_path.strip()
+            if url.startswith("https://"):
+                return url
+            raise ValueError(f"Instagram image is not a local file or public HTTPS URL: {url}")
+
+        with local_path.open("rb") as handle:
+            files = {"fileToUpload": (local_path.name, handle, "image/jpeg")}
+            data = {"reqtype": "fileupload", "time": "24h"}
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                resp = client.post(self.UPLOAD_URL, data=data, files=files)
+                resp.raise_for_status()
+
+        public_url = resp.text.strip()
+        if not public_url.startswith("https://"):
+            raise RuntimeError(f"Image host did not return a public URL: {public_url[:180]}")
+        logger.info("Uploaded Instagram image to %s", public_url)
+        return public_url
 
 
 class PassthroughImageHost:
