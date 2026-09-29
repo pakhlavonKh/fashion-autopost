@@ -158,10 +158,17 @@ class _Runner:
         self.urls: list[str] = []
         self.ok = ok
 
-    def publish_manual_url(self, url: str) -> tuple[bool, str]:
+    def publish_manual_url(self, url: str, on_platform=None) -> tuple[bool, str]:
         self.urls.append(url)
         if not self.ok:
+            if on_platform is not None:
+                on_platform("telegram", False, "канал недоступен")
+                return False, ""
             return False, "Не удалось опубликовать: канал недоступен"
+        if on_platform is not None:
+            on_platform("telegram", True, "")
+            on_platform("instagram", True, "")
+            return True, ""
         return True, "Пост опубликован: Wool coat\nЦена: 55.00 USD"
 
 
@@ -214,8 +221,8 @@ def test_admin_link_then_time_publishes_with_pipeline(tmp_path: Path) -> None:
     assert "не понял время" in sent[-1][1].lower()
 
     bot.handle_update(_message(ADMIN_ID, "18:30", update_id=3))
-    assert "поставил пост" in sent[-1][1].lower()
-    assert "Asia/Tashkent" in sent[-1][1]
+    assert sent[-1][1].startswith("Поставил пост на ")
+    assert "наценка" not in sent[-1][1].lower()
     assert len(scheduler.jobs) == 1
     draft = bot.repo.get_manual_post(scheduler.jobs[0]["args"][0])
     assert draft is not None
@@ -225,10 +232,32 @@ def test_admin_link_then_time_publishes_with_pipeline(tmp_path: Path) -> None:
     job = scheduler.jobs[0]
     job["func"](*job["args"])
     assert runner.urls == [link]
-    assert "пост опубликован" in sent[-1][1].lower()
+    assert "опубликован в тг" in sent[-2][1].lower()
+    assert "опубликован в инсте" in sent[-1][1].lower()
     finished = bot.repo.get_manual_post(draft.id)
     assert finished is not None
     assert finished.status == "published"
+
+
+def test_immediate_publish_uses_a_short_confirmation(tmp_path: Path) -> None:
+    bot, sent, scheduler, _runner = _bot(tmp_path)
+    link = "https://www.zara.com/es/es/wool-coat-p12345678.html"
+    bot.handle_update(_message(ADMIN_ID, link, update_id=1))
+    bot.handle_update(_message(ADMIN_ID, "сейчас", update_id=2))
+    assert sent[-1][1] == "Публикую сейчас"
+    assert len(scheduler.jobs) == 1
+
+
+def test_platform_failure_is_reported_on_its_own(tmp_path: Path) -> None:
+    bot, sent, scheduler, _runner = _bot(tmp_path, runner=_Runner(ok=False))
+    link = "https://www.zara.com/es/es/wool-coat-p12345678.html"
+    bot.handle_update(_message(ADMIN_ID, link, update_id=1))
+    bot.handle_update(_message(ADMIN_ID, "сейчас", update_id=2))
+    scheduler.jobs[0]["func"](*scheduler.jobs[0]["args"])
+    assert sent[-1][1] == "Не удалось опубликовать в ТГ: канал недоступен"
+    finished = bot.repo.get_manual_post(scheduler.jobs[0]["args"][0])
+    assert finished is not None
+    assert finished.status == "failed"
 
 
 def test_duplicate_scheduled_link_is_not_queued_twice(tmp_path: Path) -> None:

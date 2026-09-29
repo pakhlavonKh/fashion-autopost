@@ -180,16 +180,8 @@ class AdminIntakeBot:
         self._arm_job(scheduled.id, run_at)
 
         if parsed.note == "сейчас":
-            return (
-                "Публикую сейчас. Пост соберётся так же, как остальные: "
-                "описание, наценка и те же каналы. Напишу, когда выйдет."
-            )
-        extra = f"\n{parsed.note}" if parsed.note else ""
-        return (
-            f"Поставил пост на {self._format_local(parsed.when)} ({self.timezone_name})."
-            f"{extra}\n"
-            "Настройки те же, что у остальных постов: описание, наценка, Telegram и Instagram."
-        )
+            return "Публикую сейчас"
+        return f"Поставил пост на {self._format_local(parsed.when)}"
 
     def _arm_job(self, post_id: int, run_at: datetime) -> None:
         from apscheduler.triggers.date import DateTrigger
@@ -217,12 +209,19 @@ class AdminIntakeBot:
             product_url = post.product_url
             chat_id = post.chat_id
         try:
-            ok, message = self.runner.publish_manual_url(product_url)
+            ok, message = self.runner.publish_manual_url(
+                product_url,
+                on_platform=lambda platform, success, detail: self._send(
+                    chat_id,
+                    _platform_notice(platform, success, detail),
+                ),
+            )
         except Exception as exc:
             logger.error("Scheduled manual post %s failed: %s", post_id, exc, exc_info=True)
             ok, message = False, f"Не удалось опубликовать: {exc}"
         self.repo.set_manual_post_status(post_id, "published" if ok else "failed", None if ok else message)
-        self._send(chat_id, message)
+        if message:
+            self._send(chat_id, message)
 
     def _format_local(self, when: datetime) -> str:
         try:
@@ -301,6 +300,14 @@ class AdminIntakeBot:
                     logger.warning("Telegram sendMessage failed (%s): %s", response.status_code, response.text)
         except Exception as exc:
             logger.warning("Telegram sendMessage failed: %s", exc)
+
+
+def _platform_notice(platform: str, success: bool, detail: str) -> str:
+    label = "ТГ" if platform == "telegram" else "Инсте"
+    if success:
+        return f"Опубликован в {label}"
+    reason = (detail or "неизвестная ошибка").strip()
+    return f"Не удалось опубликовать в {label}: {reason}"
 
 
 def extract_product_url(text: str) -> str | None:

@@ -8,7 +8,7 @@ and comprehensive audit logging.
 from dataclasses import dataclass, field
 import logging
 import threading
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from adapters.base import RawProduct, SourceAdapter
 from adapters.product_page import ProductPageError, fetch_product_page
@@ -80,12 +80,20 @@ class PipelineRunner:
         with self._cycle_lock:
             return self._run_cycle_locked()
 
-    def publish_manual_url(self, product_url: str) -> tuple[bool, str]:
+    def publish_manual_url(
+        self,
+        product_url: str,
+        on_platform: Callable[[str, bool, str], None] | None = None,
+    ) -> tuple[bool, str]:
         """Publish one admin-submitted product with the same pricing, copy, and channels as scheduled posts."""
         with self._cycle_lock:
-            return self._publish_manual_url_locked(product_url)
+            return self._publish_manual_url_locked(product_url, on_platform)
 
-    def _publish_manual_url_locked(self, product_url: str) -> tuple[bool, str]:
+    def _publish_manual_url_locked(
+        self,
+        product_url: str,
+        on_platform: Callable[[str, bool, str], None] | None = None,
+    ) -> tuple[bool, str]:
         try:
             self.config.reload_hot_fields()
         except Exception as exc:
@@ -144,6 +152,7 @@ class PipelineRunner:
                 selection.description,
                 summary,
                 title_override=selection.title,
+                on_platform=on_platform,
             )
         except Exception as exc:
             err_msg = f"Не удалось опубликовать: {exc}"
@@ -155,6 +164,8 @@ class PipelineRunner:
             return False, err_msg
 
         if summary.published:
+            if on_platform is not None:
+                return True, ""
             record = None
             try:
                 record = self.repo.get_by_external_id(product.external_id)
@@ -168,6 +179,8 @@ class PipelineRunner:
             return True, f"Пост опубликован: {title}{price_line}"
         if summary.pending_review:
             return True, "Пост подготовлен и ожидает модерации."
+        if on_platform is not None and summary.errors:
+            return False, ""
         err = "; ".join(summary.errors) or "публикация не выполнена"
         return False, f"Не удалось опубликовать: {err}"
 
@@ -376,6 +389,7 @@ class PipelineRunner:
         description: str,
         summary: CycleSummary,
         title_override: str | None = None,
+        on_platform: Callable[[str, bool, str], None] | None = None,
     ) -> None:
         """Process price calculation, moderation, composition, and publishing for one item."""
         external_id = product.external_id
@@ -514,12 +528,16 @@ class PipelineRunner:
                     self.repo.update_platform_post_id(external_id, pub_name, res.platform_post_id)
                 except Exception as exc:
                     logger.warning("Could not save platform post ID for %s (%s): %s", external_id, pub_name, exc)
+                if on_platform is not None and pub_name in {"telegram", "instagram"}:
+                    on_platform(pub_name, True, "")
             else:
                 all_succeeded = False
                 err_msg = f"{pub_name} publish failed for {external_id}: {res.error}"
                 logger.error(err_msg)
                 publish_errors.append(err_msg)
                 self._notify_error(f"publish_{pub_name}", err_msg, external_id)
+                if on_platform is not None and pub_name in {"telegram", "instagram"}:
+                    on_platform(pub_name, False, str(res.error or "неизвестная ошибка"))
 
         # 7f. Persist publication status in repository (FR-6.1)
         if all_succeeded:
