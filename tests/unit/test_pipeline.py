@@ -258,7 +258,7 @@ def test_pipeline_runner_channel_disabled(sample_products: list[RawProduct]) -> 
 
 
 def test_pipeline_drops_products_above_80_usd_before_markup() -> None:
-    """80 USD store price is kept. 80.01 USD is not ingested. Markup is not part of the check."""
+    """80 USD store price is kept. 81 USD is not ingested. Cents are floored, markup is not part of the check."""
     at_limit = RawProduct(
         external_id="at-limit",
         source="zara",
@@ -284,7 +284,7 @@ def test_pipeline_drops_products_above_80_usd_before_markup() -> None:
         external_id="over",
         source="mango",
         title="Wool Coat",
-        price=Decimal("80.01"),
+        price=Decimal("81.00"),
         currency="USD",
         photo_url="https://images.example.com/coat.jpg",
         product_url="https://mango.com/coat",

@@ -4,7 +4,7 @@ Per SDD §3.4 and SRS FR-3 & §10.3 (Open Question 3: Currency conversion logic)
 Computes: price_final = convert(original_price, currency -> target_currency) + markup.
 """
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 import logging
 from typing import Protocol, runtime_checkable
 
@@ -112,8 +112,11 @@ def calculate_final_price(
 
 
 def source_price_usd(original_price: Decimal, currency: str, fx: FxConverter) -> Decimal:
-    """Convert the store price into USD before any markup is added."""
+    """Convert the store price into whole USD before any markup is added.
+
+    Cents are rounded down: 59.60 USD becomes 59.
+    """
     if original_price < Decimal("0"):
         raise ValueError(f"original_price cannot be negative: {original_price}")
     converted = fx.convert(original_price, currency, "USD")
-    return converted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return converted.to_integral_value(rounding=ROUND_DOWN)

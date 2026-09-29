@@ -104,7 +104,11 @@ def test_source_price_usd_excludes_markup() -> None:
             "USD": Decimal("1.00"),
         }
     )
-    assert source_price_usd(Decimal("80.00"), "USD", fx) == Decimal("80.00")
-    assert source_price_usd(Decimal("74.07"), "EUR", fx) == Decimal("80.00")
-    assert source_price_usd(Decimal("62.01"), "GBP", fx) == Decimal("79.99")
-    assert source_price_usd(Decimal("74.08"), "EUR", fx) == Decimal("80.01")
+    assert source_price_usd(Decimal("59.60"), "USD", fx) == Decimal("59")
+    assert source_price_usd(Decimal("80.00"), "USD", fx) == Decimal("80")
+    assert source_price_usd(Decimal("80.99"), "USD", fx) == Decimal("80")
+    assert source_price_usd(Decimal("81.00"), "USD", fx) == Decimal("81")
+    # 74.07 EUR * 1.08 = 79.9956 -> 79; 74.08 EUR * 1.08 = 80.0064 -> 80
+    assert source_price_usd(Decimal("74.07"), "EUR", fx) == Decimal("79")
+    assert source_price_usd(Decimal("74.08"), "EUR", fx) == Decimal("80")
+    assert source_price_usd(Decimal("62.01"), "GBP", fx) == Decimal("79")

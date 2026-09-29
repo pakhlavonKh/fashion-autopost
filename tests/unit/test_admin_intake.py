@@ -98,6 +98,46 @@ def test_parse_product_html_json_ld_and_open_graph() -> None:
     assert parse_product_html("<html><title>Nope</title></html>", "https://example.com/p") is None
 
 
+def test_parse_product_group_and_gallery() -> None:
+    html = """
+    <html><head>
+    <script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"ProductGroup","name":"Mom Jeans",
+     "hasVariant":[
+       {"@type":"Product","sku":"1352386006002","name":"Mom Jeans - Beige",
+        "image":"https://image.hm.com/assets/hm/aa/aa/one.jpg?imwidth=768",
+        "offers":{"@type":"Offer","price":29.99,"priceCurrency":"EUR",
+                  "url":"https://www2.hm.com/es_es/productpage.1352386006.html",
+                  "availability":"https://schema.org/InStock"}},
+       {"@type":"Product","sku":"1352386001002","name":"Mom Jeans - Black",
+        "image":"https://image.hm.com/assets/hm/bb/bb/other.jpg",
+        "offers":{"@type":"Offer","price":29.99,"priceCurrency":"EUR",
+                  "url":"https://www2.hm.com/es_es/productpage.1352386001.html"}}
+     ]}
+    </script>
+    </head><body>
+    <script>{"productArticleDetails":{"articleCode":"1352386006","productName":"Mom Jeans","variations":{
+      "1352386006":{"name":"Beige","whitePriceValue":29.99,"priceCurrency":"EUR","images":[
+        {"baseUrl":"https://image.hm.com/assets/hm/aa/aa/one.jpg","assetType":"LOOKBOOK"},
+        {"baseUrl":"https://image.hm.com/assets/hm/aa/aa/two.jpg","assetType":"LOOKBOOK"},
+        {"baseUrl":"https://image.hm.com/assets/hm/aa/aa/swatch.jpg","assetType":"SWATCH"}
+      ]}
+    }}}</script>
+    </body></html>
+    """
+    product = parse_product_html(html, "https://www2.hm.com/es_es/productpage.1352386006.html")
+    assert product is not None
+    assert product.source == "hm"
+    assert product.price == Decimal("29.99")
+    assert product.currency == "EUR"
+    assert "Beige" in product.title
+    assert product.external_id == "hm-1352386006"
+    assert product.photo_urls[0].endswith("one.jpg")
+    assert any(url.endswith("two.jpg") for url in product.photo_urls)
+    assert all("swatch" not in url for url in product.photo_urls)
+    assert all("other.jpg" not in url for url in product.photo_urls)
+
+
 def test_extract_product_url_trims_trailing_punctuation() -> None:
     assert extract_product_url("смотри https://www.zara.com/es/dress-p1.html.") == (
         "https://www.zara.com/es/dress-p1.html"

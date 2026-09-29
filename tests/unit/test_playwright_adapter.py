@@ -142,7 +142,7 @@ def test_fetch_products_drops_store_price_above_80_usd() -> None:
                 "id": "drop-usd",
                 "brand": "zara",
                 "name": "Silk Coat",
-                "price": Decimal("80.01"),
+                "price": Decimal("81.00"),
                 "currency": "USD",
                 "image": "https://example.com/coat.jpg",
                 "url": "https://www.zara.com/es/coat",

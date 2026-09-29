@@ -22,6 +22,19 @@ RUN pip install --no-cache-dir --upgrade pip && \
 RUN playwright install --with-deps chromium && \
     rm -rf /var/lib/apt/lists/*
 
+# Real Chrome plus a virtual display. Headless Chrome is rejected by store
+# bot walls; a normal Chrome window on Xvfb can open the product card.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        wget \
+        gnupg \
+        xvfb \
+        xauth \
+        fonts-liberation \
+    && wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+    && apt-get install -y /tmp/chrome.deb \
+    && rm -f /tmp/chrome.deb \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy application codebase
 COPY . .
 
