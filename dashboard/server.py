@@ -17,6 +17,8 @@ from pydantic import BaseModel
 import yaml
 from sqlalchemy import select, func, desc
 
+from adapters.brand_catalog import normalize_brand_name, resolve_european_brand
+from adapters.europe_markets import currency_for_market, is_european_store_url, market_code_from_url
 from config.app_config import AppConfig
 from core.pipeline import PipelineRunner
 from publishers.telegram_discovery import TelegramChatDiscoveryService
@@ -48,7 +50,7 @@ class PromptUpdateRequest(BaseModel):
 
 class StoreUpsertRequest(BaseModel):
     name: str
-    url: str
+    url: Optional[str] = None
     currency: Optional[str] = "EUR"
     max_items: Optional[int] = 10
     enabled: Optional[bool] = True
@@ -480,7 +482,10 @@ def create_dashboard_app(
         """List all configured website scraping targets."""
         stores_data = {}
         for name, store_cfg in config.scraper.stores.items():
-            stores_data[name] = store_cfg.model_dump()
+            payload = store_cfg.model_dump()
+            payload["market"] = market_code_from_url(store_cfg.url)
+            payload["european"] = is_european_store_url(store_cfg.url)
+            stores_data[name] = payload
         return {"stores": stores_data}
 
     @app.post("/api/scraper/stores", dependencies=[Depends(verify_admin)])
@@ -494,14 +499,32 @@ def create_dashboard_app(
                 if isinstance(loaded, dict):
                     data = loaded
 
+        brand_name = normalize_brand_name(req.name)
+        if not brand_name:
+            raise HTTPException(status_code=400, detail="invalid_brand_name")
+
+        known = resolve_european_brand(req.name)
+        if known:
+            brand_name = known[0]
+
+        catalog_url = (req.url or "").strip()
+        if not catalog_url:
+            if not known:
+                raise HTTPException(status_code=400, detail="unknown_brand")
+            catalog_url = known[1]
+        elif not catalog_url.lower().startswith(("http://", "https://")) or not is_european_store_url(catalog_url):
+            raise HTTPException(status_code=400, detail="non_european_url")
+
+        market = market_code_from_url(catalog_url)
+
         scraper_data = data.setdefault("scraper", {})
         stores_data = scraper_data.setdefault("stores", {})
 
         store_entry: dict[str, Any] = {
             "enabled": bool(req.enabled if req.enabled is not None else True),
-            "url": req.url,
-            "currency": req.currency or "EUR",
-            "max_items": int(req.max_items or 10),
+            "url": catalog_url,
+            "currency": currency_for_market(market),
+            "max_items": int(req.max_items or 60),
         }
         if req.selectors:
             store_entry["selectors"] = {k: v for k, v in req.selectors.items() if v}
@@ -510,22 +533,23 @@ def create_dashboard_app(
         if req.scroll_steps is not None:
             store_entry["scroll_steps"] = int(req.scroll_steps)
 
-        stores_data[req.name.strip().lower()] = store_entry
+        stores_data[brand_name] = store_entry
 
         with open(cfg_file, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False)
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
         config.reload_hot_fields()
         return {
             "success": True,
-            "message": f"Website target '{req.name}' successfully configured and hot-reloaded.",
+            "message": f"Website target '{brand_name}' successfully configured and hot-reloaded.",
+            "name": brand_name,
             "store": store_entry,
         }
 
     @app.delete("/api/scraper/stores/{store_name}", dependencies=[Depends(verify_admin)])
     def delete_scraper_store(store_name: str):
         """Remove a website scraping target from config.yaml."""
-        norm_name = store_name.strip().lower()
+        norm_name = normalize_brand_name(store_name)
         cfg_file = Path(config._config_path or "config.yaml")
         data: dict[str, Any] = {}
         if cfg_file.exists():
@@ -541,7 +565,7 @@ def create_dashboard_app(
         del stores_data[norm_name]
 
         with open(cfg_file, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False)
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
         config.reload_hot_fields()
         return {"success": True, "message": f"Store '{norm_name}' removed and hot-reloaded."}

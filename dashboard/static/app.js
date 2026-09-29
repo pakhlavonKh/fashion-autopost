@@ -30,6 +30,19 @@ const translations = {
     tabNew: "Yangi",
     tabFailed: "Xato",
     storeAll: "Barcha brendlar",
+    brandsTitle: "Brendlar",
+    brandsHint: "Brend nomini yozing, masalan hm yoki stradivarius. Havola ixtiyoriy: ma'lum brendlar uchun Yevropa sayti o'zi qo'yiladi.",
+    btnAddBrand: "Brend qo'shish",
+    brandNamePlaceholder: "hm yoki stradivarius",
+    brandUrlPlaceholder: "Havola ixtiyoriy",
+    brandRemove: "O'chirish",
+    brandEmpty: "Hali brend qo'shilmagan.",
+    brandErrorEurope: "Yevropa katalogi kerak: Ispaniya, Fransiya, Germaniya, Italiya yoki Buyuk Britaniya. Turkiya va AQSH havolalari qabul qilinmaydi.",
+    brandErrorUnknown: "Bu brend ro'yxatda yo'q. O'ngdagi maydonga Yevropa katalogi havolasini qo'ying.",
+    brandErrorName: "Brend nomini kiriting.",
+    brandAdded: "Brend qo'shildi. Keyingi tsikl shu Yevropa saytidan mahsulot oladi.",
+    brandRemoved: "Brend o'chirildi.",
+    brandRemoveConfirm: "Bu brendni o'chirasizmi?",
     catAll: "Barcha toifalar",
     catJackets: "Palto va kurtkalar",
     catTrousers: "Shim va jinsilar",
@@ -126,6 +139,19 @@ const translations = {
     tabNew: "Новые",
     tabFailed: "Ошибки",
     storeAll: "Все бренды",
+    brandsTitle: "Бренды",
+    brandsHint: "Введите название, например hm или stradivarius. Ссылку можно не заполнять: для известного бренда подставится европейский сайт. Если бренда нет в списке, вставьте ссылку сами.",
+    btnAddBrand: "Добавить бренд",
+    brandNamePlaceholder: "hm или stradivarius",
+    brandUrlPlaceholder: "Ссылка необязательна",
+    brandRemove: "Удалить",
+    brandEmpty: "Бренды ещё не добавлены.",
+    brandErrorEurope: "Нужна ссылка на европейский каталог: Испания, Франция, Германия, Италия или Великобритания. Ссылки на Турцию и США не принимаются.",
+    brandErrorUnknown: "Этого бренда нет в списке. Вставьте ссылку на европейский каталог в поле справа.",
+    brandErrorName: "Укажите название бренда.",
+    brandAdded: "Бренд добавлен. Следующий цикл возьмёт товары с этого европейского сайта.",
+    brandRemoved: "Бренд удалён.",
+    brandRemoveConfirm: "Удалить этот бренд?",
     catAll: "Все категории",
     catJackets: "Пальто и куртки",
     catTrousers: "Брюки и джинсы",
@@ -222,6 +248,19 @@ const translations = {
     tabNew: "New",
     tabFailed: "Failed",
     storeAll: "All Brands",
+    brandsTitle: "Brands",
+    brandsHint: "Type a brand name, for example hm or stradivarius. The link is optional: a known brand gets its European site automatically. If the brand is not in the list, paste a link.",
+    btnAddBrand: "Add brand",
+    brandNamePlaceholder: "hm or stradivarius",
+    brandUrlPlaceholder: "Link is optional",
+    brandRemove: "Remove",
+    brandEmpty: "No brands yet.",
+    brandErrorEurope: "Use a European catalog link: Spain, France, Germany, Italy, or the UK. Turkey and US links are rejected.",
+    brandErrorUnknown: "This brand is not in the list. Paste a European catalog link in the field on the right.",
+    brandErrorName: "Enter a brand name.",
+    brandAdded: "Brand added. The next cycle will collect products from this European site.",
+    brandRemoved: "Brand removed.",
+    brandRemoveConfirm: "Remove this brand?",
     catAll: "All Categories",
     catJackets: "Coats & Jackets",
     catTrousers: "Trousers & Jeans",
@@ -299,6 +338,7 @@ let currentFilter = 'all';
 let currentStore = 'all';
 let currentCategory = 'all';
 let latestStats = null;
+let _brandStores = null;
 
 function t(key, ...args) {
   const dict = translations.ru;
@@ -333,6 +373,11 @@ function applyTranslations() {
   if (latestStats) {
     updateStatsUI(latestStats);
   }
+  const brandNameInput = document.getElementById('inputBrandName');
+  const brandUrlInput = document.getElementById('inputBrandUrl');
+  if (brandNameInput) brandNameInput.placeholder = t('brandNamePlaceholder');
+  if (brandUrlInput) brandUrlInput.placeholder = t('brandUrlPlaceholder');
+  if (_brandStores) renderBrands(_brandStores);
 
   refreshLucide();
 }
@@ -828,16 +873,146 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   });
 });
 
-// Store filter pills
-document.querySelectorAll('.store-pill').forEach(btn => {
-  btn.addEventListener('click', (e) => {
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function brandLabel(name) {
+  return String(name).replace(/-/g, ' ');
+}
+
+function brandErrorMessage(detail) {
+  if (detail === 'non_european_url') return t('brandErrorEurope');
+  if (detail === 'unknown_brand') return t('brandErrorUnknown');
+  if (detail === 'invalid_brand_name') return t('brandErrorName');
+  if (typeof detail === 'string' && detail) return detail;
+  return t('brandErrorUnknown');
+}
+
+function renderBrands(stores) {
+  _brandStores = stores || {};
+  const names = Object.keys(_brandStores).sort();
+  const list = document.getElementById('brandsList');
+  const tabs = document.getElementById('storeFilterTabs');
+  if (currentStore !== 'all' && !names.includes(currentStore)) {
+    currentStore = 'all';
+  }
+  if (tabs) {
+    tabs.innerHTML = `
+      <button type="button" class="store-pill ${currentStore === 'all' ? 'active' : ''}" data-store="all">${t('storeAll')}</button>
+      ${names.map((name) => `
+        <button type="button" class="store-pill ${currentStore === name ? 'active' : ''}" data-store="${escapeHtml(name)}">${escapeHtml(brandLabel(name))}</button>
+      `).join('')}
+    `;
+  }
+  if (!list) return;
+  if (names.length === 0) {
+    list.innerHTML = `<div class="brands-hint">${t('brandEmpty')}</div>`;
+    return;
+  }
+  list.innerHTML = names.map((name) => {
+    const store = _brandStores[name] || {};
+    const market = (store.market || '').toUpperCase();
+    const currency = store.currency || 'EUR';
+    const url = store.url || '';
+    return `
+      <div class="brand-row">
+        <span class="brand-row-name">${escapeHtml(brandLabel(name))}</span>
+        <span class="brand-market">${escapeHtml(market || 'EU')} · ${escapeHtml(currency)}</span>
+        <a class="brand-row-url" href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>
+        <button type="button" class="btn btn-secondary btn-sm" data-remove-brand="${escapeHtml(name)}">${t('brandRemove')}</button>
+      </div>
+    `;
+  }).join('');
+}
+
+async function loadBrands() {
+  try {
+    const res = await apiFetch('/api/scraper/stores');
+    const data = await res.json();
+    renderBrands(data.stores || {});
+  } catch (err) {
+    if (err.message !== 'Unauthorized') {
+      console.error('Failed to load brands:', err);
+    }
+  }
+}
+
+const storeFilterTabs = document.getElementById('storeFilterTabs');
+if (storeFilterTabs) {
+  storeFilterTabs.addEventListener('click', (e) => {
+    const target = e.target.closest('.store-pill');
+    if (!target) return;
     document.querySelectorAll('.store-pill').forEach(b => b.classList.remove('active'));
-    const target = e.currentTarget || e.target.closest('.store-pill');
     target.classList.add('active');
     currentStore = target.dataset.store;
     fetchProducts();
   });
-});
+}
+
+const brandsList = document.getElementById('brandsList');
+if (brandsList) {
+  brandsList.addEventListener('click', async (e) => {
+    const button = e.target.closest('[data-remove-brand]');
+    if (!button) return;
+    const name = button.dataset.removeBrand;
+    if (!name || !window.confirm(t('brandRemoveConfirm'))) return;
+    try {
+      const res = await apiFetch(`/api/scraper/stores/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(brandErrorMessage(data.detail), true);
+        return;
+      }
+      showToast(t('brandRemoved'));
+      await loadBrands();
+      fetchProducts();
+    } catch (err) {
+      if (err.message !== 'Unauthorized') showToast(err.message, true);
+    }
+  });
+}
+
+const brandAddForm = document.getElementById('brandAddForm');
+if (brandAddForm) {
+  brandAddForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('inputBrandName').value.trim();
+    const url = document.getElementById('inputBrandUrl').value.trim();
+    const button = document.getElementById('btnAddBrand');
+    if (!name) {
+      showToast(t('brandErrorName'), true);
+      return;
+    }
+    if (button) button.disabled = true;
+    try {
+      const payload = { name, enabled: true, max_items: 60 };
+      if (url) payload.url = url;
+      const res = await apiFetch('/api/scraper/stores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(brandErrorMessage(data.detail), true);
+        return;
+      }
+      document.getElementById('inputBrandName').value = '';
+      document.getElementById('inputBrandUrl').value = '';
+      showToast(t('brandAdded'));
+      await loadBrands();
+    } catch (err) {
+      if (err.message !== 'Unauthorized') showToast(err.message, true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  });
+}
 
 // Category filter pills
 document.querySelectorAll('.cat-pill').forEach(btn => {
@@ -946,6 +1121,7 @@ async function handleLogin() {
       hideAuthModal();
       showToast(t('authSuccess'));
       await fetchStats();
+      await loadBrands();
       await fetchProducts();
     } else {
       clearAuthKey();
@@ -962,6 +1138,7 @@ async function handleLogin() {
         updateUserBadge(username);
         hideAuthModal();
         showToast(t('authSuccess'));
+        await loadBrands();
         const statsData = await fallbackRes.json();
         updateStatsUI(statsData);
         await fetchProducts();
@@ -1041,5 +1218,6 @@ if (!getAuthKey()) {
 } else {
   updateUserBadge(getAuthUser() || 'admin');
   fetchStats();
+  loadBrands();
   fetchProducts();
 }

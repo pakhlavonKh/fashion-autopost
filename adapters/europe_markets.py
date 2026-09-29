@@ -1,46 +1,83 @@
-"""European storefronts for Zara and Mango.
+"""European storefronts for fashion brands.
 
-Playwright visits one market per scrape and skips every other country.
+Playwright visits European catalogs only and skips Turkey, the US, and other markets.
 """
 
 from pathlib import Path
 import logging
+import re
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# First path segment on zara.com and shop.mango.com. Turkey and other
-# non-European shops are intentionally absent.
+# Country codes used by Zara, Mango, Stradivarius and other EU storefronts.
+# Turkey and other non-European shops are intentionally absent.
 EUROPEAN_MARKET_CODES = frozenset({
     "at", "be", "bg", "ch", "cy", "cz", "de", "dk", "ee", "es", "fi", "fr",
     "gb", "gr", "hr", "hu", "ie", "is", "it", "lt", "lu", "lv", "mt", "nl",
     "no", "pl", "pt", "ro", "se", "si", "sk", "uk",
 })
 
+NON_EUROPEAN_MARKET_CODES = frozenset({
+    "ae", "ar", "au", "br", "ca", "cl", "cn", "co", "eg", "hk", "id", "il",
+    "in", "jp", "kr", "kw", "kz", "ma", "mx", "my", "nz", "om", "pe", "ph",
+    "qa", "ru", "sa", "sg", "th", "tr", "tw", "ua", "us", "za", "ww",
+})
+
 REGION_INDEX_PATH = Path("data/europe_region_index.txt")
+
+_KNOWN_MARKET_CODES = EUROPEAN_MARKET_CODES | NON_EUROPEAN_MARKET_CODES
+_LOCALE_TOKEN = re.compile(r"^([a-z]{2})[_-]([a-z]{2})$")
+
+
+def _code_from_token(token: str) -> str | None:
+    """Read a country code from 'es', 'es_es', or 'en_gb'."""
+    token = token.lower()
+    if token in _KNOWN_MARKET_CODES:
+        return token
+    match = _LOCALE_TOKEN.match(token)
+    if not match:
+        return None
+    left, right = match.group(1), match.group(2)
+    if left in _KNOWN_MARKET_CODES:
+        return left
+    if right in _KNOWN_MARKET_CODES:
+        return right
+    return None
 
 
 def market_code_from_url(url: str) -> str | None:
-    """Return the storefront country code for a Zara or Mango URL."""
-    parsed = urlparse(url)
-    host = parsed.netloc.lower()
-    if "zara.com" not in host and "mango.com" not in host:
+    """Return the storefront country code from the host or the start of the path."""
+    if not url:
         return None
+    parsed = urlparse(url.strip())
+    host = parsed.netloc.lower().split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    labels = [label for label in host.split(".") if label]
+    if labels:
+        code = _code_from_token(labels[-1])
+        if code:
+            return code
     parts = [part for part in parsed.path.split("/") if part]
-    if not parts:
-        return None
-    code = parts[0].lower()
-    if len(code) == 2 and code.isalpha():
-        return code
+    for part in parts[:4]:
+        code = _code_from_token(part)
+        if code:
+            return code
     return None
 
 
 def is_european_store_url(url: str) -> bool:
-    """Allow unknown sites. Zara and Mango must use a European storefront."""
+    """True only when the URL points at a European storefront."""
     code = market_code_from_url(url)
-    if code is None:
-        return True
     return code in EUROPEAN_MARKET_CODES
+
+
+def currency_for_market(code: str | None) -> str:
+    """Sale currency of the European storefront. UK uses pounds, the rest euros."""
+    if code in {"gb", "uk"}:
+        return "GBP"
+    return "EUR"
 
 
 def same_market(url: str, other_url: str) -> bool:

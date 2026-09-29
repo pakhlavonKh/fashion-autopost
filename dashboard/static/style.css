@@ -470,13 +470,109 @@ h1, h2, h3, h4, .brand-title {
 }
 
 .store-filter-tabs {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-self: flex-start;
   background: rgba(15, 23, 42, 0.85);
   border: 1px solid var(--border-subtle);
-  border-radius: 9999px !important;
+  border-radius: 24px;
   padding: 4px;
   gap: 4px;
+}
+
+.brands-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 22px 26px;
+  margin-bottom: 28px;
+  box-shadow: var(--shadow-card);
+}
+
+.brands-panel h2 {
+  margin: 0 0 6px;
+  font-family: 'Outfit', sans-serif;
+  font-size: 20px;
+}
+
+.brands-hint {
+  margin: 0 0 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 760px;
+}
+
+.brands-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+}
+
+.brand-row-name {
+  font-weight: 700;
+  min-width: 130px;
+  text-transform: capitalize;
+}
+
+.brand-row-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.brand-market {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success, #34d399);
+}
+
+.brand-add-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.brand-add-form .brand-name-input {
+  flex: 0 1 220px;
+  min-width: 180px;
+}
+
+.brand-add-form .brand-url-input {
+  flex: 1 1 320px;
+  min-width: 220px;
+}
+
+@media (max-width: 720px) {
+  .brand-row {
+    flex-wrap: wrap;
+  }
+
+  .brand-row-url {
+    flex-basis: 100%;
+    order: 3;
+  }
 }
 
 .store-pill {

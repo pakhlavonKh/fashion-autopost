@@ -13,7 +13,7 @@
     rel="stylesheet">
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
-  <link rel="stylesheet" href="./style.css?v=20260929_modal_close">
+  <link rel="stylesheet" href="./style.css?v=20260929_brand_name">
   <style>
     /* Mandatory 100% round pill buttons across all browsers and cached states */
     .btn,
@@ -118,6 +118,20 @@
       </div>
     </section>
 
+    <section class="brands-panel" id="brandsPanel">
+      <h2 data-i18n="brandsTitle">Бренды</h2>
+      <p class="brands-hint" data-i18n="brandsHint">Бот берёт товары только с европейских сайтов и публикует их в Telegram и Instagram.</p>
+      <div id="brandsList" class="brands-list"></div>
+      <form id="brandAddForm" class="brand-add-form">
+        <input type="text" id="inputBrandName" class="form-control brand-name-input" autocomplete="off" placeholder="hm или stradivarius">
+        <input type="text" id="inputBrandUrl" class="form-control brand-url-input" autocomplete="off" placeholder="Ссылка необязательна">
+        <button id="btnAddBrand" type="submit" class="btn btn-primary">
+          <i data-lucide="plus"></i>
+          <span data-i18n="btnAddBrand">Добавить бренд</span>
+        </button>
+      </form>
+    </section>
+
     <!-- Products & Moderation Section -->
     <section>
       <div class="section-header">
@@ -136,8 +150,6 @@
       <div class="category-filters-container">
         <div class="store-filter-tabs" id="storeFilterTabs">
           <button class="store-pill active" data-store="all" data-i18n="storeAll">Barcha brendlar</button>
-          <button class="store-pill" data-store="zara">Zara</button>
-          <button class="store-pill" data-store="mango">Mango</button>
         </div>
         <div class="category-tabs" id="categoryTabs">
           <button class="cat-pill active" data-category="all">
@@ -332,7 +344,7 @@
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="./app.js?v=20260924_v3"></script>
+  <script src="./app.js?v=20260929_brand_name"></script>
 </body>
 
 </html>

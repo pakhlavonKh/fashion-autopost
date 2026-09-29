@@ -103,7 +103,7 @@ def test_dashboard_scraper_stores_api(tmp_path: Path) -> None:
     # 2. POST /api/scraper/stores - Admin adds new website
     new_store_payload = {
         "name": "asos",
-        "url": "https://www.asos.com/women/new-in",
+        "url": "https://www.asos.com/gb/women/new-in",
         "currency": "GBP",
         "max_items": 12,
         "enabled": True,
@@ -121,6 +121,31 @@ def test_dashboard_scraper_stores_api(tmp_path: Path) -> None:
     assert "asos" in config.scraper.stores
     assert config.scraper.stores["asos"].currency == "GBP"
     assert config.scraper.stores["asos"].selectors.item == "article[data-auto-id='productTile']"
+
+    res_brand = client.post("/api/scraper/stores", json={
+        "name": "Stradivarius",
+        "url": "https://www.stradivarius.com/es/mujer/novedades-n1474",
+    })
+    assert res_brand.status_code == 200
+    assert config.scraper.stores["stradivarius"].currency == "EUR"
+    assert "/es/" in config.scraper.stores["stradivarius"].url
+
+    res_turkey = client.post("/api/scraper/stores", json={
+        "name": "stradivarius-tr",
+        "url": "https://www.stradivarius.com/tr/kadin/yeni",
+    })
+    assert res_turkey.status_code == 400
+    assert res_turkey.json()["detail"] == "non_european_url"
+    assert "stradivarius-tr" not in config.scraper.stores
+
+    res_named = client.post("/api/scraper/stores", json={"name": "H&M"})
+    assert res_named.status_code == 200
+    assert config.scraper.stores["hm"].url.startswith("https://www2.hm.com/es_es/")
+
+    res_unknown = client.post("/api/scraper/stores", json={"name": "unknown-boutique"})
+    assert res_unknown.status_code == 400
+    assert res_unknown.json()["detail"] == "unknown_brand"
+    assert "unknown-boutique" not in config.scraper.stores
 
     # 3. DELETE /api/scraper/stores/asos
     res_del = client.delete("/api/scraper/stores/asos")

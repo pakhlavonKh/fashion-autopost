@@ -16,7 +16,11 @@ def test_turkey_urls_are_rejected() -> None:
 def test_european_urls_are_allowed() -> None:
     assert is_european_store_url("https://www.zara.com/es/es/mujer-nuevo-l1180.html") is True
     assert is_european_store_url("https://shop.mango.com/gb/en/c/women/new-now/56b5c5ed") is True
-    assert is_european_store_url("https://boutique.example.com/catalog") is True
+    assert is_european_store_url("https://www.stradivarius.com/es/mujer/novedades-n1474") is True
+    assert is_european_store_url("https://www.stradivarius.com/tr/kadin/yeni") is False
+    assert is_european_store_url("https://www2.hm.com/es_es/mujer/novedades/ver-todo.html") is True
+    assert is_european_store_url("https://www.cos.com/es-es/women/new-arrivals.html") is True
+    assert is_european_store_url("https://boutique.example.com/catalog") is False
 
 
 def test_resolve_rotates_one_european_market(tmp_path: Path) -> None:
