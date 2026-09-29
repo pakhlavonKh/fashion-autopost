@@ -162,14 +162,22 @@ def test_story_is_filed_into_the_dress_highlight() -> None:
             source=post.source,
             photo_urls=[str(photo)],
         )
-        highlights = _Highlights()
-        publisher = InstagramPublisher("token", "1789", image_host=_Host(), highlight_client=highlights)
+        private = _PrivateStory()
+        publisher = InstagramPublisher("token", "1789", image_host=_Host(), private_story=private)
+        calls: list[tuple[str, str, dict]] = []
 
-        with patch("httpx.Client", side_effect=_client_factory([])):
+        with patch("httpx.Client", side_effect=_client_factory(calls)):
             result = publisher.publish(post)
 
         assert result.success is True
-        assert highlights.calls == [("Платья", "id-4")]
+        assert len(private.calls) == 1
+        call = private.calls[0]
+        assert call["link_url"] == "https://t.me/fashionalleyb"
+        assert call["link_title"] == "посмотреть подробнее фото"
+        assert call["highlight_title"] == "Платья"
+        posts = [item for item in calls if item[0] == "POST"]
+        assert len(posts) == 2
+        assert all(item[2].get("media_type") != "STORIES" for item in posts)
 
 
 def test_litterbox_host_returns_public_url() -> None:
@@ -207,13 +215,17 @@ def test_config_points_instagram_at_test_account() -> None:
     assert "instagram.com" not in data["instagram"]["caption_footer"]
 
 
-class _Highlights:
+class _PrivateStory:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[dict[str, str]] = []
 
-    def add_story(self, title: str, media_pk: str) -> str:
-        self.calls.append((title, media_pk))
-        return "hl-1"
+    def publish_story(self, image, *, link_url: str, link_title: str, highlight_title: str) -> str:
+        self.calls.append({
+            "link_url": link_url,
+            "link_title": link_title,
+            "highlight_title": highlight_title,
+        })
+        return "story-1"
 
 
 class _Host:

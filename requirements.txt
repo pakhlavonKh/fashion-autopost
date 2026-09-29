@@ -14,3 +14,4 @@ nodriver>=0.38.0
 fastapi>=0.110.0
 uvicorn[standard]>=0.28.0
 pillow>=10.0.0
+instagrapi>=3.0.15

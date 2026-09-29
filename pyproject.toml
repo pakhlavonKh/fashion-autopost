@@ -21,6 +21,7 @@ dependencies = [
     "fastapi>=0.110.0",
     "uvicorn>=0.28.0",
     "pillow>=10.0.0",
+    "instagrapi>=3.0.15",
 ]
 
 [project.optional-dependencies]

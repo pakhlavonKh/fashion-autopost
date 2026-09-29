@@ -118,6 +118,15 @@ def quality_line_from_footer(footer: str | None) -> str:
     return DEFAULT_QUALITY_LINE
 
 
+def telegram_channel_url(footer: str | None) -> str:
+    """The boutique Telegram channel linked from the story sticker."""
+    if footer:
+        match = re.search(r"https://t\.me/[A-Za-z0-9_]+", footer)
+        if match:
+            return match.group(0)
+    return "https://t.me/fashionalleyb"
+
+
 def render_story_collage(
     sources: list[Path],
     dest: Path,
@@ -126,6 +135,7 @@ def render_story_collage(
     price_label: str,
     description: str,
     quality_line: str,
+    include_link_pill: bool = True,
 ) -> Path:
     """Paint a 1080×1920 story from the same photos that go into the feed post."""
     photos = [path for path in sources if path.is_file()][:3]
@@ -142,7 +152,8 @@ def render_story_collage(
     draw = ImageDraw.Draw(canvas)
     cards = story_cards(title, price_label, description, quality_line)
     _draw_cards(draw, cards)
-    _draw_link_pill(draw)
+    if include_link_pill:
+        _draw_link_pill(draw)
     dest.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(dest, "JPEG", quality=90, optimize=True)
     return dest

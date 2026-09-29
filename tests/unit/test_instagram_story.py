@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
+from publishers.instagram_private_story import InstagramPrivateStory
 from publishers.instagram_highlights import InstagramHighlightClient
 from publishers.instagram_story import (
     LINK_LABEL,
@@ -77,6 +78,41 @@ def test_collage_is_a_story_frame() -> None:
         assert LINK_LABEL
 
 
+def test_private_story_link_opens_telegram_and_creates_missing_highlight() -> None:
+    client = _FakePrivateClient(existing=[])
+    publisher = InstagramPrivateStory("1" * 40, client=client)
+    image = Path("story.jpg")
+
+    story_pk = publisher.publish_story(
+        image,
+        link_url="https://t.me/fashionalleyb",
+        link_title="посмотреть подробнее фото",
+        highlight_title="Трикотаж",
+    )
+
+    assert story_pk == "555"
+    sticker = client.uploaded_stickers[0]
+    assert sticker.extra["url"] == "https://t.me/fashionalleyb"
+    assert sticker.extra["link_title"] == "посмотреть подробнее фото"
+    assert sticker.extra["link_type"] == "web"
+    assert client.created == ("Трикотаж", ["555"])
+    assert client.added == []
+
+
+def test_private_story_adds_to_existing_highlight() -> None:
+    client = _FakePrivateClient(existing=[_Reel("Платья", "1800")])
+    publisher = InstagramPrivateStory("1" * 40, client=client)
+
+    publisher.publish_story(
+        Path("story.jpg"),
+        link_url="https://t.me/fashionalleyb",
+        highlight_title="Платья",
+    )
+
+    assert client.created is None
+    assert client.added == [("1800", ["555_99"])]
+
+
 def test_existing_highlight_receives_the_story() -> None:
     client = InstagramHighlightClient("session", "1789")
     with patch("httpx.Client", side_effect=_highlight_factory(existing=True)):
@@ -96,6 +132,42 @@ def test_missing_highlight_is_created() -> None:
     assert posts[0][1].endswith("/highlights/create_reel/")
     assert posts[0][2]["title"] == "Сумки"
     assert "777_1789" in posts[0][2]["media_ids"]
+
+
+class _Reel:
+    def __init__(self, title: str, pk: str) -> None:
+        self.title = title
+        self.pk = pk
+
+
+class _FakePrivateClient:
+    def __init__(self, existing: list[_Reel]) -> None:
+        self.user_id = "99"
+        self.uuid = "uuid-1"
+        self.existing = existing
+        self.uploaded_stickers = []
+        self.created = None
+        self.added: list[tuple[str, list[str]]] = []
+
+    def private_request(self, _endpoint: str, _data: dict) -> dict:
+        return {"status": "ok"}
+
+    def photo_upload_to_story(self, _path, stickers=None, resize_mode="fill"):
+        self.uploaded_stickers = list(stickers or [])
+        return _Reel("", "555")
+
+    def user_highlights(self, _user_id: str) -> list[_Reel]:
+        return self.existing
+
+    def highlight_create(self, title: str, story_ids: list[str]):
+        self.created = (title, story_ids)
+        return _Reel(title, "hl-new")
+
+    def highlight_add_stories(self, highlight_pk: str, media_ids: list[str]) -> None:
+        self.added.append((highlight_pk, media_ids))
+
+    def media_id(self, story_pk: str) -> str:
+        return f"{story_pk}_{self.user_id}"
 
 
 _HIGHLIGHT_CALLS: list[tuple] = []

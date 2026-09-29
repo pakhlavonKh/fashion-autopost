@@ -22,14 +22,16 @@ from core.image_downloader import ImageDownloader
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
 from publishers.image_hosting import ImageHostingService, LitterboxImageHost
-from publishers.instagram_highlights import InstagramHighlightClient
 from publishers.instagram_media import prepare_feed_jpeg
+from publishers.instagram_private_story import InstagramPrivateStory
 from publishers.instagram_story import (
+    LINK_LABEL,
     detect_highlight,
     format_story_price,
     product_description,
     quality_line_from_footer,
     render_story_collage,
+    telegram_channel_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,7 +63,7 @@ class InstagramPublisher:
         username: str | None = None,
         use_instagram_login: bool | None = None,
         session_id: str | None = None,
-        highlight_client: InstagramHighlightClient | None = None,
+        private_story: InstagramPrivateStory | None = None,
     ) -> None:
         self.access_token = access_token
         self.account_id = account_id
@@ -69,12 +71,12 @@ class InstagramPublisher:
         self.timeout_seconds = timeout_seconds
         self.caption_footer = caption_footer if caption_footer is not None else DEFAULT_INSTAGRAM_CAPTION_FOOTER
         self.username = (username or "").strip().lstrip("@") or None
-        if highlight_client is not None:
-            self.highlights: InstagramHighlightClient | None = highlight_client
+        if private_story is not None:
+            self.private_story: InstagramPrivateStory | None = private_story
         elif session_id and session_id.strip():
-            self.highlights = InstagramHighlightClient(session_id, account_id, timeout_seconds)
+            self.private_story = InstagramPrivateStory(session_id)
         else:
-            self.highlights = None
+            self.private_story = None
         self.downloader = ImageDownloader(timeout_seconds=self.timeout_seconds)
         # Auto-detect: IGAA tokens come from graph.instagram.com (Instagram Login)
         if use_instagram_login is None:
@@ -118,7 +120,10 @@ class InstagramPublisher:
         return self._publish_container(container_id)
 
     def _publish_story_and_highlight(self, post: ComposedPost, prepared: list[Path]) -> None:
-        """Story uses the same photos as the post and is filed into Highlights."""
+        """Story uses the same photos as the post, with a Telegram link sticker and a Highlight."""
+        highlight = detect_highlight(post.title, post.text, post.product_url or "")
+        link_url = telegram_channel_url(self.caption_footer)
+        use_real_sticker = self.private_story is not None
         try:
             dest = prepared[0].with_name(f"{prepared[0].stem}_story.jpg")
             collage = render_story_collage(
@@ -128,33 +133,50 @@ class InstagramPublisher:
                 price_label=format_story_price(post.price, post.currency),
                 description=product_description(post.text),
                 quality_line=quality_line_from_footer(self.caption_footer),
+                include_link_pill=not use_real_sticker,
             )
+        except Exception as exc:
+            logger.error("Instagram story collage failed for %s: %s", post.title, exc)
+            return
+
+        if use_real_sticker:
+            try:
+                story_id = self.private_story.publish_story(  # type: ignore[union-attr]
+                    collage,
+                    link_url=link_url,
+                    link_title=LINK_LABEL,
+                    highlight_title=highlight,
+                )
+                logger.info(
+                    "Instagram story %s published for %s with link %s in highlight «%s»",
+                    story_id,
+                    post.title,
+                    link_url,
+                    highlight,
+                )
+                return
+            except Exception as exc:
+                logger.error(
+                    "Story link sticker and highlight failed for %s: %s. "
+                    "Publishing a plain story instead.",
+                    post.title,
+                    exc,
+                )
+
+        try:
             story_url = self.image_host.ensure_public_url(str(collage))
             container_id = self._create_story_container(story_url)
             self._wait_until_ready(container_id)
             story_id = self._publish_container(container_id)
             logger.info("Instagram story %s published for %s", story_id, post.title)
-        except Exception as exc:
-            logger.error("Instagram story failed for %s: %s", post.title, exc)
-            return
-
-        self._file_story(post, story_id)
-
-    def _file_story(self, post: ComposedPost, story_id: str) -> None:
-        highlight = detect_highlight(post.title, post.text, post.product_url or "")
-        if self.highlights is None:
             logger.warning(
-                "Story %s is live, but it was not added to Highlights «%s»: "
+                "Story %s has no tappable link and was not added to Highlights «%s»: "
                 "INSTAGRAM_SESSIONID is not set.",
                 story_id,
                 highlight,
             )
-            return
-        try:
-            highlight_id = self.highlights.add_story(highlight, story_id)
-            logger.info("Story %s added to highlight «%s» (%s)", story_id, highlight, highlight_id)
         except Exception as exc:
-            logger.error("Could not add story %s to highlight «%s»: %s", story_id, highlight, exc)
+            logger.error("Instagram story failed for %s: %s", post.title, exc)
 
     def _public_image_urls(self, post: ComposedPost) -> list[str]:
         _originals, prepared = self._prepare_local_images(post)
