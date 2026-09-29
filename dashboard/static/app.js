@@ -62,11 +62,12 @@ const translations = {
     labelCurrency: "Sotish valyutasi (Target Currency)",
     labelMaxItems: "Bir tsiklda saralanadigan mahsulotlar soni",
     labelDailyCap: "Kunlik nashr limiti (bo'sh qoldirilsa - cheklovsiz)",
-    labelIntervalMinutes: "Avtomatik skraping va tekshirish intervali (har N daqiqada)",
-    labelScheduleTimes: "Nashr qilish vaqtlari (vergul bilan ajratilgan HH:MM)",
+    labelScheduleTimes: "Nashr vaqtlari",
+    labelTimezone: "Vaqt mintaqasi (Timezone)",
+    hintScheduleTimes: "Har kuni qaysi vaqtlarda post chop etilishini belgilang. Vaqt qo'shmasangiz – faqat qo'lda ishga tushirish ishlaydi.",
+    btnAddTime: "Vaqt qo'shish",
     labelDryRunCheck: "Sinov rejimini yoqish (Telegram/Instagramga yubormasdan tekshirish)",
     labelModerationCheck: "Qo'lda moderatsiyani yoqish (chop etishdan oldin ko'rib chiqish)",
-    intervalAuto: (min) => `Har ${min} daqiqada avtomatik`,
     scheduleManualOnly: "Faqat qo'lda ishga tushirish",
     btnCancel: "Bekor qilish",
     btnSave: "Saqlash",
@@ -157,11 +158,12 @@ const translations = {
     labelCurrency: "Валюта продажи (Target Currency)",
     labelMaxItems: "Максимум товаров за один прогон",
     labelDailyCap: "Дневной лимит публикаций (пусто — без ограничений)",
-    labelIntervalMinutes: "Интервал автопроверки и скрапинга (каждые N минут)",
-    labelScheduleTimes: "Время публикаций (через запятую HH:MM)",
+    labelScheduleTimes: "Время публикаций",
+    labelTimezone: "Часовой пояс (Timezone)",
+    hintScheduleTimes: "Укажите, в какое время каждый день публиковать посты. Без времен — только вручную.",
+    btnAddTime: "Добавить время",
     labelDryRunCheck: "Включить тестовый режим (без отправки в Telegram/Instagram)",
     labelModerationCheck: "Включить ручную модерацию (удерживать посты перед публикацией)",
-    intervalAuto: (min) => `Каждые ${min} мин авто`,
     scheduleManualOnly: "Только вручную",
     btnCancel: "Отмена",
     btnSave: "Сохранить",
@@ -252,11 +254,12 @@ const translations = {
     labelCurrency: "Target Sale Currency",
     labelMaxItems: "Max Items Per Run",
     labelDailyCap: "Daily Publish Cap (leave empty for unlimited)",
-    labelIntervalMinutes: "Autonomous Scrape & Check Interval (every N minutes)",
-    labelScheduleTimes: "Schedule Times (comma-separated HH:MM)",
+    labelScheduleTimes: "Publish Schedule Times",
+    labelTimezone: "Timezone",
+    hintScheduleTimes: "Set the daily times to auto-publish posts. Leave empty to use manual-only mode.",
+    btnAddTime: "Add Time",
     labelDryRunCheck: "Enable Dry-Run Mode (Simulate without publishing)",
     labelModerationCheck: "Enable Manual Moderation Gate (hold items for review)",
-    intervalAuto: (min) => `Every ${min}m auto`,
     scheduleManualOnly: "Manual only",
     btnCancel: "Cancel",
     btnSave: "Save Settings",
@@ -369,13 +372,8 @@ function updateStatsUI(data) {
   document.getElementById('metricMarkup').textContent = `${symbol}${data.markup.toFixed(2)}`;
 
   let scheduleText = '';
-  if (data.schedule && data.schedule.interval_minutes) {
-    scheduleText = t('intervalAuto', data.schedule.interval_minutes);
-    if (data.schedule.times && data.schedule.times.length > 0) {
-      scheduleText += ` (${data.schedule.times.join(', ')})`;
-    }
-  } else if (data.schedule && data.schedule.times && data.schedule.times.length > 0) {
-    scheduleText = `${t('timesPrefix')}${data.schedule.times.join(', ')} (${data.schedule.timezone})`;
+  if (data.schedule && data.schedule.times && data.schedule.times.length > 0) {
+    scheduleText = `${t('timesPrefix')}${data.schedule.times.join(', ')} (${data.schedule.timezone || 'UTC'})`;
   } else {
     scheduleText = t('scheduleManualOnly');
   }
@@ -691,6 +689,56 @@ document.getElementById('btnSavePrompt').addEventListener('click', async () => {
   }
 });
 
+// Config Modal — time-tag helpers
+let _scheduleTimes = [];
+
+function renderTimeTags() {
+  const container = document.getElementById('scheduleTimeTags');
+  if (!container) return;
+  if (_scheduleTimes.length === 0) {
+    container.innerHTML = `<span style="color: var(--text-muted, #888); font-size: 12px; align-self: center; padding: 2px 4px;">${t('scheduleManualOnly')}</span>`;
+    return;
+  }
+  container.innerHTML = _scheduleTimes.map((time, idx) => `
+    <span style="
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--accent-primary, #7c3aed); color: #fff;
+      padding: 3px 10px 3px 12px; border-radius: 9999px; font-size: 13px; font-weight: 600;
+    ">
+      ${time}
+      <button type="button" onclick="removeScheduleTime(${idx})" style="
+        background: none; border: none; color: rgba(255,255,255,0.8); cursor: pointer;
+        display: flex; align-items: center; padding: 0; margin-left: 2px; font-size: 15px; line-height: 1;
+      " title="Remove">&times;</button>
+    </span>
+  `).join('');
+}
+
+window.removeScheduleTime = function(idx) {
+  _scheduleTimes.splice(idx, 1);
+  renderTimeTags();
+};
+
+function addScheduleTime() {
+  const input = document.getElementById('inputTimePickerValue');
+  if (!input || !input.value) return;
+  const val = input.value; // HH:MM from time input
+  if (_scheduleTimes.includes(val)) { input.value = ''; return; }
+  _scheduleTimes.push(val);
+  _scheduleTimes.sort();
+  input.value = '';
+  renderTimeTags();
+}
+
+// Wire Add button
+const btnAddTime = document.getElementById('btnAddScheduleTime');
+if (btnAddTime) {
+  btnAddTime.addEventListener('click', addScheduleTime);
+  document.getElementById('inputTimePickerValue')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addScheduleTime(); }
+  });
+}
+
 // Config Modal
 const configModal = document.getElementById('configModal');
 document.getElementById('btnOpenConfig').addEventListener('click', async () => {
@@ -702,11 +750,15 @@ document.getElementById('btnOpenConfig').addEventListener('click', async () => {
     document.getElementById('inputCurrency').value = data.target_currency;
     document.getElementById('inputMaxItems').value = data.max_products_per_run;
     document.getElementById('inputDailyCap').value = data.daily_publish_cap || '';
-    const intervalEl = document.getElementById('inputIntervalMinutes');
-    if (intervalEl) {
-      intervalEl.value = (data.schedule && data.schedule.interval_minutes) ? data.schedule.interval_minutes : 15;
-    }
-    document.getElementById('inputScheduleTimes').value = (data.schedule && data.schedule.times) ? data.schedule.times.join(', ') : '';
+
+    // Populate time tags
+    _scheduleTimes = (data.schedule && data.schedule.times) ? [...data.schedule.times] : [];
+    renderTimeTags();
+
+    // Timezone
+    const tzEl = document.getElementById('inputTimezone');
+    if (tzEl) tzEl.value = (data.schedule && data.schedule.timezone) ? data.schedule.timezone : 'UTC';
+
     const checkDryRunEl = document.getElementById('checkDryRun');
     if (checkDryRunEl) checkDryRunEl.checked = !!data.dry_run;
     document.getElementById('checkModeration').checked = !!data.moderation.enabled;
@@ -719,20 +771,18 @@ document.getElementById('btnOpenConfig').addEventListener('click', async () => {
 });
 
 document.getElementById('btnSaveConfig').addEventListener('click', async () => {
-  const timesStr = document.getElementById('inputScheduleTimes').value;
-  const times = timesStr.split(',').map(s => s.trim()).filter(Boolean);
   const dailyCapVal = document.getElementById('inputDailyCap').value;
   const checkDryRunEl = document.getElementById('checkDryRun');
-  const intervalEl = document.getElementById('inputIntervalMinutes');
-  const intervalVal = intervalEl ? intervalEl.value.trim() : '';
+  const tzEl = document.getElementById('inputTimezone');
 
   const payload = {
     markup: parseFloat(document.getElementById('inputMarkup').value),
     target_currency: document.getElementById('inputCurrency').value.trim().toUpperCase(),
     max_products_per_run: parseInt(document.getElementById('inputMaxItems').value),
     daily_publish_cap: dailyCapVal ? parseInt(dailyCapVal) : null,
-    interval_minutes: intervalVal ? parseInt(intervalVal, 10) : null,
-    schedule_times: times,
+    interval_minutes: null,          // always use cron times, never interval
+    schedule_times: [..._scheduleTimes],
+    timezone: tzEl ? (tzEl.value.trim() || 'UTC') : 'UTC',
     dry_run: checkDryRunEl ? checkDryRunEl.checked : false,
     moderation_enabled: document.getElementById('checkModeration').checked,
   };

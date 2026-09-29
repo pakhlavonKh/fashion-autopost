@@ -25,6 +25,11 @@ from publishers.instagram_media import prepare_feed_jpeg
 logger = logging.getLogger(__name__)
 
 GRAPH_API_VERSION = "v23.0"
+# Instagram API with Facebook Login  (requires Page + Business account linkage)
+GRAPH_FACEBOOK_BASE = "https://graph.facebook.com"
+# Instagram API with Instagram Login (works with any Professional account directly)
+GRAPH_INSTAGRAM_BASE = "https://graph.instagram.com"
+
 MAX_INSTAGRAM_CAPTION_LEN = 2200
 MAX_CAROUSEL_ITEMS = 10
 MAX_HASHTAGS = 30
@@ -44,6 +49,7 @@ class InstagramPublisher:
         timeout_seconds: float = 45.0,
         caption_footer: str | None = None,
         username: str | None = None,
+        use_instagram_login: bool | None = None,
     ) -> None:
         self.access_token = access_token
         self.account_id = account_id
@@ -52,6 +58,14 @@ class InstagramPublisher:
         self.caption_footer = caption_footer if caption_footer is not None else DEFAULT_INSTAGRAM_CAPTION_FOOTER
         self.username = (username or "").strip().lstrip("@") or None
         self.downloader = ImageDownloader(timeout_seconds=self.timeout_seconds)
+        # Auto-detect: IGAA tokens come from graph.instagram.com (Instagram Login)
+        if use_instagram_login is None:
+            use_instagram_login = access_token.startswith("IGAA")
+        self._base_url = GRAPH_INSTAGRAM_BASE if use_instagram_login else GRAPH_FACEBOOK_BASE
+        logger.info(
+            "InstagramPublisher using %s (use_instagram_login=%s)",
+            self._base_url, use_instagram_login,
+        )
 
     @property
     def platform_name(self) -> str:
@@ -142,13 +156,13 @@ class InstagramPublisher:
 
     @retry_with_backoff(max_attempts=3, base_delay=2.0, max_delay=15.0, exceptions=(httpx.HTTPError,))
     def _create_container(self, fields: dict[str, Any]) -> str:
-        url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{self.account_id}/media"
+        url = f"{self._base_url}/{GRAPH_API_VERSION}/{self.account_id}/media"
         data = self._graph_response("POST", url, fields)
         return str(data["id"])
 
     @retry_with_backoff(max_attempts=3, base_delay=2.0, max_delay=15.0, exceptions=(httpx.HTTPError,))
     def _publish_container(self, container_id: str) -> str:
-        url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{self.account_id}/media_publish"
+        url = f"{self._base_url}/{GRAPH_API_VERSION}/{self.account_id}/media_publish"
         data = self._graph_response("POST", url, {"creation_id": container_id})
         return str(data["id"])
 
@@ -170,7 +184,7 @@ class InstagramPublisher:
         )
 
     def _container_status(self, container_id: str) -> tuple[str, str]:
-        url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{container_id}"
+        url = f"{self._base_url}/{GRAPH_API_VERSION}/{container_id}"
         data = self._graph_response("GET", url, {"fields": "status_code,status"})
         status_code = str(data.get("status_code") or "")
         detail = ""

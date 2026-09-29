@@ -245,15 +245,29 @@
             cheklovsiz)</label>
           <input type="number" id="inputDailyCap" class="form-control">
         </div>
+        <!-- Schedule Times Picker -->
         <div class="form-group">
-          <label class="form-label" data-i18n="labelIntervalMinutes">Avtomatik skraping va tekshirish intervali (har N
-            daqiqada)</label>
-          <input type="number" id="inputIntervalMinutes" min="1" max="1440" class="form-control" placeholder="15">
+          <label class="form-label" data-i18n="labelScheduleTimes">Nashr vaqtlari</label>
+          <div id="scheduleTimeTags" style="
+            display: flex; flex-wrap: wrap; gap: 6px; min-height: 36px;
+            padding: 6px 10px; background: var(--surface-2, #1e1e2e);
+            border: 1px solid var(--border, #333); border-radius: 12px; margin-bottom: 8px;
+          "></div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="time" id="inputTimePickerValue" class="form-control" style="flex: 1; min-width: 0; border-radius: 9999px !important;">
+            <button id="btnAddScheduleTime" type="button" class="btn btn-secondary btn-sm" style="flex-shrink: 0; border-radius: 9999px !important; white-space: nowrap; display: flex; align-items: center; gap: 6px;">
+              <i data-lucide="plus" style="width: 14px; height: 14px;"></i>
+              <span data-i18n="btnAddTime">Vaqt qo'shish</span>
+            </button>
+          </div>
+          <div style="font-size: 11px; color: var(--text-muted, #888); margin-top: 6px;" data-i18n="hintScheduleTimes">
+            Har kuni qaysi vaqtlarda post chop etilishini belgilang. Vaqt qo'shmasangiz – faqat qo'lda ishga tushirish ishlaydi.
+          </div>
         </div>
+        <!-- Timezone -->
         <div class="form-group">
-          <label class="form-label" data-i18n="labelScheduleTimes">Nashr qilish vaqtlari (ixtiyoriy, vergul bilan
-            ajratilgan HH:MM)</label>
-          <input type="text" id="inputScheduleTimes" class="form-control" placeholder="10:00, 18:00">
+          <label class="form-label" data-i18n="labelTimezone">Vaqt mintaqasi (Timezone)</label>
+          <input type="text" id="inputTimezone" class="form-control" placeholder="UTC" style="border-radius: 9999px !important;">
         </div>
 
         <div class="form-group">

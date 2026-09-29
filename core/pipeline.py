@@ -253,7 +253,7 @@ class PipelineRunner:
         if len(photo_urls) <= 1 and product.product_url:
             from core.gallery import extract_gallery_photos
             try:
-                gallery = extract_gallery_photos(product.product_url, brand=product.source)
+                gallery = extract_gallery_photos(product.product_url, brand=product.source, max_photos=8)
                 if gallery:
                     photo_urls = gallery
             except Exception as exc:

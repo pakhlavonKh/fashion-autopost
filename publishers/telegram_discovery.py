@@ -106,7 +106,7 @@ class TelegramChatDiscoveryService:
             )
             logger.info("Discovered channel from post: '%s' (ID: %s)", title, chat_id)
 
-        # 3. Direct user messages (e.g. /start or /admin in private chat)
+        # 3. Direct user messages or group messages
         elif "message" in upd:
             msg = upd["message"]
             chat = msg.get("chat", {})
@@ -114,6 +114,16 @@ class TelegramChatDiscoveryService:
             chat_type = str(chat.get("type", "private"))
             title = str(chat.get("title") or f"{chat.get('first_name', '')} {chat.get('last_name', '')}".strip() or chat_id)
             username = chat.get("username")
+
+            # Handle migration from group to supergroup
+            if "migrate_to_chat_id" in msg:
+                self.repo.deactivate_telegram_chat(chat_id)
+                logger.info("Chat %s migrated to supergroup %s, deactivating old ID", chat_id, msg["migrate_to_chat_id"])
+                return
+            if "migrate_from_chat_id" in msg:
+                old_chat_id = str(msg["migrate_from_chat_id"])
+                self.repo.deactivate_telegram_chat(old_chat_id)
+                logger.info("Supergroup migrated from old chat %s, deactivating old ID", old_chat_id)
 
             if chat_type == "private":
                 self.repo.upsert_telegram_chat(

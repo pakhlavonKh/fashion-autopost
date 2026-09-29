@@ -28,12 +28,15 @@ class LitterboxImageHost:
     Meta's content publishing API downloads images from a public HTTPS URL.
     Local files and store CDNs that block datacenter IPs are rejected.
     The upload expires after 24 hours, which is enough for Instagram to fetch it.
+    Falls back to catbox.moe (permanent) when litterbox is unavailable.
     """
 
     UPLOAD_URL = "https://litterbox.catbox.moe/resources/internals/api.php"
+    FALLBACK_URL = "https://catbox.moe/user/api.php"
 
     def __init__(self, timeout_seconds: float = 60.0) -> None:
         self.timeout_seconds = timeout_seconds
+        self._use_catbox_primary = False
 
     def ensure_public_url(self, photo_url_or_path: str) -> str:
         local_path = Path(photo_url_or_path)
@@ -43,18 +46,28 @@ class LitterboxImageHost:
                 return url
             raise ValueError(f"Instagram image is not a local file or public HTTPS URL: {url}")
 
+        if self._use_catbox_primary:
+            return self._upload(local_path, self.FALLBACK_URL, {"reqtype": "fileupload"})
+
+        try:
+            return self._upload(local_path, self.UPLOAD_URL, {"reqtype": "fileupload", "time": "24h"})
+        except Exception as exc:
+            logger.warning("Litterbox upload failed (%s), switching to catbox.moe primary ...", exc)
+            self._use_catbox_primary = True
+            return self._upload(local_path, self.FALLBACK_URL, {"reqtype": "fileupload"})
+
+    def _upload(self, local_path: Path, upload_url: str, data: dict) -> str:
         with local_path.open("rb") as handle:
             files = {"fileToUpload": (local_path.name, handle, "image/jpeg")}
-            data = {"reqtype": "fileupload", "time": "24h"}
             with httpx.Client(timeout=self.timeout_seconds) as client:
-                resp = client.post(self.UPLOAD_URL, data=data, files=files)
+                resp = client.post(upload_url, data=data, files=files)
                 resp.raise_for_status()
-
         public_url = resp.text.strip()
         if not public_url.startswith("https://"):
             raise RuntimeError(f"Image host did not return a public URL: {public_url[:180]}")
         logger.info("Uploaded Instagram image to %s", public_url)
         return public_url
+
 
 
 class PassthroughImageHost:

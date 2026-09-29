@@ -60,15 +60,59 @@ def extract_gallery_photos(
             # Pick primary variant with most images
             if variants:
                 best_var = max(variants.values(), key=len)
-                photos = list(dict.fromkeys(best_var))
+                candidate_urls = list(dict.fromkeys(best_var))
             else:
-                photos = list(dict.fromkeys(matches))
+                candidate_urls = list(dict.fromkeys(matches))
+
+            # Filter out material/color swatches (codes like -020, -021, -022)
+            non_swatch: list[str] = []
+            for u in candidate_urls:
+                suffix = u.split("/")[-1].split("-")[-1]
+                if suffix.startswith("020") or suffix in ("021", "022", "swatch"):
+                    logger.debug("Filtered out Mango swatch: %s", u)
+                    continue
+                non_swatch.append(u)
+
+            # Separate packshots (product without person: -900, -90, etc.) and model shots
+            packshots = [
+                u for u in non_swatch
+                if u.split("/")[-1].split("-")[-1].startswith("90") or u.split("/")[-1].split("-")[-1] == "900"
+            ]
+            model_shots = [u for u in non_swatch if u not in packshots]
+
+            # Sort model shots so front/primary on-model hero look comes first
+            def _model_priority(url: str) -> int:
+                end = url.split("/")[-1].split("-")[-1]
+                if end in ("001", "01"):
+                    return 0
+                if end in ("002", "02"):
+                    return 1
+                if end in ("003", "03"):
+                    return 2
+                if end.startswith("00") or end.startswith("01"):
+                    return 3
+                return 4
+
+            model_shots.sort(key=_model_priority)
+
+            # Guarantee hero model shots first, then product-without-person packshot, then remaining angles
+            if packshots:
+                photos = model_shots[:3] + packshots + model_shots[3:]
+            else:
+                photos = model_shots
 
     # 2. Zara Gallery
     elif "zara" in brand_lower or "zara.com" in product_url:
         zara_matches = re.findall(r"https://static\.zara\.net/photos/[^\s\"\'<>]+", html_text)
         if zara_matches:
-            clean_zara = [m.split("?")[0] for m in zara_matches if "/w/" in m or "/2/" in m or "_0." in m or "_1." in m]
+            clean_zara = [
+                m.split("?")[0]
+                for m in zara_matches
+                if ("/w/" in m or "/2/" in m or "_0." in m or "_1." in m)
+                and "/swatches/" not in m
+                and "_6_1_1" not in m
+                and "_swatch" not in m
+            ]
             photos = list(dict.fromkeys(clean_zara))
 
     # 3. Generic JSON-LD / og:image fallback

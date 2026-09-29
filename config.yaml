@@ -28,8 +28,8 @@ fx:
     USD: 1.0
 include_product_link: true
 instagram:
-  enabled: false
-  username: mukhsinius
+  enabled: true
+  username: invito.live
   caption_footer: "Европейское качество\nОбращаться: @nigora_7\nТел:+998998484044\n\
     \u2728Отзывы: @otzivi_fashbou\nТовары в наличии: @vnalichiifash\n\nНаш Telegram-канал:\n\
     https://t.me/fashionalleyb\n"
@@ -40,7 +40,7 @@ moderation:
   enabled: false
 prompt_path: ./prompt.txt
 schedule:
-  interval_minutes: 1
+  interval_minutes: null
   posts_per_day: 500
   times: []
   timezone: UTC

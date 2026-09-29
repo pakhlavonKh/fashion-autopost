@@ -34,6 +34,30 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r'[^a-zA-Z0-9_\-\.]', '_', name)
 
 
+def is_material_or_color_swatch(image_path: Path) -> bool:
+    """Detect if an image is a single-color or fabric texture swatch rather than a full product photo.
+
+    Checks:
+    1. Small dimension icons (< 350x350, such as 200x200 swatches).
+    2. Uniform solid colors or low-contrast fabric patches (color stddev < 18.0).
+    """
+    try:
+        from PIL import Image, ImageStat
+        with Image.open(image_path) as im:
+            w, h = im.size
+            if w < 350 or h < 350:
+                logger.info("Filtered swatch image %s: small dimensions (%dx%d)", image_path.name, w, h)
+                return True
+            stat = ImageStat.Stat(im.convert("RGB"))
+            avg_std = sum(stat.stddev) / len(stat.stddev)
+            if avg_std < 18.0:
+                logger.info("Filtered swatch image %s: low color variance (stddev=%.2f, single-color texture)", image_path.name, avg_std)
+                return True
+    except Exception as exc:
+        logger.debug("Could not run swatch detection on %s: %s", image_path, exc)
+    return False
+
+
 class ImageDownloader:
     """Downloads remote product photos to local disk storage."""
 
@@ -97,11 +121,13 @@ class ImageDownloader:
             return None
 
     def download_all(self, photo_urls: list[str], external_id: str = "") -> list[Path]:
-        """Download multiple photos for a product card, returning successfully downloaded local paths."""
+        """Download multiple photos for a product card, returning successfully downloaded local paths with swatches filtered out."""
         downloaded: list[Path] = []
         for i, url in enumerate(photo_urls):
             sub_id = f"{external_id}_{i}" if external_id else f"item_{i}"
             path = self.download(url, external_id=sub_id)
             if path and path.is_file():
+                if is_material_or_color_swatch(path):
+                    continue
                 downloaded.append(path)
         return downloaded
