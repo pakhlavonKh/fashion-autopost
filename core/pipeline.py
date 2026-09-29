@@ -7,16 +7,18 @@ and comprehensive audit logging.
 
 from dataclasses import dataclass, field
 import logging
+import threading
 from typing import Any, Protocol, runtime_checkable
 
 from adapters.base import RawProduct, SourceAdapter
+from adapters.product_page import ProductPageError, fetch_product_page
 from config.app_config import AppConfig
 from core.composer import compose_post
 from core.dedup import extract_duplicate_signatures, filter_unseen
 from core.image_downloader import ImageDownloader
 from core.moderation import ConfigurableModerationGate, ModerationGate
-from core.pricing import FxConverter, calculate_final_price
-from llm.base import LLMProvider, PromptLoader
+from core.pricing import FxConverter, calculate_final_price, source_price_usd
+from llm.base import LLMProvider, PromptLoader, SelectionResult
 from publishers.base import Publisher
 from storage.repository import ProductRepository
 
@@ -71,9 +73,105 @@ class PipelineRunner:
         )
         self.notifier = notifier
         self.image_downloader = ImageDownloader()
+        self._cycle_lock = threading.Lock()
 
     def run_cycle(self) -> CycleSummary:
         """Execute one complete publishing cycle."""
+        with self._cycle_lock:
+            return self._run_cycle_locked()
+
+    def publish_manual_url(self, product_url: str) -> tuple[bool, str]:
+        """Publish one admin-submitted product with the same pricing, copy, and channels as scheduled posts."""
+        with self._cycle_lock:
+            return self._publish_manual_url_locked(product_url)
+
+    def _publish_manual_url_locked(self, product_url: str) -> tuple[bool, str]:
+        try:
+            self.config.reload_hot_fields()
+        except Exception as exc:
+            logger.warning("Failed to reload hot config fields before manual publish: %s", exc)
+
+        try:
+            product = fetch_product_page(product_url, headless=self.config.scraper.headless)
+        except ProductPageError as exc:
+            return False, str(exc)
+        except Exception as exc:
+            logger.error("Manual product fetch failed for %s: %s", product_url, exc, exc_info=True)
+            return False, f"Не удалось открыть ссылку: {exc}"
+
+        signatures = extract_duplicate_signatures(
+            product.source,
+            product.external_id,
+            product.product_url,
+            product.title,
+        )
+        already_published = product.external_id in self.repo.get_published_ids() or bool(
+            signatures & self.repo.get_published_signatures()
+        )
+        if already_published:
+            return False, "Этот товар уже публиковался. Повторно выкладывать его не буду."
+
+        held = getattr(self.repo, "upsert_held", None)
+        if held is not None:
+            held(product, status="manual")
+        else:
+            self.repo.upsert_new(product)
+
+        try:
+            selections = self.llm.select_products(
+                candidates=[product],
+                prompt=self.prompt_loader.load_prompt(),
+                max_items=1,
+            )
+        except Exception as exc:
+            logger.warning("LLM copy failed for manual product %s: %s", product.external_id, exc)
+            selections = []
+
+        if not selections:
+            selections = [
+                SelectionResult(
+                    external_id=product.external_id,
+                    title=product.title,
+                    description="Размеры от XS до XL.\nЦвет: классический.",
+                )
+            ]
+
+        selection = selections[0]
+        summary = CycleSummary()
+        try:
+            self._process_single_product(
+                product,
+                selection.description,
+                summary,
+                title_override=selection.title,
+            )
+        except Exception as exc:
+            err_msg = f"Не удалось опубликовать: {exc}"
+            logger.error("Manual publish failed for %s: %s", product.external_id, exc, exc_info=True)
+            try:
+                self.repo.mark_failed(product.external_id, str(exc))
+            except Exception:
+                pass
+            return False, err_msg
+
+        if summary.published:
+            record = None
+            try:
+                record = self.repo.get_by_external_id(product.external_id)
+            except Exception as exc:
+                logger.warning("Could not reload published manual product %s: %s", product.external_id, exc)
+            title = getattr(record, "title", None) or selection.title or product.title
+            price_final = getattr(record, "price_final", None)
+            price_line = ""
+            if price_final is not None:
+                price_line = f"\nЦена: {price_final} {self.config.target_currency}"
+            return True, f"Пост опубликован: {title}{price_line}"
+        if summary.pending_review:
+            return True, "Пост подготовлен и ожидает модерации."
+        err = "; ".join(summary.errors) or "публикация не выполнена"
+        return False, f"Не удалось опубликовать: {err}"
+
+    def _run_cycle_locked(self) -> CycleSummary:
         summary = CycleSummary()
         logger.info("=== Starting Pipeline Cycle (dry_run=%s) ===", self.config.dry_run)
 
@@ -108,6 +206,12 @@ class PipelineRunner:
                 logger.warning("Could not fetch unposted products from repository: %s", exc)
 
         if db_candidates:
+            affordable, rejected = self._split_by_source_price(db_candidates)
+            for product in rejected:
+                self._reject_over_source_price(product, already_stored=True)
+            db_candidates = affordable
+
+        if db_candidates:
             logger.info("Found %d unposted products in database queue. Publishing from DB.", len(db_candidates))
             raw_products = db_candidates
             summary.fetched = len(raw_products)
@@ -115,13 +219,17 @@ class PipelineRunner:
             logger.info("No unposted products remaining in database. Scraping catalog to replenish queue...")
             try:
                 raw_products = self.source.fetch_products()
-                summary.fetched = len(raw_products)
             except Exception as exc:
                 err_msg = f"Failed to fetch products from source adapter: {exc}"
                 logger.error(err_msg, exc_info=True)
                 summary.errors.append(err_msg)
                 self._notify_error("ingestion", err_msg)
                 return summary
+            affordable, rejected = self._split_by_source_price(raw_products)
+            for product in rejected:
+                self._reject_over_source_price(product, already_stored=False)
+            raw_products = affordable
+            summary.fetched = len(raw_products)
 
         if not raw_products:
             logger.info("No in-stock products returned by source adapter or database queue. Cycle complete.")
@@ -218,6 +326,49 @@ class PipelineRunner:
             logger.warning("Could not persist cycle summary to DB: %s", exc)
 
         return summary
+
+    def _split_by_source_price(
+        self,
+        products: list[RawProduct],
+    ) -> tuple[list[RawProduct], list[RawProduct]]:
+        """Keep products whose store price, converted to USD before markup, is within the limit."""
+        limit = self.config.max_source_price_usd
+        kept: list[RawProduct] = []
+        rejected: list[RawProduct] = []
+        for product in products:
+            usd_price = source_price_usd(product.price, product.currency, self.fx)
+            if usd_price > limit:
+                logger.info(
+                    "Skipping %s: store price %s %s is %s USD, above the %s USD limit before markup",
+                    product.external_id,
+                    product.price,
+                    product.currency,
+                    usd_price,
+                    limit,
+                )
+                rejected.append(product)
+            else:
+                kept.append(product)
+        if rejected:
+            logger.info(
+                "Dropped %d products above the %s USD source-price limit (markup is not included).",
+                len(rejected),
+                limit,
+            )
+        return kept, rejected
+
+    def _reject_over_source_price(self, product: RawProduct, already_stored: bool) -> None:
+        """Drop an over-limit product. Queued rows are marked failed so they do not block the queue."""
+        if not already_stored:
+            return
+        try:
+            usd_price = source_price_usd(product.price, product.currency, self.fx)
+            self.repo.mark_failed(
+                product.external_id,
+                f"Store price {usd_price} USD exceeds {self.config.max_source_price_usd} USD before markup",
+            )
+        except Exception as exc:
+            logger.warning("Could not mark over-limit product %s as failed: %s", product.external_id, exc)
 
     def _process_single_product(
         self,

@@ -53,16 +53,16 @@ def test_idempotency_no_duplicate_publishing(tmp_path) -> None:
         prompt_loader=prompt_loader,
     )
 
-    # First cycle: all 5 in-stock items are processed and published
+    # First cycle: in-stock items at or under 80 USD before markup are published.
     summary1 = runner.run_cycle()
-    assert summary1.fetched == 5
-    assert summary1.unseen == 5
-    assert summary1.published == 5
-    assert len(repo.get_published_ids()) == 5
+    assert summary1.fetched == 2
+    assert summary1.unseen == 2
+    assert summary1.published == 2
+    assert len(repo.get_published_ids()) == 2
 
-    # Second cycle: all 5 items are already known; 0 items are published
+    # Second cycle: those items are already known; 0 items are published
     summary2 = runner.run_cycle()
-    assert summary2.fetched == 5
+    assert summary2.fetched == 2
     assert summary2.unseen == 0
     assert summary2.published == 0
-    assert len(repo.get_published_ids()) == 5
+    assert len(repo.get_published_ids()) == 2

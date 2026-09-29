@@ -3,16 +3,30 @@
 Per SDD §3.7 and SRS FR-6 (Anti-duplicate tracking).
 """
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional, Protocol, runtime_checkable
+from typing import Any, Optional, Protocol, runtime_checkable
 import zoneinfo
 from sqlalchemy import create_engine, select, update, func
 from sqlalchemy.orm import Session, sessionmaker
 
 from adapters.base import RawProduct
-from storage.models import Base, LogRecord, ProductRecord, TelegramChatRecord
+from storage.models import Base, LogRecord, ManualPostRecord, ProductRecord, TelegramChatRecord
+
+
+@dataclass
+class ManualPost:
+    """Detached view of an admin-scheduled product link."""
+
+    id: int
+    admin_user_id: str
+    chat_id: str
+    product_url: str
+    publish_at: datetime | None
+    status: str
+    error: str | None
 
 
 @runtime_checkable
@@ -93,6 +107,10 @@ class ProductRepository(Protocol):
 
     def deactivate_telegram_chat(self, chat_id: str) -> None:
         """Deactivate a Telegram chat target."""
+        ...
+
+    def upsert_held(self, product: RawProduct, status: str = "manual") -> None:
+        """Store a product outside the automatic queue so a scheduled post is not published early."""
         ...
 
 
@@ -371,3 +389,157 @@ class SqlAlchemyProductRepository:
             )
             session.execute(stmt)
             session.commit()
+
+    def upsert_held(self, product: RawProduct, status: str = "manual") -> None:
+        """Store a product outside the automatic queue so a scheduled post is not published early."""
+        with self._get_session() as session:
+            existing = session.scalar(
+                select(ProductRecord).where(ProductRecord.external_id == product.external_id)
+            )
+            if existing is None:
+                session.add(
+                    ProductRecord(
+                        external_id=product.external_id,
+                        source=product.source,
+                        title=product.title,
+                        price_original=product.price,
+                        currency_original=product.currency,
+                        photo_url=product.photo_url,
+                        product_url=product.product_url,
+                        status=status,
+                    )
+                )
+            elif existing.status != "published":
+                existing.source = product.source
+                existing.title = product.title
+                existing.price_original = product.price
+                existing.currency_original = product.currency
+                existing.photo_url = product.photo_url
+                existing.product_url = product.product_url
+                existing.status = status
+            session.commit()
+
+    def create_manual_draft(self, admin_user_id: str, chat_id: str, product_url: str) -> ManualPost:
+        """Replace this admin's unanswered link with a new one waiting for a publish time."""
+        with self._get_session() as session:
+            waiting = session.scalars(
+                select(ManualPostRecord).where(
+                    ManualPostRecord.admin_user_id == str(admin_user_id),
+                    ManualPostRecord.status == "awaiting_time",
+                )
+            ).all()
+            for row in waiting:
+                row.status = "cancelled"
+                row.updated_at = datetime.now(timezone.utc)
+            record = ManualPostRecord(
+                admin_user_id=str(admin_user_id),
+                chat_id=str(chat_id),
+                product_url=product_url,
+                status="awaiting_time",
+            )
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return _manual_post_from_row(record)
+
+    def get_awaiting_manual(self, admin_user_id: str) -> ManualPost | None:
+        with self._get_session() as session:
+            record = session.scalar(
+                select(ManualPostRecord)
+                .where(
+                    ManualPostRecord.admin_user_id == str(admin_user_id),
+                    ManualPostRecord.status == "awaiting_time",
+                )
+                .order_by(ManualPostRecord.id.desc())
+            )
+            return _manual_post_from_row(record) if record else None
+
+    def cancel_awaiting_manual(self, admin_user_id: str) -> bool:
+        with self._get_session() as session:
+            rows = session.scalars(
+                select(ManualPostRecord).where(
+                    ManualPostRecord.admin_user_id == str(admin_user_id),
+                    ManualPostRecord.status == "awaiting_time",
+                )
+            ).all()
+            if not rows:
+                return False
+            now = datetime.now(timezone.utc)
+            for row in rows:
+                row.status = "cancelled"
+                row.updated_at = now
+            session.commit()
+            return True
+
+    def schedule_manual_post(self, post_id: int, publish_at: datetime) -> ManualPost | None:
+        with self._get_session() as session:
+            record = session.get(ManualPostRecord, post_id)
+            if record is None:
+                return None
+            record.publish_at = publish_at
+            record.status = "scheduled"
+            record.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(record)
+            return _manual_post_from_row(record)
+
+    def get_manual_post(self, post_id: int) -> ManualPost | None:
+        with self._get_session() as session:
+            record = session.get(ManualPostRecord, post_id)
+            return _manual_post_from_row(record) if record else None
+
+    def set_manual_post_status(self, post_id: int, status: str, error: str | None = None) -> None:
+        with self._get_session() as session:
+            record = session.get(ManualPostRecord, post_id)
+            if record is None:
+                return
+            record.status = status
+            record.error = error
+            record.updated_at = datetime.now(timezone.utc)
+            session.commit()
+
+    def list_manual_posts(self, statuses: list[str]) -> list[ManualPost]:
+        with self._get_session() as session:
+            rows = session.scalars(
+                select(ManualPostRecord)
+                .where(ManualPostRecord.status.in_(statuses))
+                .order_by(ManualPostRecord.id.asc())
+            ).all()
+            return [_manual_post_from_row(row) for row in rows]
+
+    def find_open_manual_by_url(self, product_url: str) -> ManualPost | None:
+        from core.dedup import normalize_url
+
+        target = normalize_url(product_url)
+        if not target:
+            return None
+        with self._get_session() as session:
+            rows = session.scalars(
+                select(ManualPostRecord).where(
+                    ManualPostRecord.status.in_(("awaiting_time", "scheduled", "publishing"))
+                )
+            ).all()
+            for row in rows:
+                if normalize_url(row.product_url) == target:
+                    return _manual_post_from_row(row)
+            return None
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _manual_post_from_row(record: ManualPostRecord) -> ManualPost:
+    return ManualPost(
+        id=record.id,
+        admin_user_id=record.admin_user_id,
+        chat_id=record.chat_id,
+        product_url=record.product_url,
+        publish_at=_as_utc(record.publish_at),
+        status=record.status,
+        error=record.error,
+    )

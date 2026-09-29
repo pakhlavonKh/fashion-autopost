@@ -76,10 +76,30 @@ class FakeProductRepository:
                 "price": product.price,
                 "currency": product.currency,
                 "product_url": product.product_url,
+                "photo_url": product.photo_url,
                 "status": "new",
                 "description": None,
                 "price_final": None,
             }
+
+    def upsert_held(self, product: RawProduct, status: str = "manual") -> None:
+        existing = self.products.get(product.external_id)
+        if existing and existing.get("status") == "published":
+            return
+        self.products[product.external_id] = {
+            "external_id": product.external_id,
+            "source": product.source,
+            "title": product.title,
+            "price": product.price,
+            "currency": product.currency,
+            "product_url": product.product_url,
+            "photo_url": product.photo_url,
+            "status": status,
+            "description": existing.get("description") if existing else None,
+            "price_final": existing.get("price_final") if existing else None,
+            "telegram_post_id": existing.get("telegram_post_id") if existing else None,
+            "instagram_post_id": existing.get("instagram_post_id") if existing else None,
+        }
 
     def mark_selected(self, external_id: str, description: str, price_final: Decimal, title: str | None = None) -> None:
         if external_id in self.products:

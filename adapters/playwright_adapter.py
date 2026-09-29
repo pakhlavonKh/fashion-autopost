@@ -14,6 +14,7 @@ from adapters.base import RawProduct, SourceAdapter
 from adapters.europe_markets import is_european_store_url, next_region_index
 from adapters.scrapers import get_scraper_for_store
 from config.app_config import EuropeanMarketConfig, ScraperSettings, ScraperStoreConfig
+from core.pricing import FixedRateConverter, FxConverter, source_price_usd
 import os
 import sys
 
@@ -144,11 +145,26 @@ class PlaywrightScraperAdapter:
             logger.error("Playwright browser session failed: %s", exc)
 
         normalized: list[RawProduct] = []
+        skipped_over_price = 0
+        price_limit = self._max_source_price_usd()
+        fx = self._source_fx()
         for item in all_raw_items:
             try:
                 product = self._normalize_item(item)
                 if not product.in_stock:
                     logger.debug("Skipping out-of-stock product: %s", product.external_id)
+                    continue
+                usd_price = source_price_usd(product.price, product.currency, fx)
+                if usd_price > price_limit:
+                    skipped_over_price += 1
+                    logger.info(
+                        "Skipping %s: store price %s %s is %s USD, above the %s USD limit before markup",
+                        product.external_id,
+                        product.price,
+                        product.currency,
+                        usd_price,
+                        price_limit,
+                    )
                     continue
                 normalized.append(product)
             except (KeyError, ValueError, InvalidOperation) as exc:
@@ -158,11 +174,38 @@ class PlaywrightScraperAdapter:
                 continue
 
         logger.info(
-            "PlaywrightScraperAdapter: collected %d valid in-stock products from %d total scraped",
+            "PlaywrightScraperAdapter: collected %d valid in-stock products from %d total scraped (%d over the %s USD limit)",
             len(normalized),
             len(all_raw_items),
+            skipped_over_price,
+            price_limit,
         )
         return normalized
+
+    def _max_source_price_usd(self) -> Decimal:
+        """Upper store-price limit in USD, applied before markup."""
+        raw = getattr(self.app_config, "max_source_price_usd", None) if self.app_config else None
+        if raw is None:
+            return Decimal("80")
+        return Decimal(str(raw))
+
+    def _source_fx(self) -> FxConverter:
+        """FX table used to compare store prices with the USD limit, without markup."""
+        fx_settings = getattr(self.app_config, "fx", None) if self.app_config else None
+        if fx_settings is not None:
+            return FixedRateConverter(
+                fixed_rate=fx_settings.fixed_rate,
+                rates=dict(fx_settings.rates),
+            )
+        return FixedRateConverter(
+            fixed_rate=Decimal("1.08"),
+            rates={
+                "EUR": Decimal("1.08"),
+                "GBP": Decimal("1.29"),
+                "TRY": Decimal("0.029"),
+                "USD": Decimal("1.00"),
+            },
+        )
 
     def _resolve_store_targets(self, active_config: ScraperSettings) -> dict[str, ScraperStoreConfig]:
         """Point Zara and Mango at one European country for this scrape.

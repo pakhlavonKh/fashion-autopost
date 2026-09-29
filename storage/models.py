@@ -98,3 +98,29 @@ class TelegramChatRecord(Base):
     __table_args__ = (
         Index("idx_telegram_chats_role_active", "role", "is_active"),
     )
+
+
+class ManualPostRecord(Base):
+    """Admin-submitted product link waiting for a publish time or already scheduled."""
+
+    __tablename__ = "manual_posts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_user_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    chat_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    product_url: Mapped[str] = mapped_column(Text, nullable=False)
+    publish_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # awaiting_time | scheduled | publishing | published | failed | cancelled
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="awaiting_time", index=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )

@@ -53,8 +53,9 @@ def test_dry_run_cycle_end_to_end(tmp_path) -> None:
 
     summary = runner.run_cycle()
 
-    assert summary.fetched == 5
-    assert summary.unseen == 5
+    # Mock catalog items above 80 USD before markup are not ingested.
+    assert summary.fetched == 2
+    assert summary.unseen == 2
     assert summary.selected == 2
     assert summary.published == 2
     assert summary.failed == 0

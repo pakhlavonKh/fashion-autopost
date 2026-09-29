@@ -32,7 +32,7 @@ def test_playwright_pipeline_end_to_end(tmp_path: Path) -> None:
                     <a class="product-link" href="https://www.zara.com/sample/dress-101.html">
                         <div class="product-grid-product-info">
                             <h2 class="product-grid-product-info__name">Emerald Satin Midi Dress</h2>
-                            <span class="money-amount__main">99,95 €</span>
+                            <span class="money-amount__main">49,95 €</span>
                         </div>
                     </a>
                     <img class="media-image__image" src="https://static.zara.net/dress101.jpg" alt="Emerald Satin Dress" />
@@ -41,10 +41,19 @@ def test_playwright_pipeline_end_to_end(tmp_path: Path) -> None:
                     <a class="product-link" href="https://www.zara.com/sample/coat-102.html">
                         <div class="product-grid-product-info">
                             <h2 class="product-grid-product-info__name">Oversized Cashmere Trench Coat</h2>
-                            <span class="money-amount__main">189,00 €</span>
+                            <span class="money-amount__main">59,00 €</span>
                         </div>
                     </a>
                     <img class="media-image__image" src="https://static.zara.net/coat102.jpg" alt="Cashmere Coat" />
+                </li>
+                <li class="product-grid-product" data-product-id="pw-103">
+                    <a class="product-link" href="https://www.zara.com/sample/coat-103.html">
+                        <div class="product-grid-product-info">
+                            <h2 class="product-grid-product-info__name">Leather Trench Coat</h2>
+                            <span class="money-amount__main">189,00 €</span>
+                        </div>
+                    </a>
+                    <img class="media-image__image" src="https://static.zara.net/coat103.jpg" alt="Leather Coat" />
                 </li>
             </ul>
         </body>
@@ -117,14 +126,15 @@ def test_playwright_pipeline_end_to_end(tmp_path: Path) -> None:
     assert len(published_ids) == 2
     assert "zara-pw-101" in published_ids
     assert "zara-pw-102" in published_ids
+    assert "zara-pw-103" not in published_ids
 
     rec = repo.get_by_external_id("zara-pw-101")
     assert rec is not None
     assert rec.status == "published"
-    assert rec.price_original == Decimal("99.95")
+    assert rec.price_original == Decimal("49.95")
     assert rec.price_final is not None
-    # 99.95 * 1.08 + 20.00 = 107.946 + 20.00 = 127.95
-    assert rec.price_final == Decimal("127.95")
+    # 49.95 * 1.08 + 20.00 = 53.946 + 20.00 = 73.95
+    assert rec.price_final == Decimal("73.95")
     assert rec.description_gpt is not None
     assert "DRYRUN_TELEGRAM" in rec.telegram_post_id
     assert "DRYRUN_INSTAGRAM" in rec.instagram_post_id

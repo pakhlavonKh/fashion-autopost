@@ -26,10 +26,12 @@ class TelegramChatDiscoveryService:
         bot_token: str,
         repo: ProductRepository,
         timeout_seconds: float = 10.0,
+        allowed_private_user_ids: set[int] | None = None,
     ) -> None:
         self.bot_token = bot_token
         self.repo = repo
         self.timeout_seconds = timeout_seconds
+        self.allowed_private_user_ids = allowed_private_user_ids
 
     def sync_updates(self) -> list[TelegramChatRecord]:
         """Poll Telegram getUpdates and register any newly joined channels or admin chats."""
@@ -41,6 +43,12 @@ class TelegramChatDiscoveryService:
         try:
             with httpx.Client(timeout=self.timeout_seconds) as client:
                 resp = client.get(url, params={"allowed_updates": ["message", "channel_post", "my_chat_member"]})
+                if resp.status_code == 409:
+                    logger.info(
+                        "Telegram getUpdates is already consumed by the admin intake bot. "
+                        "Using chats already stored in the database."
+                    )
+                    return self.repo.get_active_telegram_targets()
                 if resp.status_code != 200:
                     logger.warning("Telegram getUpdates returned status %d: %s", resp.status_code, resp.text)
                     return self.repo.get_active_telegram_targets()
@@ -126,6 +134,15 @@ class TelegramChatDiscoveryService:
                 logger.info("Supergroup migrated from old chat %s, deactivating old ID", old_chat_id)
 
             if chat_type == "private":
+                raw_sender = (msg.get("from") or {}).get("id", chat.get("id"))
+                try:
+                    sender_id = int(raw_sender)
+                except (TypeError, ValueError):
+                    logger.info("Ignoring private Telegram chat %s: missing user id", chat_id)
+                    return
+                if self.allowed_private_user_ids is not None and sender_id not in self.allowed_private_user_ids:
+                    logger.info("Ignoring private Telegram chat %s: user is not an admin", chat_id)
+                    return
                 self.repo.upsert_telegram_chat(
                     chat_id=chat_id,
                     title=title,

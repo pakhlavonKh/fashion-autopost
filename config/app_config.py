@@ -143,13 +143,27 @@ DEFAULT_TELEGRAM_BIO_FOOTER = (
 )
 
 
+DEFAULT_TELEGRAM_ADMIN_USER_IDS = [5532256714, 333588697, 370255715]
+
+
 class TelegramSettings(BaseModel):
     """Settings for Telegram Bot publisher."""
     enabled: bool = True
     bot_token: str = Field(default="mock-telegram-token")
     channel_id: str | None = None
     admin_chat_id: str | None = None
+    admin_user_ids: list[int] = Field(default_factory=lambda: list(DEFAULT_TELEGRAM_ADMIN_USER_IDS))
     bio_footer: str = Field(default=DEFAULT_TELEGRAM_BIO_FOOTER)
+
+    @field_validator("admin_user_ids", mode="before")
+    @classmethod
+    def parse_admin_user_ids(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            parts = [part.strip() for part in value.split(",") if part.strip()]
+            return [int(part) for part in parts]
+        if isinstance(value, int):
+            return [value]
+        return value
 
 
 DEFAULT_INSTAGRAM_CAPTION_FOOTER = (
@@ -242,6 +256,8 @@ class AppConfig(BaseModel):
 
     # Operational settings
     markup: Decimal = Decimal("15.00")
+    # Store price in USD, before markup. Products above this are not parsed.
+    max_source_price_usd: Decimal = Decimal("80")
     target_currency: str = "USD"
     max_products_per_run: int = 5
     daily_publish_cap: int | None = None  # SRS §10.4
@@ -321,6 +337,8 @@ class AppConfig(BaseModel):
             telegram_data["channel_id"] = os.environ["TELEGRAM_CHANNEL_ID"]
         if os.getenv("TELEGRAM_ADMIN_CHAT_ID"):
             telegram_data["admin_chat_id"] = os.environ["TELEGRAM_ADMIN_CHAT_ID"]
+        if os.getenv("TELEGRAM_ADMIN_USER_IDS"):
+            telegram_data["admin_user_ids"] = os.environ["TELEGRAM_ADMIN_USER_IDS"]
         yaml_data["telegram"] = telegram_data
 
         instagram_data = yaml_data.get("instagram", {})
@@ -390,6 +408,7 @@ class AppConfig(BaseModel):
         
         Per SRS §1.2 & FR-3.2, FR-8.2:
         - markup
+        - max_source_price_usd
         - schedule
         - prompt_path
         - dry_run
@@ -406,6 +425,8 @@ class AppConfig(BaseModel):
 
         if "markup" in content:
             self.markup = Decimal(str(content["markup"]))
+        if "max_source_price_usd" in content and content["max_source_price_usd"] is not None:
+            self.max_source_price_usd = Decimal(str(content["max_source_price_usd"]))
         if "target_currency" in content:
             self.target_currency = str(content["target_currency"])
         if "max_products_per_run" in content:

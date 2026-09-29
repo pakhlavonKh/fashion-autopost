@@ -69,8 +69,8 @@ def test_store_error_isolation() -> None:
     """If one store fails during scraping, the adapter continues with other stores."""
     config = ScraperSettings(
         stores={
-            "failing_store": ScraperStoreConfig(url="https://failing.example.com", enabled=True),
-            "working_store": ScraperStoreConfig(url="https://working.example.com", enabled=True),
+            "failing_store": ScraperStoreConfig(url="https://failing.example.com/es/catalog", enabled=True),
+            "working_store": ScraperStoreConfig(url="https://working.example.com/es/catalog", enabled=True),
         }
     )
 
@@ -110,3 +110,75 @@ def test_store_error_isolation() -> None:
     assert len(products) == 1
     assert products[0].external_id == "work-1"
     assert products[0].title == "Working Item"
+
+
+def test_fetch_products_drops_store_price_above_80_usd() -> None:
+    """Products whose store price converts to more than 80 USD are not parsed. Markup is not added."""
+    config = ScraperSettings(
+        regions=[],
+        stores={
+            "zara": ScraperStoreConfig(
+                url="https://www.zara.com/es/es/mujer-nuevo-l1180.html",
+                currency="EUR",
+                enabled=True,
+            ),
+        },
+    )
+    adapter = PlaywrightScraperAdapter(config=config, selected_stores=["zara"])
+
+    def mock_scrape_single(context, store_name, store_cfg):
+        return [
+            {
+                "id": "keep-usd",
+                "brand": "zara",
+                "name": "Cotton Shirt",
+                "price": Decimal("80.00"),
+                "currency": "USD",
+                "image": "https://example.com/shirt.jpg",
+                "url": "https://www.zara.com/es/shirt",
+                "available": True,
+            },
+            {
+                "id": "drop-usd",
+                "brand": "zara",
+                "name": "Silk Coat",
+                "price": Decimal("80.01"),
+                "currency": "USD",
+                "image": "https://example.com/coat.jpg",
+                "url": "https://www.zara.com/es/coat",
+                "available": True,
+            },
+            {
+                "id": "keep-eur",
+                "brand": "zara",
+                "name": "Linen Trousers",
+                "price": Decimal("74.07"),
+                "currency": "EUR",
+                "image": "https://example.com/trousers.jpg",
+                "url": "https://www.zara.com/es/trousers",
+                "available": True,
+            },
+            {
+                "id": "drop-eur",
+                "brand": "zara",
+                "name": "Wool Blazer",
+                "price": Decimal("89.90"),
+                "currency": "EUR",
+                "image": "https://example.com/blazer.jpg",
+                "url": "https://www.zara.com/es/blazer",
+                "available": True,
+            },
+        ]
+
+    with patch("adapters.playwright_adapter.sync_playwright") as mock_pw:
+        mock_p = MagicMock()
+        mock_pw.return_value.__enter__.return_value = mock_p
+        mock_browser = MagicMock()
+        mock_p.chromium.launch.return_value = mock_browser
+        mock_context = MagicMock()
+        mock_browser.new_context.return_value = mock_context
+
+        with patch.object(adapter, "_scrape_single_store", side_effect=mock_scrape_single):
+            products = adapter.fetch_products()
+
+    assert [product.external_id for product in products] == ["keep-usd", "keep-eur"]

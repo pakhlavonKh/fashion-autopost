@@ -47,6 +47,7 @@ instagram:
 
     '
 markup: 10.0
+max_source_price_usd: 80
 max_products_per_run: 1
 moderation:
   auto_approve: true
@@ -124,6 +125,10 @@ scraper:
   wait_after_scroll_ms: 1500
 target_currency: USD
 telegram:
+  admin_user_ids:
+  - 5532256714
+  - 333588697
+  - 370255715
   bio_footer: 'Европейское качество
 
     Обращаться: @nigora_7

@@ -109,3 +109,11 @@ def calculate_final_price(
     converted_price = fx.convert(original_price, currency, target_currency)
     final_price = converted_price + markup
     return final_price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def source_price_usd(original_price: Decimal, currency: str, fx: FxConverter) -> Decimal:
+    """Convert the store price into USD before any markup is added."""
+    if original_price < Decimal("0"):
+        raise ValueError(f"original_price cannot be negative: {original_price}")
+    converted = fx.convert(original_price, currency, "USD")
+    return converted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

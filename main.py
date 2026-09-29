@@ -41,6 +41,26 @@ from storage.repository import SqlAlchemyProductRepository
 logger = logging.getLogger("main")
 
 
+def start_admin_intake(config: AppConfig, runner: PipelineRunner, scheduler):
+    """Listen for product links from the allowed Telegram admins."""
+    from publishers.admin_intake_bot import AdminIntakeBot
+
+    token = config.telegram.bot_token
+    if not config.telegram.enabled or not token or "mock" in token.lower():
+        logger.info("Admin intake bot is not started (Telegram is disabled or the token is mock).")
+        return None
+    bot = AdminIntakeBot(
+        bot_token=token,
+        admin_user_ids=list(config.telegram.admin_user_ids),
+        repo=runner.repo,
+        runner=runner,
+        timezone_name=config.schedule.timezone,
+        scheduler=scheduler,
+    )
+    bot.start()
+    return bot
+
+
 def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
     """Wire concrete implementations to abstract protocols based on config."""
     # 1. Storage / Repository
@@ -50,6 +70,7 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
     discovery_service = TelegramChatDiscoveryService(
         bot_token=config.telegram.bot_token,
         repo=repo,
+        allowed_private_user_ids=set(config.telegram.admin_user_ids),
     )
     try:
         discovery_service.sync_updates()
@@ -322,11 +343,14 @@ def main() -> None:
             )
 
         app = create_dashboard_app(config, runner, runner.repo, scheduler=scheduler)
+        admin_bot = start_admin_intake(config, runner, scheduler)
         print(f"\n[+] Fashion Autopost Admin Dashboard is running at http://0.0.0.0:{args.port}\n")
         logger.info("Starting Admin Dashboard web server on port %d...", args.port)
         try:
             uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
         finally:
+            if admin_bot is not None:
+                admin_bot.stop()
             if scheduler and getattr(scheduler, "running", False):
                 logger.info("Shutting down background scheduler...")
                 scheduler.shutdown(wait=False)
@@ -344,10 +368,14 @@ def main() -> None:
     # Daemon mode with APScheduler
     logger.info("Starting scheduler daemon...")
     scheduler = build_scheduler(config.schedule, runner, blocking=True)
+    admin_bot = start_admin_intake(config, runner, scheduler)
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Scheduler shutting down gracefully.")
+    finally:
+        if admin_bot is not None:
+            admin_bot.stop()
 
 
 if __name__ == "__main__":

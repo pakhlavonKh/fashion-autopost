@@ -54,8 +54,9 @@ def test_pipeline_runner_happy_path(sample_products: list[RawProduct]) -> None:
     )
 
     summary = runner.run_cycle()
-    assert summary.fetched == 3
-    assert summary.unseen == 3
+    # p-3 is 89.90 EUR, above the 80 USD store-price limit before markup.
+    assert summary.fetched == 2
+    assert summary.unseen == 2
     assert summary.selected == 2
     assert summary.published == 2
     assert summary.failed == 0
@@ -254,4 +255,61 @@ def test_pipeline_runner_channel_disabled(sample_products: list[RawProduct]) -> 
     assert len(pub_tg.published_posts) == 1
     assert len(pub_ig.published_posts) == 0  # Instagram never called!
     assert repo.products["p-1"]["status"] == "published"
+
+
+def test_pipeline_drops_products_above_80_usd_before_markup() -> None:
+    """80 USD store price is kept. 80.01 USD is not ingested. Markup is not part of the check."""
+    at_limit = RawProduct(
+        external_id="at-limit",
+        source="zara",
+        title="Cotton Shirt",
+        price=Decimal("80.00"),
+        currency="USD",
+        photo_url="https://images.example.com/shirt.jpg",
+        product_url="https://zara.com/shirt",
+        in_stock=True,
+    )
+    # 70 USD plus the default markup is 85 USD, which must still be parsed.
+    under_with_markup = RawProduct(
+        external_id="under",
+        source="zara",
+        title="Linen Trousers",
+        price=Decimal("70.00"),
+        currency="USD",
+        photo_url="https://images.example.com/trousers.jpg",
+        product_url="https://zara.com/trousers",
+        in_stock=True,
+    )
+    over_limit = RawProduct(
+        external_id="over",
+        source="mango",
+        title="Wool Coat",
+        price=Decimal("80.01"),
+        currency="USD",
+        photo_url="https://images.example.com/coat.jpg",
+        product_url="https://mango.com/coat",
+        in_stock=True,
+    )
+    repo = FakeProductRepository()
+    source = FakeSourceAdapter([at_limit, under_with_markup, over_limit])
+    llm = FakeLLMProvider(select_count=5)
+    fx = FixedRateConverter(rates={"USD": Decimal("1.00"), "EUR": Decimal("1.08")})
+    pub = FakePublisher("telegram")
+    config = AppConfig(max_products_per_run=5)
+
+    runner = PipelineRunner(
+        source=source,
+        repo=repo,
+        llm=llm,
+        fx=fx,
+        publishers=[pub],
+        config=config,
+        prompt_loader=MockPromptLoader(),
+    )
+
+    summary = runner.run_cycle()
+    assert summary.fetched == 2
+    assert summary.published == 2
+    assert "over" not in repo.products
+    assert repo.get_published_ids() == {"at-limit", "under"}
 

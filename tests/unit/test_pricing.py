@@ -10,6 +10,7 @@ from core.pricing import (
     DynamicRateConverter,
     FixedRateConverter,
     calculate_final_price,
+    source_price_usd,
 )
 
 
@@ -92,3 +93,18 @@ def test_calculate_final_price_negative_validation() -> None:
 
     with pytest.raises(ValueError, match="markup cannot be negative"):
         calculate_final_price(Decimal("50.00"), "USD", Decimal("-5.00"), "USD", fx)
+
+
+def test_source_price_usd_excludes_markup() -> None:
+    """The parsing limit uses the converted store price and does not add markup."""
+    fx = FixedRateConverter(
+        rates={
+            "EUR": Decimal("1.08"),
+            "GBP": Decimal("1.29"),
+            "USD": Decimal("1.00"),
+        }
+    )
+    assert source_price_usd(Decimal("80.00"), "USD", fx) == Decimal("80.00")
+    assert source_price_usd(Decimal("74.07"), "EUR", fx) == Decimal("80.00")
+    assert source_price_usd(Decimal("62.01"), "GBP", fx) == Decimal("79.99")
+    assert source_price_usd(Decimal("74.08"), "EUR", fx) == Decimal("80.01")
