@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from core.composer import ComposedPost
+from core.pricing import whole_price
 from core.image_downloader import ImageDownloader
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
@@ -247,7 +248,7 @@ class TelegramPublisher:
 
     def _format_caption(self, post: ComposedPost) -> str:
         """Format post text matching client specification (1-to-1 bio)."""
-        price_val = int(post.price) if post.price % 1 == 0 else f"{post.price:.2f}"
+        price_val = int(whole_price(post.price))
         price_display = f"{price_val}$" if post.currency == "USD" else f"{price_val} {post.currency}"
         title_clean = html.escape(post.title.strip())
 

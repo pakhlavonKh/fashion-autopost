@@ -41,7 +41,7 @@ def test_caption_matches_boutique_card_and_instagram_limits() -> None:
     post = _sample_post()
     caption = format_instagram_caption(post, DEFAULT_INSTAGRAM_CAPTION_FOOTER)
 
-    assert caption.startswith("Silk Slip Dress-101.39$\nРазмеры от XS до XL.")
+    assert caption.startswith("Silk Slip Dress-101$\nРазмеры от XS до XL.")
     assert "Обращаться: @nigora_7" in caption
     assert "https://t.me/fashionalleyb" in caption
     assert "https://www.zara.com/dress-100" not in caption
@@ -99,7 +99,7 @@ def test_single_photo_publishes_after_container_is_ready() -> None:
         posts = [item for item in calls if item[0] == "POST"]
         assert len(posts) == 2
         assert posts[0][2]["image_url"].startswith("https://files.example.com/")
-        assert posts[0][2]["caption"].startswith("Silk Slip Dress-101.39$")
+        assert posts[0][2]["caption"].startswith("Silk Slip Dress-101$")
         assert "is_carousel_item" not in posts[0][2]
         assert posts[1][2]["creation_id"] == "id-1"
         assert any(item[0] == "GET" and item[2]["fields"] == "status_code,status" for item in calls)
@@ -137,7 +137,7 @@ def test_several_photos_become_a_carousel() -> None:
         assert "caption" not in posts[0][2]
         assert posts[2][2]["media_type"] == "CAROUSEL"
         assert posts[2][2]["children"] == "id-1,id-2"
-        assert posts[2][2]["caption"].startswith("Silk Slip Dress-101.39$")
+        assert posts[2][2]["caption"].startswith("Silk Slip Dress-101$")
         assert posts[3][2]["creation_id"] == "id-3"
 
 

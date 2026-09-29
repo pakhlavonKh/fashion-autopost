@@ -16,6 +16,7 @@ import httpx
 
 from config.app_config import DEFAULT_INSTAGRAM_CAPTION_FOOTER
 from core.composer import ComposedPost
+from core.pricing import whole_price
 from core.image_downloader import ImageDownloader
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
@@ -104,18 +105,22 @@ class InstagramPublisher:
             sources = [post.photo_url]
 
         prepared: list[Path] = []
+        prepare_errors: list[str] = []
         for index, source in enumerate(sources[:MAX_CAROUSEL_ITEMS]):
             local = self._resolve_local_image(source, post.title, index)
             if local is None:
+                prepare_errors.append(f"unreadable image: {source}")
                 continue
             dest = local.with_name(f"{local.stem}_ig.jpg")
             try:
                 prepared.append(prepare_feed_jpeg(local, dest))
             except Exception as exc:
+                prepare_errors.append(str(exc))
                 logger.warning("Skipping Instagram image %s: %s", source, exc)
 
         if not prepared:
-            raise RuntimeError(f"No usable photos for Instagram post '{post.title}'")
+            detail = prepare_errors[0] if prepare_errors else "no image sources"
+            raise RuntimeError(f"No usable photos for Instagram post '{post.title}': {detail}")
 
         urls = [self.image_host.ensure_public_url(str(path)) for path in prepared]
         if len(urls) > MAX_CAROUSEL_ITEMS:
@@ -222,7 +227,7 @@ class InstagramPublisher:
 
 def format_instagram_caption(post: ComposedPost, footer: str | None = None) -> str:
     """Format a boutique caption that matches the Telegram card, within Instagram limits."""
-    price_val = int(post.price) if post.price % 1 == 0 else f"{post.price:.2f}"
+    price_val = int(whole_price(post.price))
     price_display = f"{price_val}$" if post.currency == "USD" else f"{price_val} {post.currency}"
     header = f"{post.title.strip()}-{price_display}"
     description = _extract_description(post)

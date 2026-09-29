@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from adapters.base import RawProduct
+from core.pricing import whole_price
 
 
 @dataclass(frozen=True)
@@ -35,9 +36,10 @@ def compose_post(
     clean_title = product.title.strip()
     brand = product.source.upper()
 
-    # Form formatted price string, e.g. "$104.90" or "104.90 USD"
+    # Sale price is always a whole unit. 104.90 becomes 104.
+    shown_price = whole_price(price)
     symbol = "$" if target_currency.upper() == "USD" else f"{target_currency.upper()} "
-    price_str = f"{symbol}{price:,.2f}"
+    price_str = f"{symbol}{int(shown_price)}"
 
     lines = [
         f"✨ {clean_title} | {brand}",
@@ -60,7 +62,7 @@ def compose_post(
     return ComposedPost(
         photo_url=product.photo_url,
         text=text,
-        price=price,
+        price=shown_price,
         currency=target_currency.upper(),
         product_url=link_to_include,
         title=clean_title,

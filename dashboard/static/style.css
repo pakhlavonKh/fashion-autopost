@@ -821,6 +821,8 @@ h1, h2, h3, h4, .brand-title {
 .status-pending_review { background: var(--warning-bg); color: var(--warning); border-color: rgba(245, 158, 11, 0.25); }
 .status-failed { background: var(--danger-bg); color: var(--danger); border-color: rgba(244, 63, 94, 0.25); }
 .status-new { background: rgba(255, 255, 255, 0.08); color: var(--text-secondary); border-color: var(--border-subtle); }
+.status-withdrawn { background: rgba(255, 255, 255, 0.06); color: var(--text-muted, #9aa); border-color: var(--border-subtle); }
+.product-error { margin: 8px 0 0; font-size: 12px; line-height: 1.4; color: var(--danger); }
 
 /* ==========================================================================
    MODAL & AUTH GATE - ULTRA-MODERN FLOATING GLASS

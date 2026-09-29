@@ -28,8 +28,6 @@ fx:
     USD: 1.0
 include_product_link: true
 instagram:
-  enabled: true
-  username: invito.live
   caption_footer: 'Европейское качество
 
     Обращаться: @nigora_7
@@ -46,9 +44,11 @@ instagram:
     https://t.me/fashionalleyb
 
     '
+  enabled: true
+  username: invito.live
 markup: 10.0
-max_source_price_usd: 80
 max_products_per_run: 1
+max_source_price_usd: 80
 moderation:
   auto_approve: true
   enabled: false
@@ -57,6 +57,7 @@ schedule:
   interval_minutes: null
   posts_per_day: 17
   times:
+  - 06:00
   - 07:00
   - 08:00
   - 09:00
@@ -77,7 +78,6 @@ schedule:
   timezone: Asia/Tashkent
 scraper:
   headless: true
-  scroll_steps: 6
   regions:
   - code: es
     currency: EUR
@@ -104,7 +104,13 @@ scraper:
     urls:
       mango: https://shop.mango.com/gb/en/c/women/new-now/56b5c5ed
       zara: https://www.zara.com/uk/en/woman-new-in-l1180.html
+  scroll_steps: 6
   stores:
+    hm:
+      currency: EUR
+      enabled: true
+      max_items: 60
+      url: https://www2.hm.com/es_es/mujer/novedades/ver-todo.html
     mango:
       currency: EUR
       enabled: true
@@ -115,9 +121,9 @@ scraper:
       enabled: true
       max_items: 60
       url: https://www.zara.com/es/es/mujer-nuevo-l1180.html
-    hm:
+    stradivarius:
       enabled: true
-      url: https://www2.hm.com/es_es/mujer/novedades/ver-todo.html
+      url: https://www.stradivarius.com/es/mujer/nuevo-n1906
       currency: EUR
       max_items: 60
   timeout_seconds: 30.0

@@ -293,6 +293,17 @@ def create_dashboard_app(
                 detected_cat = detect_product_category(r.title, r.product_url or "")
                 if category and category != "all" and detected_cat != category:
                     continue
+                last_error = None
+                if r.status == "failed":
+                    last_error = session.scalar(
+                        select(LogRecord.message)
+                        .where(
+                            LogRecord.external_id == r.external_id,
+                            LogRecord.level == "ERROR",
+                        )
+                        .order_by(desc(LogRecord.id))
+                        .limit(1)
+                    )
                 results.append({
                     "id": r.id,
                     "external_id": r.external_id,
@@ -302,6 +313,7 @@ def create_dashboard_app(
                     "price_original": float(r.price_original),
                     "currency_original": r.currency_original,
                     "price_final": float(r.price_final) if r.price_final else None,
+                    "last_error": last_error,
                     "photo_url": r.photo_url,
                     "description_gpt": r.description_gpt,
                     "product_url": r.product_url,

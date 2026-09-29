@@ -4,7 +4,7 @@ Per SDD §3.4 and SRS FR-3 & §10.3 (Open Question 3: Currency conversion logic)
 Computes: price_final = convert(original_price, currency -> target_currency) + markup.
 """
 
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN
 import logging
 from typing import Protocol, runtime_checkable
 
@@ -89,6 +89,14 @@ class DynamicRateConverter:
         return amount * self.fallback_rate
 
 
+def whole_price(amount: Decimal) -> Decimal:
+    """Drop cents by rounding down to a whole currency unit.
+
+    42.39 becomes 42. The store price itself is not changed.
+    """
+    return amount.to_integral_value(rounding=ROUND_DOWN)
+
+
 def calculate_final_price(
     original_price: Decimal,
     currency: str,
@@ -97,9 +105,9 @@ def calculate_final_price(
     fx: FxConverter,
 ) -> Decimal:
     """Calculate final consumer sale price with currency conversion and markup.
-    
-    Formula: price_final = convert(original_price, currency -> target_currency) + markup
-    Rounds result to 2 decimal places with ROUND_HALF_UP.
+
+    Formula: price_final = convert(original_price, currency -> target_currency) + markup.
+    Cents are rounded down, so the posted price is a whole number.
     """
     if original_price < Decimal("0"):
         raise ValueError(f"original_price cannot be negative: {original_price}")
@@ -107,8 +115,7 @@ def calculate_final_price(
         raise ValueError(f"markup cannot be negative: {markup}")
 
     converted_price = fx.convert(original_price, currency, target_currency)
-    final_price = converted_price + markup
-    return final_price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return whole_price(converted_price + markup)
 
 
 def source_price_usd(original_price: Decimal, currency: str, fx: FxConverter) -> Decimal:

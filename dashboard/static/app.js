@@ -90,6 +90,7 @@ const translations = {
     status_pending_review: "Moderatsiyada",
     status_failed: "Xato",
     status_new: "Yangi",
+    status_withdrawn: "Nashrdan olindi",
 
     toastExecuting: "Nashr tsikli bajarilmoqda...",
     toastSuccess: (pub, unseen) => `Tsikl yakunlandi: ${pub} ta chop etildi, ${unseen} ta yangi mahsulot topildi.`,
@@ -199,6 +200,7 @@ const translations = {
     status_pending_review: "На модерации",
     status_failed: "Ошибка",
     status_new: "Новый",
+    status_withdrawn: "Снято",
 
     toastExecuting: "Выполняется цикл публикации...",
     toastSuccess: (pub, unseen) => `Цикл завершен: ${pub} опубликовано, ${unseen} новых товаров.`,
@@ -308,6 +310,7 @@ const translations = {
     status_pending_review: "Pending Review",
     status_failed: "Failed",
     status_new: "New",
+    status_withdrawn: "Withdrawn",
 
     toastExecuting: "Executing pipeline cycle...",
     toastSuccess: (pub, unseen) => `Cycle finished: ${pub} published, ${unseen} new items.`,
@@ -596,7 +599,7 @@ async function fetchProducts() {
         : '';
 
       const priceOrig = `${p.currency_original} ${p.price_original.toFixed(2)}`;
-      const priceFinal = p.price_final ? `$${p.price_final.toFixed(2)}` : '—';
+      const priceFinal = p.price_final != null ? `$${Math.floor(Number(p.price_final))}` : '—';
       const desc = p.description_gpt || t('awaitingGpt');
       const statusText = t(`status_${p.status}`) || p.status;
       const catKey = p.category || 'other';
@@ -615,6 +618,7 @@ async function fetchProducts() {
           <div class="product-body">
             <h3 class="product-title">${p.title}</h3>
             <p class="product-desc">${desc}</p>
+            ${p.status === 'failed' && p.last_error ? `<p class="product-error">${escapeHtml(p.last_error)}</p>` : ''}
             <div class="price-row">
               <div>
                 <span class="price-original">${priceOrig}</span>

@@ -41,9 +41,9 @@ def test_calculate_final_price_fixed_rate_conversion() -> None:
     assert final == Decimal("123.00")
 
 
-def test_calculate_final_price_rounding() -> None:
-    """Ensure fractional cents are properly rounded using standard round half up."""
-    # 49.90 * 1.08 = 53.892 + 15.00 = 68.892 -> 68.89
+def test_calculate_final_price_rounds_cents_down() -> None:
+    """Sale prices drop cents. 68.892 becomes 68, never 68.89 or 69."""
+    # 49.90 * 1.08 = 53.892 + 15.00 = 68.892 -> 68
     fx = FixedRateConverter(fixed_rate=Decimal("1.08"))
     final = calculate_final_price(
         original_price=Decimal("49.90"),
@@ -52,7 +52,7 @@ def test_calculate_final_price_rounding() -> None:
         target_currency="USD",
         fx=fx,
     )
-    assert final == Decimal("68.89")
+    assert final == Decimal("68")
 
 
 def test_fixed_rate_converter_cross_rates() -> None:

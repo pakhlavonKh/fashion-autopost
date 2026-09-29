@@ -133,8 +133,8 @@ def test_playwright_pipeline_end_to_end(tmp_path: Path) -> None:
     assert rec.status == "published"
     assert rec.price_original == Decimal("49.95")
     assert rec.price_final is not None
-    # 49.95 * 1.08 + 20.00 = 53.946 + 20.00 = 73.95
-    assert rec.price_final == Decimal("73.95")
+    # 49.95 * 1.08 + 20.00 = 73.946, cents rounded down -> 73
+    assert rec.price_final == Decimal("73")
     assert rec.description_gpt is not None
     assert "DRYRUN_TELEGRAM" in rec.telegram_post_id
     assert "DRYRUN_INSTAGRAM" in rec.instagram_post_id
