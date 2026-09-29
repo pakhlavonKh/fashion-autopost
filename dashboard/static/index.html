@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="uz">
+<html lang="ru">
 
 <head>
   <meta charset="UTF-8">
@@ -13,7 +13,7 @@
     rel="stylesheet">
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
-  <link rel="stylesheet" href="./style.css?v=20260924_pill_round_v3">
+  <link rel="stylesheet" href="./style.css?v=20260929_modal_close">
   <style>
     /* Mandatory 100% round pill buttons across all browsers and cached states */
     .btn,
@@ -41,7 +41,7 @@
       border-radius: 9999px !important;
     }
 
-    .close-modal,
+    .modal-header .close-modal,
     .brand-logo,
     .auth-shield-badge,
     #btnTogglePassword {
@@ -60,13 +60,6 @@
         </div>
       </div>
       <div class="header-actions">
-        <!-- Language Switcher -->
-        <div class="lang-switcher">
-          <button class="lang-btn active" data-lang="uz">UZ</button>
-          <button class="lang-btn" data-lang="ru">RU</button>
-          <button class="lang-btn" data-lang="en">EN</button>
-        </div>
-
         <button id="btnOpenPrompt" class="btn btn-secondary">
           <i data-lucide="file-edit"></i>
           <span data-i18n="btnPrompt">Promptni tahrirlash</span>
@@ -200,7 +193,7 @@
     <div class="modal-content">
       <div class="modal-header">
         <h3 data-i18n="modalPromptTitle">GPT saralash va kopirayting prompti</h3>
-        <button class="btn btn-secondary btn-sm close-modal">
+        <button type="button" class="close-modal" aria-label="Close">
           <i data-lucide="x"></i>
         </button>
       </div>
@@ -223,7 +216,7 @@
     <div class="modal-content">
       <div class="modal-header">
         <h3 data-i18n="modalConfigTitle">Tizim sozlamalari</h3>
-        <button class="btn btn-secondary btn-sm close-modal">
+        <button type="button" class="close-modal" aria-label="Close">
           <i data-lucide="x"></i>
         </button>
       </div>

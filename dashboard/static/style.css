@@ -241,26 +241,38 @@ h1, h2, h3, h4, .brand-title {
   border-radius: 9999px !important;
 }
 
-/* Close Modal Button */
-.close-modal {
-  width: 36px;
-  height: 36px;
+/* Close icon in the modal header. Footer "cancel" shares .close-modal
+   only as a click hook, so the circle size must not apply to it. */
+.modal-header .close-modal {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  padding: 0;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #f8fafc;
   cursor: pointer;
-  transition: var(--transition);
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
-.close-modal:hover {
-  background: rgba(244, 63, 94, 0.15);
+.modal-header .close-modal svg,
+.modal-header .close-modal .lucide {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  display: block;
+  flex-shrink: 0;
+}
+
+.modal-header .close-modal:hover {
+  background: rgba(244, 63, 94, 0.18);
   border-color: var(--danger);
-  color: var(--danger);
-  transform: rotate(90deg);
+  color: #fda4af;
 }
 
 /* Language Switcher - Round Pill */
@@ -792,10 +804,32 @@ h1, h2, h3, h4, .brand-title {
   flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 12px;
   padding: 18px 28px;
   border-top: 1px solid var(--border-subtle);
   background: rgba(15, 23, 42, 0.95);
+}
+
+.modal-footer .btn {
+  min-height: 46px;
+  padding: 12px 28px;
+  font-size: 15px;
+}
+
+/* Cancel shares .close-modal with the header X. Keep it a full pill
+   and do not lift or rotate it on hover. */
+.modal-footer .close-modal {
+  width: auto;
+  height: auto;
+  min-width: 120px;
+  border-radius: 9999px;
+}
+
+.modal-footer .btn:hover,
+.modal-footer .btn:active,
+.modal-footer .close-modal:hover {
+  transform: none;
 }
 
 /* ==========================================================================

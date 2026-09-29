@@ -293,14 +293,15 @@ const translations = {
   }
 };
 
-let currentLang = localStorage.getItem('fashion_autopost_lang') || 'uz';
+let currentLang = 'ru';
+localStorage.setItem('fashion_autopost_lang', 'ru');
 let currentFilter = 'all';
 let currentStore = 'all';
 let currentCategory = 'all';
 let latestStats = null;
 
 function t(key, ...args) {
-  const dict = translations[currentLang] || translations.uz;
+  const dict = translations.ru;
   const val = dict[key];
   if (typeof val === 'function') {
     return val(...args);
