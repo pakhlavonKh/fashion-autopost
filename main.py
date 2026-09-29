@@ -146,6 +146,7 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
             image_host=image_host,
             caption_footer=config.instagram.caption_footer,
             username=config.instagram.username,
+            session_id=config.instagram.session_id,
         )
         publishers.append(instagram_pub)
         logger.info(

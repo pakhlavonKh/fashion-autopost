@@ -489,6 +489,19 @@ def create_dashboard_app(
         )
         return {"success": True, "message": f"Product {external_id} approved and published."}
 
+    @app.delete("/api/products/{external_id}", dependencies=[Depends(verify_admin)])
+    def delete_product(external_id: str):
+        """Delete a product that has not been published yet."""
+        result = repo.delete_if_unpublished(external_id)
+        if result == "missing":
+            raise HTTPException(status_code=404, detail="Product not found")
+        if result == "published":
+            raise HTTPException(
+                status_code=409,
+                detail="Published products cannot be deleted",
+            )
+        return {"success": True, "external_id": external_id}
+
     @app.get("/api/scraper/stores", dependencies=[Depends(verify_admin)])
     def list_scraper_stores():
         """List all configured website scraping targets."""

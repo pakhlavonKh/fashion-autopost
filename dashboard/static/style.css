@@ -241,6 +241,35 @@ h1, h2, h3, h4, .brand-title {
   border-radius: 9999px !important;
 }
 
+.btn-danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid rgba(244, 63, 94, 0.35);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: rgba(244, 63, 94, 0.24);
+  transform: translateY(-1px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.product-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.product-actions .btn {
+  width: 100%;
+}
+
 /* Close icon in the modal header. Footer "cancel" shares .close-modal
    only as a click hook, so the circle size must not apply to it. */
 .modal-header .close-modal {

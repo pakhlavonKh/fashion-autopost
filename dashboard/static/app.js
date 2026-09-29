@@ -66,6 +66,13 @@ const translations = {
     noProductsSub: "Agregator orqali mahsulotlarni yuklash uchun 'Tsiklni ishga tushirish' tugmasini bosing.",
     viewStore: "Do'konda ko'rish",
     approvePublish: "Tasdiqlash va chop etish",
+    deleteProduct: "O'chirish",
+    deletePublishedHint: "Chop etilgan mahsulotni o'chirib bo'lmaydi",
+    deleteConfirmTitle: "Mahsulotni o'chirish",
+    deleteConfirmBody: "Bu mahsulot bazadan o'chiriladi. Bu amalni qaytarib bo'lmaydi.",
+    deleteConfirmAction: "O'chirish",
+    toastDeleted: "Mahsulot bazadan o'chirildi",
+    toastDeletePublished: "Chop etilgan mahsulotni o'chirib bo'lmaydi",
     awaitingGpt: "GPT tahlili va matn tayyorlanishi kutilmoqda...",
 
     modalPromptTitle: "GPT saralash va kopirayting prompti",
@@ -176,6 +183,13 @@ const translations = {
     noProductsSub: "Нажмите 'Запустить цикл', чтобы загрузить товары из агрегатора.",
     viewStore: "В магазин",
     approvePublish: "Одобрить и опубликовать",
+    deleteProduct: "Удалить",
+    deletePublishedHint: "Опубликованный товар удалить нельзя",
+    deleteConfirmTitle: "Удалить товар",
+    deleteConfirmBody: "Товар будет удалён из базы. Это действие нельзя отменить.",
+    deleteConfirmAction: "Удалить",
+    toastDeleted: "Товар удалён из базы",
+    toastDeletePublished: "Опубликованный товар удалить нельзя",
     awaitingGpt: "Ожидает отбора GPT и генерации описания...",
 
     modalPromptTitle: "Промпт GPT для отбора и описания",
@@ -286,6 +300,13 @@ const translations = {
     noProductsSub: "Click 'Run Cycle Now' to ingest items from the aggregator.",
     viewStore: "View Store",
     approvePublish: "Approve & Publish",
+    deleteProduct: "Delete",
+    deletePublishedHint: "Published products cannot be deleted",
+    deleteConfirmTitle: "Delete product",
+    deleteConfirmBody: "This product will be removed from the database. This cannot be undone.",
+    deleteConfirmAction: "Delete",
+    toastDeleted: "Product removed from the database",
+    toastDeletePublished: "Published products cannot be deleted",
     awaitingGpt: "Awaiting GPT curation and copywriting...",
 
     modalPromptTitle: "Edit GPT Curation & Copy Prompt",
@@ -593,10 +614,20 @@ async function fetchProducts() {
     grid.innerHTML = products.map(p => {
       const isPending = p.status === 'pending_review';
       const approveBtn = isPending
-        ? `<button class="btn btn-primary btn-sm" onclick="approveProduct('${p.external_id}')" style="margin-top: 12px; width: 100%;">
+        ? `<button class="btn btn-primary btn-sm" onclick="approveProduct('${p.external_id}')" style="width: 100%;">
              <i data-lucide="check" style="width: 14px; height: 14px;"></i> ${t('approvePublish')}
            </button>`
         : '';
+      const isPublished = p.status === 'published' || p.telegram_post_id || p.instagram_post_id;
+      const safeId = escapeHtml(p.external_id);
+      const safeTitle = escapeHtml(p.title || '');
+      const deleteBtn = isPublished
+        ? `<button type="button" class="btn btn-danger btn-sm" disabled title="${escapeHtml(t('deletePublishedHint'))}">
+             <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i> ${t('deleteProduct')}
+           </button>`
+        : `<button type="button" class="btn btn-danger btn-sm" data-delete-product="${safeId}" data-delete-title="${safeTitle}">
+             <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i> ${t('deleteProduct')}
+           </button>`;
 
       const priceOrig = `${p.currency_original} ${p.price_original.toFixed(2)}`;
       const priceFinal = p.price_final != null ? `$${Math.floor(Number(p.price_final))}` : '—';
@@ -631,7 +662,10 @@ async function fetchProducts() {
                 ${t('viewStore')} <i data-lucide="external-link" style="width: 12px; height: 12px;"></i>
               </a>` : ''}
             </div>
-            ${approveBtn}
+            <div class="product-actions">
+              ${approveBtn}
+              ${deleteBtn}
+            </div>
           </div>
         </div>
       `;
@@ -644,6 +678,61 @@ async function fetchProducts() {
     }
   }
 }
+
+let pendingDeleteId = null;
+
+function openDeleteConfirm(externalId, title) {
+  pendingDeleteId = externalId;
+  const nameEl = document.getElementById('deleteConfirmName');
+  if (nameEl) nameEl.textContent = title || externalId;
+  document.getElementById('deleteModal').classList.add('active');
+  refreshLucide();
+}
+
+function closeDeleteConfirm() {
+  pendingDeleteId = null;
+  const modal = document.getElementById('deleteModal');
+  if (modal) modal.classList.remove('active');
+}
+
+async function confirmDeleteProduct() {
+  const externalId = pendingDeleteId;
+  if (!externalId) return;
+  const btn = document.getElementById('btnConfirmDelete');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiFetch(`/api/products/${encodeURIComponent(externalId)}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      closeDeleteConfirm();
+      showToast(t('toastDeleted'));
+      fetchStats();
+      fetchProducts();
+    } else if (res.status === 409) {
+      closeDeleteConfirm();
+      showToast(t('toastDeletePublished'), true);
+    } else {
+      showToast(`Error: ${data.detail || res.status}`, true);
+    }
+  } catch (err) {
+    if (err.message !== 'Unauthorized') {
+      showToast(`Error: ${err.message}`, true);
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+document.getElementById('productsGrid').addEventListener('click', (event) => {
+  const btn = event.target.closest('[data-delete-product]');
+  if (!btn) return;
+  openDeleteConfirm(btn.getAttribute('data-delete-product'), btn.getAttribute('data-delete-title'));
+});
+
+document.getElementById('btnConfirmDelete').addEventListener('click', confirmDeleteProduct);
+document.querySelectorAll('[data-close-delete]').forEach(btn => {
+  btn.addEventListener('click', closeDeleteConfirm);
+});
 
 async function approveProduct(externalId) {
   try {
@@ -863,6 +952,7 @@ document.querySelectorAll('.close-modal').forEach(btn => {
   btn.addEventListener('click', () => {
     promptModal.classList.remove('active');
     configModal.classList.remove('active');
+    closeDeleteConfirm();
   });
 });
 

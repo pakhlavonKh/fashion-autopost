@@ -184,6 +184,8 @@ class InstagramSettings(BaseModel):
     account_id: str = Field(default="mock-account-id")
     username: str | None = None
     caption_footer: str = Field(default=DEFAULT_INSTAGRAM_CAPTION_FOOTER)
+    # instagram.com sessionid cookie. Required to file stories into Highlights.
+    session_id: str | None = None
 
 
 class S3Settings(BaseModel):
@@ -350,6 +352,8 @@ class AppConfig(BaseModel):
             instagram_data["account_id"] = os.environ["INSTAGRAM_ACCOUNT_ID"]
         if os.getenv("INSTAGRAM_USERNAME"):
             instagram_data["username"] = os.environ["INSTAGRAM_USERNAME"].strip().lstrip("@")
+        if os.getenv("INSTAGRAM_SESSIONID"):
+            instagram_data["session_id"] = os.environ["INSTAGRAM_SESSIONID"].strip()
         yaml_data["instagram"] = instagram_data
 
         s3_data = yaml_data.get("s3", {})

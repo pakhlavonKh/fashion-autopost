@@ -13,7 +13,7 @@
     rel="stylesheet">
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
-  <link rel="stylesheet" href="./style.css?v=20260929_brand_name">
+  <link rel="stylesheet" href="./style.css?v=20260929_delete">
   <style>
     /* Mandatory 100% round pill buttons across all browsers and cached states */
     .btn,
@@ -341,10 +341,29 @@
     </div>
   </div>
 
+  <div id="deleteModal" class="modal-backdrop">
+    <div class="modal-content" style="max-width: 440px;">
+      <div class="modal-header">
+        <h3 data-i18n="deleteConfirmTitle">Удалить товар</h3>
+        <button type="button" class="close-modal" data-close-delete aria-label="Close">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p id="deleteConfirmName" style="margin: 0 0 8px; font-weight: 700; color: var(--text-primary);"></p>
+        <p data-i18n="deleteConfirmBody" style="margin: 0; color: var(--text-secondary); font-size: 14px; line-height: 1.5;">Товар будет удалён из базы. Это действие нельзя отменить.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-close-delete data-i18n="btnCancel">Отмена</button>
+        <button type="button" id="btnConfirmDelete" class="btn btn-danger" data-i18n="deleteConfirmAction">Удалить</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="./app.js?v=20260929_brand_name"></script>
+  <script src="./app.js?v=20260929_delete"></script>
 </body>
 
 </html>

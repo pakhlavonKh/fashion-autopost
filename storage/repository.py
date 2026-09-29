@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional, Protocol, runtime_checkable
 import zoneinfo
-from sqlalchemy import create_engine, select, update, func
+from sqlalchemy import create_engine, delete, select, update, func
 from sqlalchemy.orm import Session, sessionmaker
 
 from adapters.base import RawProduct
@@ -303,6 +303,26 @@ class SqlAlchemyProductRepository:
             )
             session.execute(stmt)
             session.commit()
+
+    def delete_if_unpublished(self, external_id: str) -> str:
+        """Remove a product that has not been published.
+
+        Returns ``deleted``, ``missing``, or ``published``.
+        A product is treated as published when its status is published or a
+        platform post id is still stored.
+        """
+        with self._get_session() as session:
+            record = session.scalar(
+                select(ProductRecord).where(ProductRecord.external_id == external_id)
+            )
+            if record is None:
+                return "missing"
+            if record.status == "published" or record.telegram_post_id or record.instagram_post_id:
+                return "published"
+            session.execute(delete(LogRecord).where(LogRecord.external_id == external_id))
+            session.delete(record)
+            session.commit()
+            return "deleted"
 
     def log_event(self, level: str, stage: str, message: str, external_id: str | None = None) -> None:
         with self._get_session() as session:

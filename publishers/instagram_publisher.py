@@ -1,7 +1,8 @@
 """Instagram Graph API publisher implementation.
 
 Per SDD §3.6 and SRS FR-5.2, FR-5.3.
-Publishes a single feed photo or a carousel and waits until Meta finishes processing.
+Publishes a single feed photo or a carousel, then a story collage of the same
+photos, and files that story into the Highlight for the garment category.
 """
 
 from __future__ import annotations
@@ -21,7 +22,15 @@ from core.image_downloader import ImageDownloader
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
 from publishers.image_hosting import ImageHostingService, LitterboxImageHost
+from publishers.instagram_highlights import InstagramHighlightClient
 from publishers.instagram_media import prepare_feed_jpeg
+from publishers.instagram_story import (
+    detect_highlight,
+    format_story_price,
+    product_description,
+    quality_line_from_footer,
+    render_story_collage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +60,8 @@ class InstagramPublisher:
         caption_footer: str | None = None,
         username: str | None = None,
         use_instagram_login: bool | None = None,
+        session_id: str | None = None,
+        highlight_client: InstagramHighlightClient | None = None,
     ) -> None:
         self.access_token = access_token
         self.account_id = account_id
@@ -58,6 +69,12 @@ class InstagramPublisher:
         self.timeout_seconds = timeout_seconds
         self.caption_footer = caption_footer if caption_footer is not None else DEFAULT_INSTAGRAM_CAPTION_FOOTER
         self.username = (username or "").strip().lstrip("@") or None
+        if highlight_client is not None:
+            self.highlights: InstagramHighlightClient | None = highlight_client
+        elif session_id and session_id.strip():
+            self.highlights = InstagramHighlightClient(session_id, account_id, timeout_seconds)
+        else:
+            self.highlights = None
         self.downloader = ImageDownloader(timeout_seconds=self.timeout_seconds)
         # Auto-detect: IGAA tokens come from graph.instagram.com (Instagram Login)
         if use_instagram_login is None:
@@ -77,33 +94,78 @@ class InstagramPublisher:
         return format_instagram_caption(post, self.caption_footer)
 
     def publish(self, post: ComposedPost) -> PublishResult:
-        """Create a feed photo or carousel and publish it."""
+        """Publish the feed post, then the story collage of the same photos."""
         try:
             target = f"@{self.username}" if self.username else self.account_id
-            caption = self.format_caption(post)
-            public_urls = self._public_image_urls(post)
-            if len(public_urls) == 1:
-                container_id = self._create_image_container(public_urls[0], caption)
-            else:
-                child_ids = [
-                    self._create_carousel_child(url)
-                    for url in public_urls
-                ]
-                container_id = self._create_carousel_container(child_ids, caption)
-
-            self._wait_until_ready(container_id)
-            post_id = self._publish_container(container_id)
+            originals, prepared = self._prepare_local_images(post)
+            public_urls = [self.image_host.ensure_public_url(str(path)) for path in prepared]
+            post_id = self._publish_feed(public_urls, self.format_caption(post))
             logger.info("Instagram post %s published to %s", post_id, target)
-            return PublishResult(success=True, platform_post_id=str(post_id))
         except Exception as exc:
             logger.error("Instagram publish failed for %s: %s", post.title, exc)
             return PublishResult(success=False, error=str(exc))
 
+        self._publish_story_and_highlight(post, originals)
+        return PublishResult(success=True, platform_post_id=str(post_id))
+
+    def _publish_feed(self, public_urls: list[str], caption: str) -> str:
+        if len(public_urls) == 1:
+            container_id = self._create_image_container(public_urls[0], caption)
+        else:
+            child_ids = [self._create_carousel_child(url) for url in public_urls]
+            container_id = self._create_carousel_container(child_ids, caption)
+        self._wait_until_ready(container_id)
+        return self._publish_container(container_id)
+
+    def _publish_story_and_highlight(self, post: ComposedPost, prepared: list[Path]) -> None:
+        """Story uses the same photos as the post and is filed into Highlights."""
+        try:
+            dest = prepared[0].with_name(f"{prepared[0].stem}_story.jpg")
+            collage = render_story_collage(
+                prepared,
+                dest,
+                title=post.title,
+                price_label=format_story_price(post.price, post.currency),
+                description=product_description(post.text),
+                quality_line=quality_line_from_footer(self.caption_footer),
+            )
+            story_url = self.image_host.ensure_public_url(str(collage))
+            container_id = self._create_story_container(story_url)
+            self._wait_until_ready(container_id)
+            story_id = self._publish_container(container_id)
+            logger.info("Instagram story %s published for %s", story_id, post.title)
+        except Exception as exc:
+            logger.error("Instagram story failed for %s: %s", post.title, exc)
+            return
+
+        self._file_story(post, story_id)
+
+    def _file_story(self, post: ComposedPost, story_id: str) -> None:
+        highlight = detect_highlight(post.title, post.text, post.product_url or "")
+        if self.highlights is None:
+            logger.warning(
+                "Story %s is live, but it was not added to Highlights «%s»: "
+                "INSTAGRAM_SESSIONID is not set.",
+                story_id,
+                highlight,
+            )
+            return
+        try:
+            highlight_id = self.highlights.add_story(highlight, story_id)
+            logger.info("Story %s added to highlight «%s» (%s)", story_id, highlight, highlight_id)
+        except Exception as exc:
+            logger.error("Could not add story %s to highlight «%s»: %s", story_id, highlight, exc)
+
     def _public_image_urls(self, post: ComposedPost) -> list[str]:
+        _originals, prepared = self._prepare_local_images(post)
+        return [self.image_host.ensure_public_url(str(path)) for path in prepared]
+
+    def _prepare_local_images(self, post: ComposedPost) -> tuple[list[Path], list[Path]]:
         sources = list(post.photo_urls) if post.photo_urls else []
         if not sources and post.photo_url:
             sources = [post.photo_url]
 
+        originals: list[Path] = []
         prepared: list[Path] = []
         prepare_errors: list[str] = []
         for index, source in enumerate(sources[:MAX_CAROUSEL_ITEMS]):
@@ -114,6 +176,7 @@ class InstagramPublisher:
             dest = local.with_name(f"{local.stem}_ig.jpg")
             try:
                 prepared.append(prepare_feed_jpeg(local, dest))
+                originals.append(local)
             except Exception as exc:
                 prepare_errors.append(str(exc))
                 logger.warning("Skipping Instagram image %s: %s", source, exc)
@@ -122,10 +185,10 @@ class InstagramPublisher:
             detail = prepare_errors[0] if prepare_errors else "no image sources"
             raise RuntimeError(f"No usable photos for Instagram post '{post.title}': {detail}")
 
-        urls = [self.image_host.ensure_public_url(str(path)) for path in prepared]
-        if len(urls) > MAX_CAROUSEL_ITEMS:
-            urls = urls[:MAX_CAROUSEL_ITEMS]
-        return urls
+        if len(prepared) > MAX_CAROUSEL_ITEMS:
+            prepared = prepared[:MAX_CAROUSEL_ITEMS]
+            originals = originals[:MAX_CAROUSEL_ITEMS]
+        return originals, prepared
 
     def _resolve_local_image(self, source: str, title: str, index: int) -> Path | None:
         local = Path(source)
@@ -137,6 +200,12 @@ class InstagramPublisher:
                 return downloaded
         logger.warning("Instagram could not read image: %s", source)
         return None
+
+    def _create_story_container(self, image_url: str) -> str:
+        return self._create_container({
+            "image_url": image_url,
+            "media_type": "STORIES",
+        })
 
     def _create_image_container(self, image_url: str, caption: str) -> str:
         return self._create_container({

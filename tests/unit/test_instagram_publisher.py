@@ -97,11 +97,15 @@ def test_single_photo_publishes_after_container_is_ready() -> None:
         assert result.success is True
         assert result.platform_post_id == "id-2"
         posts = [item for item in calls if item[0] == "POST"]
-        assert len(posts) == 2
+        assert len(posts) == 4
         assert posts[0][2]["image_url"].startswith("https://files.example.com/")
         assert posts[0][2]["caption"].startswith("Silk Slip Dress-101$")
         assert "is_carousel_item" not in posts[0][2]
         assert posts[1][2]["creation_id"] == "id-1"
+        assert posts[2][2]["media_type"] == "STORIES"
+        assert posts[2][2]["image_url"].endswith("_story.jpg")
+        assert "caption" not in posts[2][2]
+        assert posts[3][2]["creation_id"] == "id-3"
         assert any(item[0] == "GET" and item[2]["fields"] == "status_code,status" for item in calls)
 
 
@@ -131,7 +135,7 @@ def test_several_photos_become_a_carousel() -> None:
 
         assert result.success is True
         posts = [item for item in calls if item[0] == "POST"]
-        assert len(posts) == 4
+        assert len(posts) == 6
         assert posts[0][2]["is_carousel_item"] == "true"
         assert posts[1][2]["is_carousel_item"] == "true"
         assert "caption" not in posts[0][2]
@@ -139,6 +143,33 @@ def test_several_photos_become_a_carousel() -> None:
         assert posts[2][2]["children"] == "id-1,id-2"
         assert posts[2][2]["caption"].startswith("Silk Slip Dress-101$")
         assert posts[3][2]["creation_id"] == "id-3"
+        assert posts[4][2]["media_type"] == "STORIES"
+        assert posts[5][2]["creation_id"] == "id-5"
+
+
+def test_story_is_filed_into_the_dress_highlight() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        photo = Path(tmp) / "look.jpg"
+        Image.new("RGB", (900, 1200), (40, 40, 80)).save(photo)
+        post = _sample_post()
+        post = type(post)(
+            photo_url=str(photo),
+            text=post.text,
+            price=post.price,
+            currency=post.currency,
+            product_url=post.product_url,
+            title="Платье",
+            source=post.source,
+            photo_urls=[str(photo)],
+        )
+        highlights = _Highlights()
+        publisher = InstagramPublisher("token", "1789", image_host=_Host(), highlight_client=highlights)
+
+        with patch("httpx.Client", side_effect=_client_factory([])):
+            result = publisher.publish(post)
+
+        assert result.success is True
+        assert highlights.calls == [("Платья", "id-4")]
 
 
 def test_litterbox_host_returns_public_url() -> None:
@@ -174,6 +205,15 @@ def test_config_points_instagram_at_test_account() -> None:
     assert data["instagram"]["username"] == "mukhsinius"
     assert "t.me/fashionalleyb" in data["instagram"]["caption_footer"]
     assert "instagram.com" not in data["instagram"]["caption_footer"]
+
+
+class _Highlights:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def add_story(self, title: str, media_pk: str) -> str:
+        self.calls.append((title, media_pk))
+        return "hl-1"
 
 
 class _Host:
