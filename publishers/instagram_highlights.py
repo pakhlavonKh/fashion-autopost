@@ -1,9 +1,9 @@
 """Publish a story with a link sticker and file it into an Instagram Highlight.
 
 The Graph API can publish a plain story, but it cannot attach a tappable link
-or edit Highlights. Both steps use the instagram.com session cookie through the
-web API, the same one the browser sends. A mobile private-API client rejects
-that cookie, so this client speaks the web API instead.
+or edit Highlights. Both steps go through the Instagram app API, signed in with
+the instagram.com sessionid cookie sent as the app's bearer token. The web API
+cannot do either: it drops link stickers and redirects Highlight calls.
 """
 
 from __future__ import annotations
@@ -13,18 +13,15 @@ import logging
 import random
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-import httpx
-
 logger = logging.getLogger(__name__)
 
-IG_APP_ID = "936619743392459"
-WEB_ROOT = "https://www.instagram.com"
-UPLOAD_ROOT = "https://i.instagram.com"
 MAX_HIGHLIGHT_TITLE = 16
+HIGHLIGHT_COVER_CROP = [0.0, 0.21830457, 1.0, 0.78094524]
 SESSION_REJECTED = (
     "Instagram rejected INSTAGRAM_SESSIONID. Open instagram.com while logged in, "
     "copy the full sessionid cookie again, put it in .env, and restart the program."
@@ -36,15 +33,12 @@ class InstagramSessionExpired(RuntimeError):
 
 
 class InstagramHighlightClient:
-    """Uploads a linked story and files it into Highlights with a web session."""
+    """Uploads a linked story and files it into Highlights with the app API."""
 
-    def __init__(self, session_id: str, user_id: str, timeout_seconds: float = 30.0) -> None:
+    def __init__(self, session_id: str, user_id: str = "", client: Any | None = None) -> None:
         self.session_id = unquote(session_id.strip())
         self.user_id = str(user_id).strip() or self.session_id.split(":")[0]
-        self.timeout_seconds = timeout_seconds
-        self._csrf: str | None = None
-        self._www_claim = "0"
-        self._http_client: httpx.Client | None = None
+        self._client = client
 
     def publish_linked_story(
         self,
@@ -57,155 +51,141 @@ class InstagramHighlightClient:
         width: float,
         height: float,
     ) -> str:
-        """Upload the collage and attach a tappable link sticker. Returns the story pk."""
-        self._ensure_session()
+        """Upload the collage with a tappable link over the painted pill. Returns the story pk."""
+        from instagrapi.types import StorySticker
+
+        client = self._session()
         try:
-            self._request(
-                "POST",
-                f"{UPLOAD_ROOT}/api/v1/media/validate_reel_url/",
-                {"url": link_url, "_uid": self.user_id, "_uuid": self.user_id},
+            self._call(
+                client.private_request,
+                "media/validate_reel_url/",
+                {"url": link_url, "_uid": self.user_id, "_uuid": client.uuid},
             )
         except InstagramSessionExpired:
             raise
         except Exception as exc:
             logger.warning("Instagram did not preview the story link, continuing: %s", exc)
-        upload_id, image_width, image_height = self._rupload(image)
-        sticker = {
-            "x": x,
-            "y": y,
-            "z": 0,
-            "width": width,
-            "height": height,
-            "rotation": 0.0,
-            "type": "story_link",
-            "link_type": "web",
-            "url": link_url,
-            "link_title": link_title,
-            "custom_cta": link_title,
-            "tap_state": 0,
-            "tap_state_str_id": "link_sticker_default",
-            "is_sticker": True,
-            "selected_index": 0,
-        }
-        now = int(time.time())
-        data = self._request(
-            "POST",
-            f"{WEB_ROOT}/api/v1/media/configure_to_story/",
-            {
-                "upload_id": upload_id,
-                "source_type": "4",
-                "configure_mode": "1",
-                "client_shared_at": str(now - 5),
-                "client_timestamp": str(now),
-                "story_sticker_ids": "link_sticker_default",
-                "tap_models": json.dumps([sticker], separators=(",", ":")),
-                "original_media_type": "photo",
-                "media_transformation_info": json.dumps(
-                    {
-                        "width": str(image_width),
-                        "height": str(image_height),
-                        "x_transform": "0",
-                        "y_transform": "0",
-                        "zoom": "1.0",
-                        "rotation": "0.0",
-                        "background_coverage": "0.0",
-                    },
-                    separators=(",", ":"),
-                ),
+
+        upload_id, image_width, image_height = self._upload(client, Path(image))
+        sticker = StorySticker(
+            id="link_sticker_default",
+            type="story_link",
+            x=x,
+            y=y,
+            z=0,
+            width=width,
+            height=height,
+            rotation=0.0,
+            extra={
+                "link_type": "web",
+                "url": link_url,
+                "link_title": link_title,
+                "tap_state_str_id": "link_sticker_default",
             },
         )
-        media = data.get("media") if isinstance(data.get("media"), dict) else {}
-        raw_id = str(media.get("pk") or media.get("id") or "")
-        story_pk = raw_id.split("_")[0]
-        if not story_pk:
-            raise RuntimeError("Instagram published the story without a media id")
-        if not _response_has_link(media, link_url):
-            logger.warning(
-                "Story %s was published, but the configure response did not echo the link sticker",
-                story_pk,
-            )
-        return story_pk
+        last_error: Exception | None = None
+        for attempt in range(3):
+            # Instagram needs a moment to register the upload before it can be configured.
+            time.sleep(3)
+            try:
+                result = self._call(
+                    client.photo_configure_to_story,
+                    upload_id,
+                    image_width,
+                    image_height,
+                    "",
+                    stickers=[sticker],
+                )
+            except InstagramSessionExpired:
+                raise
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Story configure attempt %s failed: %s", attempt + 1, exc)
+                continue
+            media = result.get("media") if isinstance(result, dict) else None
+            story_pk = str((media or {}).get("pk") or "").split("_")[0]
+            if not story_pk:
+                last_error = RuntimeError(f"Instagram did not return the story id: {str(result)[:200]}")
+                continue
+            if not (media or {}).get("story_link_stickers"):
+                logger.warning("Story %s was published, but Instagram did not echo the link sticker", story_pk)
+            return story_pk
+        assert last_error is not None
+        raise last_error
 
     def add_story(self, title: str, media_pk: str) -> str:
         """Add the story to the Highlight named `title`, creating it when missing."""
+        client = self._session()
         highlight_title = _clip_title(title)
         media_id = self._media_id(media_pk)
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                return self._add_once(highlight_title, media_id)
+                existing = self._find(client, highlight_title)
+                if existing:
+                    self._edit(client, existing, media_id)
+                    return existing
+                return self._create(client, highlight_title, media_id)
             except InstagramSessionExpired:
                 raise
             except Exception as exc:
                 last_error = exc
-                logger.warning(
-                    "Highlight «%s» attempt %s failed: %s",
-                    highlight_title,
-                    attempt + 1,
-                    exc,
-                )
+                logger.warning("Highlight «%s» attempt %s failed: %s", highlight_title, attempt + 1, exc)
                 if attempt < 2:
                     time.sleep(2)
         assert last_error is not None
         raise last_error
 
-    def _add_once(self, title: str, media_id: str) -> str:
-        existing = self._find(title)
-        if existing:
-            self._edit(existing, media_id, title)
-            return existing
-        return self._create(title, media_id)
-
-    def _find(self, title: str) -> str | None:
-        url = f"{WEB_ROOT}/api/v1/highlights/{self.user_id}/highlights_tray/"
-        data = self._request("GET", url)
+    def _find(self, client: Any, title: str) -> str | None:
+        data = self._call(client.private_request, f"highlights/{self.user_id}/highlights_tray/")
         wanted = _normalize_title(title)
         for reel in data.get("tray") or []:
             if not isinstance(reel, dict):
                 continue
-            reel_title = str(reel.get("title") or "")
-            if _normalize_title(reel_title) != wanted:
+            if _normalize_title(str(reel.get("title") or "")) != wanted:
                 continue
-            raw_id = str(reel.get("id") or reel.get("pk") or "")
-            pk = raw_id.split(":")[-1]
+            pk = str(reel.get("id") or reel.get("pk") or "").split(":")[-1]
             if pk:
                 return pk
         return None
 
-    def _create(self, title: str, media_id: str) -> str:
-        cover = {
-            "media_id": media_id,
-            "crop_rect": "[0.0,0.21830457,1.0,0.78094524]",
-        }
-        data = self._request(
-            "POST",
-            f"{WEB_ROOT}/api/v1/highlights/create_reel/",
+    def _create(self, client: Any, title: str, media_id: str) -> str:
+        from instagrapi import config
+
+        cover = {"media_id": media_id, "crop_rect": json.dumps(HIGHLIGHT_COVER_CROP)}
+        data = self._call(
+            client.private_request,
+            "highlights/create_reel/",
             {
-                "media_ids": json.dumps([media_id], separators=(",", ":")),
-                "cover": json.dumps(cover, separators=(",", ":")),
+                "supported_capabilities_new": json.dumps(config.SUPPORTED_CAPABILITIES),
                 "source": "self_profile",
-                "title": title,
                 "creation_id": str(int(time.time())),
+                "_uid": self.user_id,
+                "_uuid": client.uuid,
+                "cover": json.dumps(cover),
+                "title": title,
+                "media_ids": json.dumps([media_id]),
             },
         )
-        reel = data.get("reel") if isinstance(data.get("reel"), dict) else data
-        raw_id = ""
-        if isinstance(reel, dict):
-            raw_id = str(reel.get("id") or reel.get("pk") or "")
-        pk = raw_id.split(":")[-1]
+        reel = data.get("reel") if isinstance(data.get("reel"), dict) else {}
+        pk = str(reel.get("id") or reel.get("pk") or "").split(":")[-1]
         if not pk:
             raise RuntimeError(f"Instagram did not return a highlight id for «{title}»")
         return pk
 
-    def _edit(self, highlight_pk: str, media_id: str, title: str) -> None:
-        self._request(
-            "POST",
-            f"{WEB_ROOT}/api/v1/highlights/highlight:{highlight_pk}/edit_reel/",
+    def _edit(self, client: Any, highlight_pk: str, media_id: str) -> None:
+        from instagrapi import config
+
+        self._call(
+            client.private_request,
+            f"highlights/highlight:{highlight_pk}/edit_reel/",
             {
-                "added_media_ids": json.dumps([media_id], separators=(",", ":")),
+                "supported_capabilities_new": json.dumps(config.SUPPORTED_CAPABILITIES),
+                "source": "self_profile",
+                "_uid": self.user_id,
+                "_uuid": client.uuid,
+                "added_media_ids": json.dumps([media_id]),
                 "removed_media_ids": "[]",
-                "source": "story_viewer",
-                "title": title,
             },
         )
 
@@ -215,172 +195,63 @@ class InstagramHighlightClient:
             return media_pk
         return f"{media_pk}_{self.user_id}"
 
-    def _ensure_session(self) -> None:
-        """Fail before upload when the cookie is the logged-out redirect."""
-        self._request("GET", f"{WEB_ROOT}/api/v1/accounts/edit/web_form_data/")
+    def _session(self) -> Any:
+        if self._client is not None:
+            return self._client
+        from instagrapi import Client
 
-    def _rupload(self, image: Path) -> tuple[str, int, int]:
-        payload = Path(image).read_bytes()
+        client = Client()
+        client.delay_range = [0, 0]
+        self._call(client.login_by_sessionid, self.session_id)
+        self._client = client
+        return client
+
+    def _upload(self, client: Any, image: Path) -> tuple[str, int, int]:
+        """Send the JPEG bytes as they are. instagrapi's uploader re-saves at quality 75."""
         from PIL import Image
+        from instagrapi import config
 
-        with Image.open(Path(image)) as opened:
+        payload = image.read_bytes()
+        with Image.open(image) as opened:
             image_width, image_height = opened.size
         upload_id = str(int(time.time() * 1000))
         name = f"{upload_id}_0_{random.randint(1000000000, 9999999999)}"
         params = {
-            "media_type": "1",
-            "upload_id": upload_id,
-            "upload_media_height": str(image_height),
-            "upload_media_width": str(image_width),
             "retry_context": '{"num_step_auto_retry":0,"num_reupload":0,"num_step_manual_retry":0}',
+            "media_type": "1",
             "xsharing_user_ids": "[]",
-            "image_compression": '{"lib_name":"moz","lib_version":"3.1.m","quality":"80"}',
+            "upload_id": upload_id,
+            "image_compression": json.dumps({"lib_name": "moz", "lib_version": "3.1.m", "quality": "95"}),
         }
-        self._request(
-            "POST",
-            f"{UPLOAD_ROOT}/rupload_igphoto/{name}",
-            body=payload,
-            extra_headers={
-                "X-Instagram-Rupload-Params": json.dumps(params, separators=(",", ":")),
-                "X-Entity-Type": "image/jpeg",
-                "X-Entity-Name": name,
-                "X-Entity-Length": str(len(payload)),
-                "Offset": "0",
-                "Content-Type": "application/octet-stream",
-            },
+        headers = client.private_headers({
+            "Accept-Encoding": "gzip",
+            "X-Instagram-Rupload-Params": json.dumps(params),
+            "X_FB_PHOTO_WATERFALL_ID": str(uuid.uuid4()),
+            "X-Entity-Type": "image/jpeg",
+            "Offset": "0",
+            "X-Entity-Name": name,
+            "X-Entity-Length": str(len(payload)),
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(len(payload)),
+        })
+        response = client.private.post(
+            f"https://{config.API_DOMAIN}/rupload_igphoto/{name}",
+            data=payload,
+            headers=headers,
         )
+        if response.status_code in (401, 403) or "login_required" in response.text:
+            raise InstagramSessionExpired(SESSION_REJECTED)
+        if response.status_code != 200:
+            raise RuntimeError(f"Instagram story upload failed: HTTP {response.status_code} {response.text[:200]}")
         return upload_id, image_width, image_height
 
-    def _request(
-        self,
-        method: str,
-        url: str,
-        fields: dict[str, Any] | None = None,
-        *,
-        body: bytes | None = None,
-        extra_headers: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        client = self._http()
-        self._apply_cookies(client)
-        self._ensure_csrf(client)
-        headers = self._headers()
-        if extra_headers:
-            headers.update(extra_headers)
-        if method == "GET":
-            response = client.get(url, headers=headers)
-        elif body is not None:
-            response = client.post(url, headers=headers, content=body)
-        else:
-            response = client.post(url, headers=headers, data=fields or {})
-        self._note_claim(response)
-        return self._parse(response)
+    def _call(self, method: Any, *args: Any, **kwargs: Any) -> Any:
+        from instagrapi.exceptions import ChallengeRequired, LoginRequired
 
-    def _http(self) -> httpx.Client:
-        """One client so mid, rur and ig_did from earlier responses stay on the next call."""
-        if self._http_client is None:
-            self._http_client = httpx.Client(timeout=self.timeout_seconds, follow_redirects=False)
-        return self._http_client
-
-    def _note_claim(self, response: httpx.Response) -> None:
-        raw = response.headers.get("x-ig-set-www-claim") if hasattr(response.headers, "get") else None
-        if isinstance(raw, str) and raw and raw != "0":
-            self._www_claim = raw
-
-    def _apply_cookies(self, client: httpx.Client) -> None:
-        client.cookies.set("sessionid", self.session_id, domain=".instagram.com")
-        client.cookies.set("ds_user_id", self.user_id, domain=".instagram.com")
-        if self._csrf:
-            client.cookies.set("csrftoken", self._csrf, domain=".instagram.com")
-
-    def _ensure_csrf(self, client: httpx.Client) -> None:
-        if self._csrf:
-            client.cookies.set("csrftoken", self._csrf, domain=".instagram.com")
-            return
-        response = client.get(f"{WEB_ROOT}/", headers=self._headers())
-        self._note_claim(response)
-        csrf = _csrf_from_home(response, client.cookies.get("csrftoken"))
-        if not csrf:
-            raise InstagramSessionExpired(SESSION_REJECTED)
-        self._csrf = csrf
-        client.cookies.set("csrftoken", csrf, domain=".instagram.com")
-
-    def _headers(self) -> dict[str, str]:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            "Accept": "*/*",
-            "X-IG-App-ID": IG_APP_ID,
-            "X-ASBD-ID": "129477",
-            "X-IG-WWW-Claim": self._www_claim,
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": f"{WEB_ROOT}/",
-            "Origin": WEB_ROOT,
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-        }
-        if self._csrf:
-            headers["X-CSRFToken"] = self._csrf
-        return headers
-
-    def _parse(self, response: httpx.Response) -> dict[str, Any]:
-        location = response.headers.get("location") or ""
-        status_code = response.status_code if isinstance(response.status_code, int) else 0
-        # A homepage redirect or a generic 403 is not a logged-out session.
-        # Only a login wall or HTTP 401 means the cookie was rejected.
-        if status_code == 401 or "accounts/login" in location:
-            raise InstagramSessionExpired(SESSION_REJECTED)
         try:
-            data = response.json()
-        except Exception:
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        message = str(data.get("message") or data.get("status") or "")
-        if data.get("require_login") or "login_required" in message.casefold():
-            raise InstagramSessionExpired(SESSION_REJECTED)
-        if not response.is_success or data.get("status") not in (None, "ok"):
-            detail = message or response.text[:300]
-            raise RuntimeError(f"Instagram highlights error: {detail}")
-        if data.get("status") == "fail":
-            raise RuntimeError(f"Instagram highlights error: {data.get('message') or 'fail'}")
-        return data
-
-
-_CSRF_IN_HTML = re.compile(r'"csrf_token"\s*:\s*"([A-Za-z0-9_-]{8,})"')
-
-
-def _csrf_from_home(response: httpx.Response, jar_csrf: str | None) -> str | None:
-    """Read the CSRF token from the cookie, Set-Cookie, or the homepage HTML.
-
-    From some networks Instagram returns the logged-in homepage without a
-    csrftoken cookie and puts the token only in the page JSON. A login
-    redirect is still a dead session, even when that page has its own token.
-    """
-    location = response.headers.get("location") or ""
-    final_url = str(getattr(response, "url", "") or "")
-    if "accounts/login" in location or "accounts/login" in final_url:
-        return None
-    if jar_csrf:
-        return jar_csrf
-    headers = response.headers
-    listed: list[str] = []
-    getter = getattr(headers, "get_list", None)
-    if callable(getter):
-        listed = [str(item) for item in getter("set-cookie")]
-    if not listed:
-        single = headers.get("set-cookie") if hasattr(headers, "get") else None
-        if isinstance(single, str) and single:
-            listed = [single]
-    for header in listed:
-        match = re.search(r"csrftoken=([^;]+)", header)
-        if match:
-            return match.group(1)
-    html = response.text if isinstance(response.text, str) else ""
-    found = _CSRF_IN_HTML.search(html)
-    return found.group(1) if found else None
+            return method(*args, **kwargs)
+        except (LoginRequired, ChallengeRequired) as exc:
+            raise InstagramSessionExpired(SESSION_REJECTED) from exc
 
 
 def _clip_title(title: str) -> str:
@@ -392,16 +263,3 @@ def _clip_title(title: str) -> str:
 
 def _normalize_title(title: str) -> str:
     return re.sub(r"\s+", "", title).casefold()
-
-
-def _response_has_link(media: dict[str, Any], link_url: str) -> bool:
-    """True when the configure payload echoes the sticker, or omits sticker fields entirely."""
-    blobs = [
-        media.get("story_link_stickers"),
-        media.get("story_cta"),
-        media.get("links"),
-    ]
-    present = [item for item in blobs if item]
-    if not present:
-        return True
-    return link_url in json.dumps(present, ensure_ascii=False)

@@ -13,6 +13,8 @@ from typing import Optional
 from urllib.parse import parse_qsl, urlsplit, urlunsplit, urlencode
 import httpx
 
+from core.gallery import is_product_angle
+
 logger = logging.getLogger(__name__)
 
 # Storefront CDNs default to a thumbnail. These widths are the sharp rendition
@@ -272,7 +274,8 @@ class ImageDownloader:
             sub_id = f"{external_id}_{i}" if external_id else f"item_{i}"
             path = self.download(url, external_id=sub_id)
             if path and path.is_file():
-                if is_material_or_color_swatch(path):
+                # A light garment on a pale backdrop reads as a flat swatch.
+                if not is_product_angle(url) and is_material_or_color_swatch(path):
                     continue
                 downloaded.append(path)
         return unique_images(downloaded)

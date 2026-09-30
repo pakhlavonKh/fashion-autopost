@@ -22,6 +22,8 @@ class ComposedPost:
     title: str
     source: str
     photo_urls: list[str] = field(default_factory=list)
+    # Public t.me links of this post once Telegram has published it.
+    telegram_links: tuple[str, ...] = ()
 
 
 def compose_post(

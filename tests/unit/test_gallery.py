@@ -2,11 +2,12 @@
 
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 from PIL import Image
 
-from core.gallery import arrange_carousel, ordered_photos
-from core.image_downloader import unique_images
+from core.gallery import arrange_carousel, is_product_angle, ordered_photos
+from core.image_downloader import ImageDownloader, unique_images
 
 
 def test_product_angles_close_the_carousel_and_duplicates_collapse() -> None:
@@ -50,6 +51,41 @@ def test_product_angles_close_the_carousel_and_duplicates_collapse() -> None:
         "coat_3_3_1.jpg",
     ]
     assert "/w/2048/" in zara[0]
+
+
+def test_mango_front_then_detail_close_ups_close_the_carousel() -> None:
+    base = "https://media.mango.com/is/image/punto/37007813-05-"
+    page_order = ["002", "001", "003", "081", "084", "082", "023", "030", "900"]
+    ordered = arrange_carousel([base + code for code in page_order], max_photos=10)
+    assert [url.rsplit("-", 1)[-1] for url in ordered] == [
+        "002", "001", "003", "081", "084", "082", "900", "023", "030",
+    ]
+    full = arrange_carousel(
+        [base + f"{index:03d}" for index in range(1, 10)] + [base + "023", base + "030", base + "900"],
+        max_photos=10,
+    )
+    assert len(full) == 10
+    assert [url.rsplit("-", 1)[-1] for url in full[-3:]] == ["900", "023", "030"]
+
+
+def test_pale_product_still_life_is_not_dropped_as_a_swatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        still = folder / "still.jpg"
+        flat = folder / "flat.jpg"
+        Image.new("RGB", (733, 1024), (236, 234, 230)).save(still)
+        Image.new("RGB", (733, 1024), (150, 140, 130)).save(flat)
+        urls = {
+            "https://media.mango.com/is/image/punto/37007813-05-900": still,
+            "https://media.mango.com/is/image/punto/37007813-05-004": flat,
+        }
+        downloader = ImageDownloader(dest_dir=folder)
+        with patch.object(downloader, "download", side_effect=lambda url, external_id="": urls[url]):
+            kept = downloader.download_all(list(urls), external_id="p")
+    assert kept == [still]
+    assert is_product_angle("https://media.mango.com/is/image/punto/37007813-05-900")
+    assert is_product_angle("https://static.zara.net/photos/a/w/750/coat_3_2_1.jpg")
+    assert not is_product_angle("https://media.mango.com/is/image/punto/37007813-05-004")
 
 
 def test_zara_plain_shots_are_front_back_and_close() -> None:

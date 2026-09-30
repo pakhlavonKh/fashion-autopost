@@ -5,7 +5,7 @@ Guarantees per-product error isolation, idempotency, hot config reloading,
 and comprehensive audit logging.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import logging
 import threading
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -517,6 +517,8 @@ class PipelineRunner:
             if res.success:
                 if pub_name == "telegram":
                     telegram_post_id = res.platform_post_id
+                    if res.links:
+                        composed = replace(composed, telegram_links=tuple(res.links))
                 elif pub_name == "instagram":
                     instagram_post_id = res.platform_post_id
                 logger.info(

@@ -53,6 +53,7 @@ class TelegramPublisher:
         self.timeout_seconds = timeout_seconds
         self.downloader = ImageDownloader(timeout_seconds=self.timeout_seconds)
         self.bio_footer = bio_footer or DEFAULT_BIO_FOOTER
+        self._public_usernames: dict[str, str] = {}
 
     @property
     def platform_name(self) -> str:
@@ -89,6 +90,7 @@ class TelegramPublisher:
 
         caption = self._format_caption(post)
         successful_ids: list[str] = []
+        public_links: list[str] = []
         errors: list[str] = []
 
         # Determine all images to send (download all gallery images locally)
@@ -128,12 +130,21 @@ class TelegramPublisher:
                         chat_id=chat_id,
                     )
                 successful_ids.append(f"{chat_id}:{msg_id}" if len(target_ids) > 1 else str(msg_id))
+                username = self._public_usernames.get(chat_id) or (
+                    chat_id[1:] if chat_id.startswith("@") else None
+                )
+                if username and msg_id and msg_id != "None":
+                    public_links.append(f"https://t.me/{username}/{msg_id}")
             except Exception as exc:
                 logger.error("Telegram publish failed for channel %s (%s): %s", chat_id, post.title, exc)
                 errors.append(f"{chat_id}: {exc}")
 
         if successful_ids:
-            return PublishResult(success=True, platform_post_id=",".join(successful_ids))
+            return PublishResult(
+                success=True,
+                platform_post_id=",".join(successful_ids),
+                links=tuple(public_links),
+            )
 
         return PublishResult(success=False, error="; ".join(errors))
 
@@ -164,7 +175,10 @@ class TelegramPublisher:
                 data = response.json()
             result = data.get("result") if isinstance(data, dict) else None
             if data.get("ok") and isinstance(result, dict) and result.get("id") is not None:
-                return str(result["id"])
+                canonical = str(result["id"])
+                if result.get("username"):
+                    self._public_usernames[canonical] = str(result["username"])
+                return canonical
         except Exception as exc:
             logger.warning("Could not resolve Telegram chat %s: %s", chat_id, exc)
         if chat_id.startswith("@"):

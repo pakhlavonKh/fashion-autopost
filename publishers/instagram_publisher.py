@@ -1,9 +1,11 @@
 """Instagram Graph API publisher implementation.
 
 Per SDD §3.6 and SRS FR-5.2, FR-5.3.
-Publishes a single feed photo or a carousel of the original store photos,
-then a story collage of the same photos, and files that story into the
-Highlight for the garment category.
+Publishes a single feed photo or a carousel. A carousel opens on a cover
+collage, then the original store photos follow in the Telegram order, ending
+with the product front, back and close-up. A story collage of the same photos
+follows, linked to the Telegram post and filed into the Highlight for the
+garment category.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 
@@ -23,7 +25,7 @@ from core.image_downloader import ImageDownloader, unique_images
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
 from publishers.image_hosting import ImageHostingService, LitterboxImageHost
-from publishers.instagram_media import prepare_feed_jpeg
+from publishers.instagram_media import prepare_feed_jpeg, render_feed_collage
 from publishers.instagram_private_story import InstagramPrivateStory
 from publishers.instagram_story import (
     LINK_LABEL,
@@ -32,7 +34,7 @@ from publishers.instagram_story import (
     product_description,
     quality_line_from_footer,
     render_story_collage,
-    telegram_channel_url,
+    story_link_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,10 +47,13 @@ GRAPH_INSTAGRAM_BASE = "https://graph.instagram.com"
 
 MAX_INSTAGRAM_CAPTION_LEN = 2200
 MAX_CAROUSEL_ITEMS = 10
+PRODUCT_ANGLE_SLIDES = 3
 MAX_HASHTAGS = 30
 CONTAINER_READY_TIMEOUT_SECONDS = 45.0
 
 BASE_HASHTAGS = ("fashion", "style", "outfit", "одежда", "стиль", "lookoftheday")
+
+_T = TypeVar("_T")
 
 
 class InstagramPublisher:
@@ -104,7 +109,8 @@ class InstagramPublisher:
         try:
             target = f"@{self.username}" if self.username else self.account_id
             originals, prepared = self._prepare_local_images(post)
-            public_urls = [self.image_host.ensure_public_url(str(path)) for path in prepared]
+            slides = self._with_cover_collage(originals, prepared)
+            public_urls = [self.image_host.ensure_public_url(str(path)) for path in slides]
             post_id = self._publish_feed(
                 public_urls,
                 self.format_caption(post, carousel=len(public_urls) > 1),
@@ -126,10 +132,22 @@ class InstagramPublisher:
         self._wait_until_ready(container_id)
         return self._publish_container(container_id)
 
+    def _with_cover_collage(self, originals: list[Path], prepared: list[Path]) -> list[Path]:
+        """Carousel opens on a collage; the photos follow in the Telegram order."""
+        if len(originals) < 2:
+            return prepared
+        cover = prepared[0].with_name(f"{prepared[0].stem}_cover.jpg")
+        try:
+            render_feed_collage(originals, cover)
+        except Exception as exc:
+            logger.warning("Instagram cover collage skipped: %s", exc)
+            return prepared
+        return [cover, *_keep_product_angles(prepared, MAX_CAROUSEL_ITEMS - 1)]
+
     def _publish_story_and_highlight(self, post: ComposedPost, prepared: list[Path]) -> None:
         """Story uses the same photos as the post, with a Telegram link sticker and a Highlight."""
         highlight = detect_highlight(post.title, post.text, post.product_url or "")
-        link_url = telegram_channel_url(self.caption_footer)
+        link_url = story_link_url(post.telegram_links, self.caption_footer)
         use_real_sticker = self.private_story is not None
         try:
             dest = prepared[0].with_name(f"{prepared[0].stem}_story.jpg")
@@ -140,7 +158,6 @@ class InstagramPublisher:
                 price_label=format_story_price(post.price, post.currency),
                 description=product_description(post.text),
                 quality_line=quality_line_from_footer(self.caption_footer),
-                include_link_pill=not use_real_sticker,
             )
         except Exception as exc:
             logger.error("Instagram story collage failed for %s: %s", post.title, exc)
@@ -163,26 +180,10 @@ class InstagramPublisher:
                 return
             except Exception as exc:
                 logger.error(
-                    "Story link sticker and highlight failed for %s: %s. Publishing a plain story instead.",
+                    "Story link sticker failed for %s: %s. Publishing a plain story instead.",
                     post.title,
                     exc,
                 )
-                try:
-                    collage = render_story_collage(
-                        prepared,
-                        dest,
-                        title=post.title,
-                        price_label=format_story_price(post.price, post.currency),
-                        description=product_description(post.text),
-                        quality_line=quality_line_from_footer(self.caption_footer),
-                        include_link_pill=True,
-                    )
-                except Exception as render_exc:
-                    logger.error(
-                        "Instagram story collage retry failed for %s: %s",
-                        post.title,
-                        render_exc,
-                    )
 
         try:
             story_url = self.image_host.ensure_public_url(str(collage))
@@ -191,7 +192,7 @@ class InstagramPublisher:
             story_id = self._publish_container(container_id)
             logger.info("Instagram story %s published for %s", story_id, post.title)
             reason = (
-                "the web session failed"
+                "the Instagram session failed"
                 if use_real_sticker
                 else "INSTAGRAM_SESSIONID is not set"
             )
@@ -215,7 +216,7 @@ class InstagramPublisher:
 
         locals_found: list[Path] = []
         prepare_errors: list[str] = []
-        for index, source in enumerate(sources[:MAX_CAROUSEL_ITEMS]):
+        for index, source in enumerate(_keep_product_angles(sources, MAX_CAROUSEL_ITEMS)):
             local = self._resolve_local_image(source, post.title, index)
             if local is None:
                 prepare_errors.append(f"unreadable image: {source}")
@@ -238,7 +239,7 @@ class InstagramPublisher:
             raise RuntimeError(f"No usable photos for Instagram post '{post.title}': {detail}")
 
         if len(prepared) > MAX_CAROUSEL_ITEMS:
-            prepared = prepared[:MAX_CAROUSEL_ITEMS]
+            prepared = _keep_product_angles(prepared, MAX_CAROUSEL_ITEMS)
             originals = originals[:MAX_CAROUSEL_ITEMS]
         return originals, prepared
 
@@ -344,6 +345,13 @@ class InstagramPublisher:
                 response=resp,
             )
         return data
+
+
+def _keep_product_angles(photos: list[_T], limit: int) -> list[_T]:
+    """Trim model shots, never the closing front, back and close-up."""
+    if len(photos) <= limit:
+        return photos
+    return photos[: limit - PRODUCT_ANGLE_SLIDES] + photos[-PRODUCT_ANGLE_SLIDES:]
 
 
 _CAROUSEL_DROPPED_LINE = re.compile(

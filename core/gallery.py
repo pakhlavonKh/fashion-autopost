@@ -4,7 +4,8 @@ Performs fast lightweight extraction of multi-angle photos from e-commerce produ
 so Telegram and Instagram publishers can create rich multi-photo album carousels.
 
 Model photos stay in the site's order. Product-only shots are kept for the end
-of the carousel: front, then back, then a close-up. The same photo is kept once.
+of the carousel: front, then back, then a close-up. When the store has no back
+shot, a second close-up takes its place. The same photo is kept once.
 """
 
 import logging
@@ -93,9 +94,15 @@ def arrange_carousel(
                 tail_slots[name].append(url)
                 break
 
-    tail = [tail_slots[name][0] for name in _TAIL_ROLES if tail_slots[name]]
+    tail = [tail_slots[name][0] for name in ("front", "back") if tail_slots[name]]
+    tail += tail_slots["close"][: len(_TAIL_ROLES) - len(tail)]
     room = max(0, max_photos - len(tail))
     return looks[:room] + tail
+
+
+def is_product_angle(url: str) -> bool:
+    """A store still life of the garment alone: front, back or close-up."""
+    return _shot_role(url) in _TAIL_ROLES
 
 
 def ordered_photos(
@@ -199,6 +206,9 @@ def _shot_role(url: str) -> str | None:
             return "front"
         if pack == 1:
             return "back"
+        return "close"
+    if _MANGO_NAME.match(name) and (suffix == "023" or re.fullmatch(r"03\d", suffix)):
+        # Mango detail shots: 023 is the fabric, 030-039 the finishing.
         return "close"
 
     zara = _ZARA_SHOT.search(name)

@@ -2,13 +2,16 @@
 
 The story is a 9:16 JPEG. White italic cards carry the name, price, size, color
 and a short description, plus «Европейское качество». A link-style pill sits at
-the bottom, matching the story layout used by the boutique.
+the bottom, matching the story layout used by the boutique. Instagram draws
+nothing for a link sticker posted through the API, so the pill is painted into
+the image and the tappable sticker is placed exactly over it.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Sequence
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -18,6 +21,9 @@ from publishers.instagram_media import _cover_rgb, _open_rgb, save_publish_jpeg
 STORY_WIDTH = 1080
 STORY_HEIGHT = 1920
 LINK_LABEL = "посмотреть подробнее фото"
+LINK_PILL_FONT_SIZE = 40
+LINK_PILL_HEIGHT = 96
+LINK_PILL_BOTTOM = STORY_HEIGHT - 240
 DEFAULT_QUALITY_LINE = "Европейское качество"
 
 # Highlight titles stay within Instagram's 16-character limit and match the
@@ -128,6 +134,27 @@ def telegram_channel_url(footer: str | None) -> str:
     return "https://t.me/fashionalleyb"
 
 
+def story_link_url(telegram_links: Sequence[str], footer: str | None) -> str:
+    """The product's own post in the boutique channel, or the channel when it is unknown."""
+    channel = telegram_channel_url(footer)
+    prefix = channel.rstrip("/").casefold() + "/"
+    for url in telegram_links:
+        if url.casefold().startswith(prefix):
+            return url
+    return channel
+
+
+def link_sticker_area() -> tuple[float, float, float, float]:
+    """Center x, center y, width and height of the painted link pill, as frame fractions."""
+    left, top, right, bottom = _link_pill_box(_load_font(LINK_PILL_FONT_SIZE, italic=False))
+    return (
+        (left + right) / 2 / STORY_WIDTH,
+        (top + bottom) / 2 / STORY_HEIGHT,
+        (right - left) / STORY_WIDTH,
+        (bottom - top) / STORY_HEIGHT,
+    )
+
+
 def render_story_collage(
     sources: list[Path],
     dest: Path,
@@ -136,7 +163,6 @@ def render_story_collage(
     price_label: str,
     description: str,
     quality_line: str,
-    include_link_pill: bool = True,
 ) -> Path:
     """Paint a 1080×1920 story from the same photos that go into the feed post."""
     photos = [path for path in sources if path.is_file()][:3]
@@ -153,8 +179,7 @@ def render_story_collage(
     draw = ImageDraw.Draw(canvas)
     cards = story_cards(title, price_label, description, quality_line)
     _draw_cards(draw, cards)
-    if include_link_pill:
-        _draw_link_pill(draw)
+    _draw_link_pill(draw)
     dest.parent.mkdir(parents=True, exist_ok=True)
     save_publish_jpeg(canvas, dest)
     return dest
@@ -243,15 +268,17 @@ def _draw_card(
     return top + box_height
 
 
-def _draw_link_pill(draw: ImageDraw.ImageDraw) -> None:
-    font = _load_font(34, italic=False)
-    text_width = draw.textlength(LINK_LABEL, font=font)
-    height = 86
-    width = int(text_width) + 130
-    bottom = STORY_HEIGHT - 250
-    top = bottom - height
+def _link_pill_box(font: ImageFont.ImageFont) -> tuple[int, int, int, int]:
+    width = int(font.getlength(LINK_LABEL)) + 150
     left = (STORY_WIDTH - width) // 2
-    draw.rounded_rectangle((left, top, left + width, bottom), radius=height // 2, fill=(255, 255, 255))
+    return left, LINK_PILL_BOTTOM - LINK_PILL_HEIGHT, left + width, LINK_PILL_BOTTOM
+
+
+def _draw_link_pill(draw: ImageDraw.ImageDraw) -> None:
+    font = _load_font(LINK_PILL_FONT_SIZE, italic=False)
+    left, top, right, bottom = _link_pill_box(font)
+    height = bottom - top
+    draw.rounded_rectangle((left, top, right, bottom), radius=height // 2, fill=(255, 255, 255))
 
     circle_d = height - 18
     circle_x = left + 12

@@ -219,3 +219,43 @@ def test_telegram_publisher_sends_once_when_username_matches_numeric_id(tmp_path
     assert res.success is True
     assert sent_to == ["-1001246015920", "-1004363309099"]
 
+
+def test_telegram_publisher_returns_public_post_link() -> None:
+    """The public channel post link is returned so the Instagram story can open it."""
+    pub = TelegramPublisher(bot_token="test_token", channel_id="-1004363309099, @fashionalleyb")
+    post = ComposedPost(
+        title="Floral Blouse",
+        text="Stylish floral blouse.",
+        price=Decimal("45.00"),
+        currency="USD",
+        photo_url="https://example.com/blouse.jpg",
+        product_url="https://example.com/p/2",
+        source="mango",
+    )
+    chats = {
+        "-1004363309099": {"id": -1004363309099, "type": "supergroup", "title": "dev"},
+        "@fashionalleyb": {"id": -1001246015920, "type": "channel", "username": "fashionalleyb"},
+    }
+
+    def fake_client(*_args, **_kwargs):
+        client = MagicMock()
+        client.__enter__.return_value = client
+
+        def get(_url, params=None, **_kwargs):
+            response = MagicMock()
+            if params is None:
+                response.content = b""
+                return response
+            response.json.return_value = {"ok": True, "result": chats[params["chat_id"]]}
+            return response
+
+        client.get.side_effect = get
+        return client
+
+    with patch("publishers.telegram_publisher.httpx.Client", side_effect=fake_client):
+        with patch.object(pub, "_send_photo_with_retry", return_value="205728"):
+            res = pub.publish(post)
+
+    assert res.success is True
+    assert res.links == ("https://t.me/fashionalleyb/205728",)
+

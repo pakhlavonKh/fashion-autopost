@@ -1,5 +1,6 @@
 """Instagram caption format and Graph API publishing flow."""
 
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 import tempfile
@@ -177,25 +178,52 @@ def test_several_photos_become_a_carousel() -> None:
 
         assert result.success is True
         posts = [item for item in calls if item[0] == "POST"]
-        assert len(posts) == 6
-        assert posts[0][2]["is_carousel_item"] == "true"
-        assert posts[0][2]["image_url"].endswith("look-0_ig.jpg")
-        assert posts[1][2]["is_carousel_item"] == "true"
-        assert posts[1][2]["image_url"].endswith("look-1_ig.jpg")
-        assert "cover" not in posts[0][2]["image_url"]
-        assert "caption" not in posts[0][2]
-        assert posts[2][2]["media_type"] == "CAROUSEL"
-        assert posts[2][2]["children"] == "id-1,id-2"
-        assert posts[2][2]["caption"].startswith("Silk Slip Dress-101$")
-        assert "Обращаться" not in posts[2][2]["caption"]
-        assert "Отзывы" not in posts[2][2]["caption"]
-        assert "в наличии" not in posts[2][2]["caption"]
-        assert "t.me" not in posts[2][2]["caption"]
-        assert "Европейское качество" in posts[2][2]["caption"]
-        assert "Тел:+998998484044" in posts[2][2]["caption"]
-        assert posts[3][2]["creation_id"] == "id-3"
-        assert posts[4][2]["media_type"] == "STORIES"
-        assert posts[5][2]["creation_id"] == "id-5"
+        assert len(posts) == 7
+        slides = [item[2]["image_url"] for item in posts[:3]]
+        assert all(item[2]["is_carousel_item"] == "true" for item in posts[:3])
+        assert all("caption" not in item[2] for item in posts[:3])
+        assert slides[0].endswith("look-0_ig_cover.jpg")
+        assert slides[1].endswith("look-0_ig.jpg")
+        assert slides[2].endswith("look-1_ig.jpg")
+        carousel = posts[3][2]
+        assert carousel["media_type"] == "CAROUSEL"
+        assert carousel["children"] == "id-1,id-2,id-3"
+        assert carousel["caption"].startswith("Silk Slip Dress-101$")
+        assert "Обращаться" not in carousel["caption"]
+        assert "Отзывы" not in carousel["caption"]
+        assert "в наличии" not in carousel["caption"]
+        assert "t.me" not in carousel["caption"]
+        assert "Европейское качество" in carousel["caption"]
+        assert "Тел:+998998484044" in carousel["caption"]
+        assert posts[4][2]["creation_id"] == "id-4"
+        assert posts[5][2]["media_type"] == "STORIES"
+        assert posts[6][2]["creation_id"] == "id-6"
+
+
+def test_full_carousel_keeps_the_product_angles_after_the_cover() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        photos = []
+        for index in range(10):
+            path = Path(tmp) / f"look-{index}.jpg"
+            Image.new("RGB", (700, 1400), (20 * index, 90, 200 - 15 * index)).save(path)
+            photos.append(str(path))
+        post = _with_photos(_sample_post(), photos)
+        calls: list[tuple[str, str, dict]] = []
+        publisher = InstagramPublisher("token", "1789", image_host=_Host())
+
+        with patch("httpx.Client", side_effect=_client_factory(calls)):
+            result = publisher.publish(post)
+
+        assert result.success is True
+        slides = [
+            Path(item[2]["image_url"]).name
+            for item in calls
+            if item[0] == "POST" and item[2].get("is_carousel_item") == "true"
+        ]
+        assert slides == [
+            "look-0_ig_cover.jpg",
+            *(f"look-{index}_ig.jpg" for index in (0, 1, 2, 3, 4, 5, 7, 8, 9)),
+        ]
 
 
 def test_story_is_filed_into_the_dress_highlight() -> None:
@@ -229,6 +257,23 @@ def test_story_is_filed_into_the_dress_highlight() -> None:
         posts = [item for item in calls if item[0] == "POST"]
         assert len(posts) == 2
         assert all(item[2].get("media_type") != "STORIES" for item in posts)
+
+
+def test_story_links_to_the_telegram_post_of_the_product() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        photo = Path(tmp) / "look.jpg"
+        Image.new("RGB", (900, 1200), (40, 40, 80)).save(photo)
+        post = replace(
+            _with_photos(_sample_post(), [str(photo)]),
+            telegram_links=("https://t.me/fashionalleyb/205728",),
+        )
+        private = _PrivateStory()
+        publisher = InstagramPublisher("token", "1789", image_host=_Host(), private_story=private)
+
+        with patch("httpx.Client", side_effect=_client_factory([])):
+            publisher.publish(post)
+
+        assert private.calls[0]["link_url"] == "https://t.me/fashionalleyb/205728"
 
 
 def test_rejected_session_does_not_publish_a_plain_story() -> None:
@@ -297,6 +342,10 @@ def test_config_points_instagram_at_test_account() -> None:
     assert data["instagram"]["username"] == "mukhsinius"
     assert "t.me/fashionalleyb" in data["instagram"]["caption_footer"]
     assert "instagram.com" not in data["instagram"]["caption_footer"]
+
+
+def _with_photos(post, photos: list[str]):
+    return replace(post, photo_url=photos[0], photo_urls=photos)
 
 
 def _close(pixel: tuple[int, ...], color: tuple[int, int, int], tolerance: int = 8) -> bool:

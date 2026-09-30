@@ -18,6 +18,7 @@ class PublishResult:
     success: bool
     platform_post_id: str | None = None
     error: str | None = None
+    links: tuple[str, ...] = ()
 
 
 @runtime_checkable
