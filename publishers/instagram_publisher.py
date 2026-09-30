@@ -156,20 +156,19 @@ class InstagramPublisher:
                     highlight_title=highlight,
                 )
                 logger.info(
-                    "Instagram story %s published for %s with link %s in highlight «%s»",
+                    "Instagram story %s published for %s with link %s",
                     story_id,
                     post.title,
                     link_url,
-                    highlight,
                 )
                 return
             except Exception as exc:
                 logger.error(
-                    "Story link sticker and highlight failed for %s: %s. "
-                    "Publishing a plain story instead.",
+                    "Story link sticker and highlight failed for %s: %s",
                     post.title,
                     exc,
                 )
+            return
 
         try:
             story_url = self.image_host.ensure_public_url(str(collage))

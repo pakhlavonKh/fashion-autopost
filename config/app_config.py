@@ -8,6 +8,7 @@ per cycle without restarting the service.
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote
 import os
 import yaml
 from dotenv import load_dotenv
@@ -353,7 +354,7 @@ class AppConfig(BaseModel):
         if os.getenv("INSTAGRAM_USERNAME"):
             instagram_data["username"] = os.environ["INSTAGRAM_USERNAME"].strip().lstrip("@")
         if os.getenv("INSTAGRAM_SESSIONID"):
-            instagram_data["session_id"] = os.environ["INSTAGRAM_SESSIONID"].strip()
+            instagram_data["session_id"] = unquote(os.environ["INSTAGRAM_SESSIONID"].strip())
         yaml_data["instagram"] = instagram_data
 
         s3_data = yaml_data.get("s3", {})

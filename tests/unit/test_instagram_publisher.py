@@ -227,6 +227,35 @@ def test_story_is_filed_into_the_dress_highlight() -> None:
         assert all(item[2].get("media_type") != "STORIES" for item in posts)
 
 
+def test_rejected_session_does_not_publish_a_plain_story() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        photo = Path(tmp) / "look.jpg"
+        Image.new("RGB", (900, 1200), (40, 40, 80)).save(photo)
+        sample = _sample_post()
+        post = type(sample)(
+            photo_url=str(photo),
+            text=sample.text,
+            price=sample.price,
+            currency=sample.currency,
+            product_url=sample.product_url,
+            title="Платье",
+            source=sample.source,
+            photo_urls=[str(photo)],
+        )
+
+        class _Rejected:
+            def publish_story(self, image, *, link_url: str, link_title: str, highlight_title: str) -> str:
+                raise RuntimeError("Instagram rejected INSTAGRAM_SESSIONID")
+
+        publisher = InstagramPublisher("token", "1789", image_host=_Host(), private_story=_Rejected())
+        calls: list[tuple[str, str, dict]] = []
+        with patch("httpx.Client", side_effect=_client_factory(calls)):
+            result = publisher.publish(post)
+
+        assert result.success is True
+        assert all(item[2].get("media_type") != "STORIES" for item in calls)
+
+
 def test_litterbox_host_returns_public_url() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         photo = Path(tmp) / "look.jpg"

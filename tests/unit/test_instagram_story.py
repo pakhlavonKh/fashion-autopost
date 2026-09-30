@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from PIL import Image
 
 from publishers.instagram_private_story import InstagramPrivateStory
-from publishers.instagram_highlights import InstagramHighlightClient
+from publishers.instagram_highlights import InstagramHighlightClient, InstagramSessionExpired
 from publishers.instagram_story import (
     LINK_LABEL,
     STORY_HEIGHT,
@@ -79,38 +79,82 @@ def test_collage_is_a_story_frame() -> None:
 
 
 def test_private_story_link_opens_telegram_and_creates_missing_highlight() -> None:
-    client = _FakePrivateClient(existing=[])
+    client = _FakeWebSession()
     publisher = InstagramPrivateStory("1" * 40, client=client)
-    image = Path("story.jpg")
 
     story_pk = publisher.publish_story(
-        image,
+        Path("story.jpg"),
         link_url="https://t.me/fashionalleyb",
         link_title="посмотреть подробнее фото",
         highlight_title="Трикотаж",
     )
 
     assert story_pk == "555"
-    sticker = client.uploaded_stickers[0]
-    assert sticker.extra["url"] == "https://t.me/fashionalleyb"
-    assert sticker.extra["link_title"] == "посмотреть подробнее фото"
-    assert sticker.extra["link_type"] == "web"
-    assert client.created == ("Трикотаж", ["555"])
-    assert client.added == []
+    assert client.link_url == "https://t.me/fashionalleyb"
+    assert client.link_title == "посмотреть подробнее фото"
+    assert client.sticker == (0.50, 0.84, 0.68, 0.055)
+    assert client.highlight == ("Трикотаж", "555")
 
 
-def test_private_story_adds_to_existing_highlight() -> None:
-    client = _FakePrivateClient(existing=[_Reel("Платья", "1800")])
+def test_private_story_keeps_the_linked_story_when_highlight_fails() -> None:
+    client = _FakeWebSession(highlight_error=RuntimeError("highlight down"))
     publisher = InstagramPrivateStory("1" * 40, client=client)
 
-    publisher.publish_story(
+    story_pk = publisher.publish_story(
         Path("story.jpg"),
         link_url="https://t.me/fashionalleyb",
         highlight_title="Платья",
     )
 
-    assert client.created is None
-    assert client.added == [("1800", ["555_99"])]
+    assert story_pk == "555"
+    assert client.link_url == "https://t.me/fashionalleyb"
+
+
+def test_web_story_sends_the_telegram_link_sticker() -> None:
+    import json
+
+    with tempfile.TemporaryDirectory() as tmp:
+        image = Path(tmp) / "story.jpg"
+        Image.new("RGB", (1080, 1920), (20, 20, 20)).save(image, format="JPEG")
+        client = InstagramHighlightClient("27709919492%3Atoken", "27709919492")
+        calls: list[tuple] = []
+        with patch("httpx.Client", side_effect=_story_upload_factory(calls)):
+            story_pk = client.publish_linked_story(
+                image,
+                link_url="https://t.me/fashionalleyb",
+                link_title="посмотреть подробнее фото",
+                x=0.5,
+                y=0.84,
+                width=0.68,
+                height=0.055,
+            )
+    assert story_pk == "555"
+    configure = [item for item in calls if item[0].endswith("configure_to_story/")]
+    assert configure
+    sticker = json.loads(configure[0][1]["tap_models"])[0]
+    assert sticker["url"] == "https://t.me/fashionalleyb"
+    assert sticker["custom_cta"] == "посмотреть подробнее фото"
+    assert sticker["type"] == "story_link"
+    assert client.session_id == "27709919492:token"
+
+
+def test_login_redirect_rejects_the_session_before_upload() -> None:
+    client = InstagramHighlightClient("27709919492:token", "27709919492")
+    with patch("httpx.Client", side_effect=_login_redirect_factory()):
+        try:
+            client.publish_linked_story(
+                Path("story.jpg"),
+                link_url="https://t.me/fashionalleyb",
+                link_title="посмотреть подробнее фото",
+                x=0.5,
+                y=0.84,
+                width=0.68,
+                height=0.055,
+            )
+        except InstagramSessionExpired as exc:
+            assert "INSTAGRAM_SESSIONID" in str(exc)
+        else:
+            raise AssertionError("expired session was accepted")
 
 
 def test_existing_highlight_receives_the_story() -> None:
@@ -119,7 +163,7 @@ def test_existing_highlight_receives_the_story() -> None:
         highlight_id = client.add_story("Платья", "555")
     assert highlight_id == "1800"
     posts = [item for item in _HIGHLIGHT_CALLS if item[0] == "POST"]
-    assert posts[0][1].endswith("/highlights/1800/edit_reel/")
+    assert posts[0][1].endswith("/highlights/highlight:1800/edit_reel/")
     assert "555_1789" in posts[0][2]["added_media_ids"]
 
 
@@ -134,40 +178,25 @@ def test_missing_highlight_is_created() -> None:
     assert "777_1789" in posts[0][2]["media_ids"]
 
 
-class _Reel:
-    def __init__(self, title: str, pk: str) -> None:
-        self.title = title
-        self.pk = pk
+class _FakeWebSession:
+    def __init__(self, highlight_error: Exception | None = None) -> None:
+        self.link_url = ""
+        self.link_title = ""
+        self.sticker: tuple[float, float, float, float] | None = None
+        self.highlight: tuple[str, str] | None = None
+        self.highlight_error = highlight_error
 
+    def publish_linked_story(self, _image, *, link_url: str, link_title: str, x: float, y: float, width: float, height: float) -> str:
+        self.link_url = link_url
+        self.link_title = link_title
+        self.sticker = (x, y, width, height)
+        return "555"
 
-class _FakePrivateClient:
-    def __init__(self, existing: list[_Reel]) -> None:
-        self.user_id = "99"
-        self.uuid = "uuid-1"
-        self.existing = existing
-        self.uploaded_stickers = []
-        self.created = None
-        self.added: list[tuple[str, list[str]]] = []
-
-    def private_request(self, _endpoint: str, _data: dict) -> dict:
-        return {"status": "ok"}
-
-    def photo_upload_to_story(self, _path, stickers=None, resize_mode="fill"):
-        self.uploaded_stickers = list(stickers or [])
-        return _Reel("", "555")
-
-    def user_highlights(self, _user_id: str) -> list[_Reel]:
-        return self.existing
-
-    def highlight_create(self, title: str, story_ids: list[str]):
-        self.created = (title, story_ids)
-        return _Reel(title, "hl-new")
-
-    def highlight_add_stories(self, highlight_pk: str, media_ids: list[str]) -> None:
-        self.added.append((highlight_pk, media_ids))
-
-    def media_id(self, story_pk: str) -> str:
-        return f"{story_pk}_{self.user_id}"
+    def add_story(self, title: str, story_pk: str) -> str:
+        if self.highlight_error:
+            raise self.highlight_error
+        self.highlight = (title, story_pk)
+        return "hl-new"
 
 
 _HIGHLIGHT_CALLS: list[tuple] = []
@@ -185,6 +214,7 @@ def _highlight_factory(existing: bool):
             _HIGHLIGHT_CALLS.append(("GET", url, headers))
             response = MagicMock()
             response.is_success = True
+            response.status_code = 200
             response.headers = {}
             if "highlights_tray" in url:
                 tray = [{"id": "highlight:1800", "title": "Платья"}] if existing else []
@@ -198,6 +228,7 @@ def _highlight_factory(existing: bool):
             _HIGHLIGHT_CALLS.append(("POST", url, dict(data or {})))
             response = MagicMock()
             response.is_success = True
+            response.status_code = 200
             response.headers = {}
             response.json.return_value = {"status": "ok", "reel": {"id": "highlight:1900"}}
             return response
@@ -207,4 +238,71 @@ def _highlight_factory(existing: bool):
         return client
 
     _HIGHLIGHT_CALLS.clear()
+    return factory
+
+
+def _ok_response(payload: dict) -> MagicMock:
+    response = MagicMock()
+    response.is_success = True
+    response.status_code = 200
+    response.headers = {}
+    response.json.return_value = payload
+    return response
+
+
+def _story_upload_factory(calls: list[tuple]):
+    def factory(*_args, **_kwargs):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        cookies: dict[str, str] = {}
+        client.cookies.set.side_effect = lambda name, value, domain=None: cookies.__setitem__(name, value)
+        client.cookies.get.side_effect = cookies.get
+
+        def get(url, headers=None, **_kw):
+            if url.rstrip("/").endswith("instagram.com"):
+                cookies["csrftoken"] = "csrf-token"
+                return _ok_response({})
+            return _ok_response({"status": "ok", "form_data": {"username": "shop"}})
+
+        def post(url, headers=None, data=None, content=None, **_kw):
+            calls.append((url, dict(data or {})))
+            if url.endswith("configure_to_story/"):
+                return _ok_response({
+                    "status": "ok",
+                    "media": {
+                        "pk": "555",
+                        "story_link_stickers": [{"story_link": {"url": "https://t.me/fashionalleyb"}}],
+                    },
+                })
+            return _ok_response({"status": "ok"})
+
+        client.get.side_effect = get
+        client.post.side_effect = post
+        return client
+
+    return factory
+
+
+def _login_redirect_factory():
+    def factory(*_args, **_kwargs):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        cookies: dict[str, str] = {}
+        client.cookies.set.side_effect = lambda name, value, domain=None: cookies.__setitem__(name, value)
+        client.cookies.get.side_effect = cookies.get
+
+        def get(url, headers=None, **_kw):
+            cookies["csrftoken"] = "csrf-token"
+            response = MagicMock()
+            response.is_success = False
+            response.status_code = 302
+            response.headers = {"location": "https://www.instagram.com/accounts/login/"}
+            response.json.return_value = {}
+            response.text = ""
+            return response
+
+        client.get.side_effect = get
+        client.post.side_effect = get
+        return client
+
     return factory
