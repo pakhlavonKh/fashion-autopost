@@ -414,11 +414,12 @@ class PipelineRunner:
             return
 
         # Collect all gallery photos for the product card
+        from core.gallery import arrange_carousel, extract_gallery_photos
+
         photo_urls = list(product.photo_urls) if getattr(product, "photo_urls", None) else []
         if len(photo_urls) <= 1 and product.product_url:
-            from core.gallery import extract_gallery_photos
             try:
-                gallery = extract_gallery_photos(product.product_url, brand=product.source, max_photos=8)
+                gallery = extract_gallery_photos(product.product_url, brand=product.source, max_photos=10)
                 if gallery:
                     photo_urls = gallery
             except Exception as exc:
@@ -426,6 +427,7 @@ class PipelineRunner:
 
         if not photo_urls and product.photo_url:
             photo_urls = [product.photo_url]
+        photo_urls = arrange_carousel(photo_urls, max_photos=10)
 
         # Download all photos locally for binary posting & multi-photo albums
         downloaded_paths = []

@@ -77,11 +77,14 @@ def test_whole_dollar_price_has_no_decimals() -> None:
 def test_feed_jpeg_is_four_by_five() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "tall.png"
-        Image.new("RGB", (800, 1600), (250, 250, 250)).save(source)
+        Image.new("RGB", (800, 1600), (250, 20, 20)).save(source)
         dest = prepare_feed_jpeg(source, Path(tmp) / "out.jpg")
         with Image.open(dest) as image:
             assert image.size == (FEED_WIDTH, FEED_HEIGHT)
             assert image.format == "JPEG"
+            # The photo fills the frame. There is no gray side bar.
+            assert _close(image.getpixel((0, 0)), (250, 20, 20))
+            assert _close(image.getpixel((FEED_WIDTH - 1, FEED_HEIGHT - 1)), (250, 20, 20))
 
 
 def test_single_photo_publishes_after_container_is_ready() -> None:
@@ -151,9 +154,9 @@ def test_feed_collage_matches_boutique_cover() -> None:
 def test_several_photos_become_a_carousel() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         photos = []
-        for index in range(2):
+        for index, color in enumerate(((240, 30, 30), (30, 30, 240))):
             path = Path(tmp) / f"look-{index}.jpg"
-            Image.new("RGB", (700, 1400), (240, 240, 240)).save(path)
+            Image.new("RGB", (700, 1400), color).save(path)
             photos.append(str(path))
         post = _sample_post()
         post = type(post)(
@@ -174,24 +177,25 @@ def test_several_photos_become_a_carousel() -> None:
 
         assert result.success is True
         posts = [item for item in calls if item[0] == "POST"]
-        assert len(posts) == 7
+        assert len(posts) == 6
         assert posts[0][2]["is_carousel_item"] == "true"
-        assert posts[0][2]["image_url"].endswith("look-0_ig_cover.jpg")
+        assert posts[0][2]["image_url"].endswith("look-0_ig.jpg")
         assert posts[1][2]["is_carousel_item"] == "true"
-        assert posts[2][2]["is_carousel_item"] == "true"
+        assert posts[1][2]["image_url"].endswith("look-1_ig.jpg")
+        assert "cover" not in posts[0][2]["image_url"]
         assert "caption" not in posts[0][2]
-        assert posts[3][2]["media_type"] == "CAROUSEL"
-        assert posts[3][2]["children"] == "id-1,id-2,id-3"
-        assert posts[3][2]["caption"].startswith("Silk Slip Dress-101$")
-        assert "Обращаться" not in posts[3][2]["caption"]
-        assert "Отзывы" not in posts[3][2]["caption"]
-        assert "в наличии" not in posts[3][2]["caption"]
-        assert "t.me" not in posts[3][2]["caption"]
-        assert "Европейское качество" in posts[3][2]["caption"]
-        assert "Тел:+998998484044" in posts[3][2]["caption"]
-        assert posts[4][2]["creation_id"] == "id-4"
-        assert posts[5][2]["media_type"] == "STORIES"
-        assert posts[6][2]["creation_id"] == "id-6"
+        assert posts[2][2]["media_type"] == "CAROUSEL"
+        assert posts[2][2]["children"] == "id-1,id-2"
+        assert posts[2][2]["caption"].startswith("Silk Slip Dress-101$")
+        assert "Обращаться" not in posts[2][2]["caption"]
+        assert "Отзывы" not in posts[2][2]["caption"]
+        assert "в наличии" not in posts[2][2]["caption"]
+        assert "t.me" not in posts[2][2]["caption"]
+        assert "Европейское качество" in posts[2][2]["caption"]
+        assert "Тел:+998998484044" in posts[2][2]["caption"]
+        assert posts[3][2]["creation_id"] == "id-3"
+        assert posts[4][2]["media_type"] == "STORIES"
+        assert posts[5][2]["creation_id"] == "id-5"
 
 
 def test_story_is_filed_into_the_dress_highlight() -> None:

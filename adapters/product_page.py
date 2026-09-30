@@ -21,6 +21,7 @@ import httpx
 
 from adapters.base import RawProduct
 from adapters.scrapers.base import generate_deterministic_id, parse_price
+from core.gallery import ordered_photos
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
     images = _merge_images(chosen.images, _brand_image_urls(html_text, brand, url))
     if not images:
         return None
+    images = ordered_photos(html_text, brand, url, images, max_photos=10)
     external_id = generate_deterministic_id(brand, raw_id=chosen.raw_id or None, url=url)
     title = chosen.title.split("|")[0].strip()
     return RawProduct(
@@ -115,7 +117,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
         photo_url=images[0],
         product_url=url,
         in_stock=chosen.in_stock,
-        photo_urls=images[:8],
+        photo_urls=images[:10],
     )
 
 
@@ -330,16 +332,26 @@ def _from_embedded_article(html_text: str, url: str, default_currency: str) -> _
         title = f"{product_name} - {color}"
     else:
         title = product_name or color
-    images: list[str] = []
+    looks: list[str] = []
+    stills: list[str] = []
+    details: list[str] = []
     for item in current.get("images") or []:
         if not isinstance(item, dict):
             continue
-        if "swatch" in str(item.get("assetType") or "").lower():
+        asset = str(item.get("assetType") or "").lower()
+        if "swatch" in asset:
             continue
         raw = str(item.get("baseUrl") or item.get("image") or "")
         absolute = _absolute_url(raw, url)
-        if absolute:
-            images.append(absolute)
+        if not absolute:
+            continue
+        if "detail" in asset:
+            details.append(absolute)
+        elif "still" in asset:
+            stills.append(absolute)
+        else:
+            looks.append(absolute)
+    images = looks + _product_angles(stills, details)
     if not title or not images:
         return None
     return _ParsedProduct(
@@ -493,6 +505,19 @@ def _walk_nodes(data):
     if isinstance(graph, list):
         for item in graph:
             yield from _walk_nodes(item)
+
+
+def _product_angles(stills: list[str], details: list[str]) -> list[str]:
+    """Product-only shots in carousel order: front, back, close-up."""
+    tail: list[str] = []
+    if stills:
+        tail.append(stills[0])
+    if len(stills) > 1:
+        tail.append(stills[1])
+    close = details[0] if details else (stills[2] if len(stills) > 2 else "")
+    if close and close not in tail:
+        tail.append(close)
+    return tail
 
 
 def _image_urls(image_field, page_url: str) -> list[str]:

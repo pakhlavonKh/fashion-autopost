@@ -59,7 +59,7 @@ def high_resolution_image_url(url: str) -> str:
     if _INDITEX_HOST.match(host):
         return _upgrade_inditex(url)
     if host == "media.mango.com":
-        return _raise_query_int(_raise_query_int(url, "imwidth", MANGO_WIDTH), "qlt", 90)
+        return _raise_query_int(_raise_query_int(url, "imwidth", MANGO_WIDTH), "qlt", 100)
     if host == "image.hm.com":
         return _raise_query_int(url, "imwidth", HM_WIDTH)
     if re.search(r"(?:^|&)imwidth=\d+", parts.query, flags=re.IGNORECASE):
@@ -106,6 +106,54 @@ def _raise_query_int(url: str, name: str, minimum: int, extra: dict[str, str] | 
             if key.lower() not in present:
                 updated.append((key, value))
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(updated), parts.fragment))
+
+
+def unique_images(paths: list[Path], max_distance: int = 3) -> list[Path]:
+    """Drop a later photo when it is the same picture as one already kept."""
+    kept: list[Path] = []
+    seen: list[tuple[int, int, int, int]] = []
+    for path in paths:
+        digest = _image_fingerprint(path)
+        if digest is None:
+            kept.append(path)
+            continue
+        if any(_same_picture(digest, previous, max_distance) for previous in seen):
+            logger.info("Dropping duplicate photo %s", path.name)
+            continue
+        seen.append(digest)
+        kept.append(path)
+    return kept
+
+
+def _image_fingerprint(path: Path) -> tuple[int, int, int, int] | None:
+    """Average color plus a spatial hash, so a resize matches and a new angle does not."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            small = image.convert("RGB").resize((8, 8), Image.Resampling.BOX)
+            raw = small.tobytes()
+            pixels = list(zip(raw[0::3], raw[1::3], raw[2::3]))
+    except Exception:
+        return None
+    if not pixels:
+        return None
+    mean = tuple(sum(pixel[channel] for pixel in pixels) // len(pixels) for channel in range(3))
+    gray = [int(0.299 * red + 0.587 * green + 0.114 * blue) for red, green, blue in pixels]
+    average = sum(gray) / len(gray)
+    bits = 0
+    for pixel in gray:
+        bits = (bits << 1) | (1 if pixel >= average else 0)
+    return mean[0], mean[1], mean[2], bits
+
+
+def _same_picture(left: tuple[int, int, int, int], right: tuple[int, int, int, int], max_distance: int) -> bool:
+    color_gap = abs(left[0] - right[0]) + abs(left[1] - right[1]) + abs(left[2] - right[2])
+    return color_gap <= 24 and _hamming(left[3], right[3]) <= max_distance
+
+
+def _hamming(left: int, right: int) -> int:
+    return bin(left ^ right).count("1")
 
 
 def is_material_or_color_swatch(image_path: Path) -> bool:
@@ -227,4 +275,4 @@ class ImageDownloader:
                 if is_material_or_color_swatch(path):
                     continue
                 downloaded.append(path)
-        return downloaded
+        return unique_images(downloaded)

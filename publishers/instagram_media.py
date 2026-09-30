@@ -1,8 +1,8 @@
 """Prepare product photos for an Instagram feed post.
 
-Instagram accepts JPEG only, between 4:5 and 1.91:1. Fashion portraits from
-Zara and Mango are often taller than 4:5, so each slide is fitted onto a
-1080x1350 canvas without cropping the garment.
+Instagram accepts JPEG only, between 4:5 and 1.91:1. Every slide is the
+original store photo, cover-cropped to the same 1080x1350 frame so the
+carousel has one format and no gray bars or extra background.
 """
 
 from __future__ import annotations
@@ -45,18 +45,13 @@ def render_feed_collage(sources: list[Path], dest: Path) -> Path:
 
 
 def prepare_feed_jpeg(source: Path, dest: Path) -> Path:
-    """Write a 4:5 sRGB JPEG that Instagram Graph API will accept."""
+    """Write a 4:5 sRGB JPEG filled by the original photo, with no padding."""
     from PIL import Image
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(source) as image:
-        image = _open_rgb(image)
-        background = _edge_color(image)
-        image = _fit_inside(image, FEED_WIDTH, FEED_HEIGHT)
-        canvas = Image.new("RGB", (FEED_WIDTH, FEED_HEIGHT), background)
-        offset = ((FEED_WIDTH - image.width) // 2, (FEED_HEIGHT - image.height) // 2)
-        canvas.paste(image, offset)
-        save_publish_jpeg(canvas, dest)
+        filled = _cover_rgb(_open_rgb(image), FEED_WIDTH, FEED_HEIGHT)
+        save_publish_jpeg(filled, dest)
     return dest
 
 
@@ -122,17 +117,6 @@ def _open_rgb(image):
         return image.convert("RGB")
 
 
-def _fit_inside(image, max_width: int, max_height: int):
-    from PIL import Image
-
-    source_size = image.size
-    fitted = image.copy()
-    fitted.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-    if fitted.size != source_size:
-        fitted = _sharpen(fitted)
-    return fitted
-
-
 def _sharpen(image):
     """Restore the edge contrast a downscale removes, without crunching flat areas."""
     from PIL import ImageFilter
@@ -155,18 +139,3 @@ def save_publish_jpeg(image, dest: Path) -> None:
             return
         quality -= 5
     logger.warning("Instagram JPEG is still over 8MB after compression: %s", dest)
-
-
-def _edge_color(image) -> tuple[int, int, int]:
-    """Average the corner pixels so the padding matches the studio background."""
-    width, height = image.size
-    corners = (
-        image.getpixel((0, 0)),
-        image.getpixel((width - 1, 0)),
-        image.getpixel((0, height - 1)),
-        image.getpixel((max(width - 1, 0), max(height - 1, 0))),
-    )
-    channels = []
-    for index in range(3):
-        channels.append(sum(pixel[index] for pixel in corners) // len(corners))
-    return channels[0], channels[1], channels[2]

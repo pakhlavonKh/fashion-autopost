@@ -1,9 +1,9 @@
 """Instagram Graph API publisher implementation.
 
 Per SDD §3.6 and SRS FR-5.2, FR-5.3.
-Publishes a single feed photo or a carousel, then a story collage of the same
-photos, and files that story into the Highlight for the garment category.
-A carousel opens on a cover collage: two photos stacked on the left, the hero on the right.
+Publishes a single feed photo or a carousel of the original store photos,
+then a story collage of the same photos, and files that story into the
+Highlight for the garment category.
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ import httpx
 from config.app_config import DEFAULT_INSTAGRAM_CAPTION_FOOTER
 from core.composer import ComposedPost
 from core.pricing import whole_price
-from core.image_downloader import ImageDownloader
+from core.image_downloader import ImageDownloader, unique_images
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
 from publishers.image_hosting import ImageHostingService, LitterboxImageHost
-from publishers.instagram_media import prepare_feed_jpeg, render_feed_collage
+from publishers.instagram_media import prepare_feed_jpeg
 from publishers.instagram_private_story import InstagramPrivateStory
 from publishers.instagram_story import (
     LINK_LABEL,
@@ -104,8 +104,7 @@ class InstagramPublisher:
         try:
             target = f"@{self.username}" if self.username else self.account_id
             originals, prepared = self._prepare_local_images(post)
-            slides = self._with_cover_collage(originals, prepared)
-            public_urls = [self.image_host.ensure_public_url(str(path)) for path in slides]
+            public_urls = [self.image_host.ensure_public_url(str(path)) for path in prepared]
             post_id = self._publish_feed(
                 public_urls,
                 self.format_caption(post, carousel=len(public_urls) > 1),
@@ -194,21 +193,25 @@ class InstagramPublisher:
         if not sources and post.photo_url:
             sources = [post.photo_url]
 
-        originals: list[Path] = []
-        prepared: list[Path] = []
+        locals_found: list[Path] = []
         prepare_errors: list[str] = []
         for index, source in enumerate(sources[:MAX_CAROUSEL_ITEMS]):
             local = self._resolve_local_image(source, post.title, index)
             if local is None:
                 prepare_errors.append(f"unreadable image: {source}")
                 continue
+            locals_found.append(local)
+
+        originals: list[Path] = []
+        prepared: list[Path] = []
+        for local in unique_images(locals_found):
             dest = local.with_name(f"{local.stem}_ig.jpg")
             try:
                 prepared.append(prepare_feed_jpeg(local, dest))
                 originals.append(local)
             except Exception as exc:
                 prepare_errors.append(str(exc))
-                logger.warning("Skipping Instagram image %s: %s", source, exc)
+                logger.warning("Skipping Instagram image %s: %s", local, exc)
 
         if not prepared:
             detail = prepare_errors[0] if prepare_errors else "no image sources"
@@ -218,18 +221,6 @@ class InstagramPublisher:
             prepared = prepared[:MAX_CAROUSEL_ITEMS]
             originals = originals[:MAX_CAROUSEL_ITEMS]
         return originals, prepared
-
-    def _with_cover_collage(self, originals: list[Path], prepared: list[Path]) -> list[Path]:
-        """Carousel cover is a collage; the original photos follow as the next slides."""
-        if len(originals) < 2:
-            return prepared
-        cover = prepared[0].with_name(f"{prepared[0].stem}_cover.jpg")
-        try:
-            render_feed_collage(originals, cover)
-        except Exception as exc:
-            logger.warning("Instagram cover collage skipped: %s", exc)
-            return prepared
-        return [cover, *prepared][:MAX_CAROUSEL_ITEMS]
 
     def _resolve_local_image(self, source: str, title: str, index: int) -> Path | None:
         local = Path(source)

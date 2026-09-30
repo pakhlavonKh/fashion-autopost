@@ -74,7 +74,7 @@ def test_high_resolution_image_url_rewrites_store_thumbnails() -> None:
     mango = high_resolution_image_url("https://media.mango.com/is/image/punto/37085988-99-001?imwidth=480")
     assert "imwidth=2048" in mango
     assert "imwidth=480" not in mango
-    assert "qlt=90" in mango
+    assert "qlt=100" in mango
 
     hm = high_resolution_image_url("https://image.hm.com/assets/hm/aa/aa/one.jpg")
     assert hm.endswith("?imwidth=2160")

@@ -13,7 +13,8 @@ import httpx
 
 from core.composer import ComposedPost
 from core.pricing import whole_price
-from core.image_downloader import ImageDownloader
+from core.image_downloader import ImageDownloader, unique_images
+from publishers.instagram_media import prepare_feed_jpeg
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
 
@@ -94,7 +95,7 @@ class TelegramPublisher:
             candidate_urls = [post.photo_url]
 
         downloaded_paths: list[str] = []
-        for i, u in enumerate(candidate_urls[:8]):
+        for i, u in enumerate(candidate_urls[:10]):
             local_cand = Path(u)
             if local_cand.is_file():
                 downloaded_paths.append(str(local_cand))
@@ -108,12 +109,13 @@ class TelegramPublisher:
 
         if not downloaded_paths and post.photo_url:
             downloaded_paths = [post.photo_url]
+        downloaded_paths = self._uniform_slides(downloaded_paths)
 
         for chat_id in target_ids:
             try:
                 if len(downloaded_paths) > 1:
                     msg_id = self._send_media_group_with_retry(
-                        downloaded_paths[:8],
+                        downloaded_paths[:10],
                         caption,
                         chat_id=chat_id,
                     )
@@ -132,6 +134,30 @@ class TelegramPublisher:
             return PublishResult(success=True, platform_post_id=",".join(successful_ids))
 
         return PublishResult(success=False, error="; ".join(errors))
+
+    def _uniform_slides(self, photos: list[str]) -> list[str]:
+        """Same 4:5 JPEG for every slide, with duplicate pictures removed."""
+        local_paths = [Path(photo) for photo in photos if Path(photo).is_file()]
+        kept = {str(path.resolve()) for path in unique_images(local_paths)} if local_paths else set()
+        slides: list[str] = []
+        seen: set[str] = set()
+        for photo in photos:
+            path = Path(photo)
+            if path.is_file():
+                resolved = str(path.resolve())
+                if resolved not in kept or resolved in seen:
+                    continue
+                seen.add(resolved)
+                dest = path.with_name(f"{path.stem}_feed.jpg")
+                try:
+                    slides.append(str(prepare_feed_jpeg(path, dest)))
+                except Exception as exc:
+                    logger.debug("Sending the original file for Telegram, prepare failed: %s", exc)
+                    slides.append(photo)
+            elif photo not in seen:
+                seen.add(photo)
+                slides.append(photo)
+        return slides
 
     @retry_with_backoff(max_attempts=3, base_delay=2.0, max_delay=10.0, exceptions=(httpx.HTTPError,))
     def _send_media_group_with_retry(
