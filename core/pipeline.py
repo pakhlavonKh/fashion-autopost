@@ -481,7 +481,7 @@ class PipelineRunner:
             summary.failed += 1
             return
 
-        # Check existing publication records to prevent re-posting on partial retries
+        # Check existing publication records to prevent re-posting to Instagram on partial retries
         existing_record = None
         try:
             existing_record = self.repo.get_by_external_id(external_id)
@@ -503,15 +503,15 @@ class PipelineRunner:
             pub_name = publisher.platform_name.lower()
             already_id = existing_post_ids.get(pub_name)
 
-            if already_id:
+            # Telegram always gets a fresh post: the price may have changed, and the
+            # Instagram story links to the latest Telegram post.
+            if already_id and pub_name != "telegram":
                 logger.info(
                     "Product %s was already published to %s (post_id=%s). Skipping duplicate publish.",
                     external_id,
                     pub_name,
                     already_id,
                 )
-                if pub_name == "telegram" and hasattr(publisher, "public_links"):
-                    composed = replace(composed, telegram_links=tuple(publisher.public_links(already_id)))
                 continue
 
             res = publisher.publish(composed)

@@ -163,8 +163,25 @@ def test_pipeline_runner_moderation_gate(sample_products: list[RawProduct]) -> N
     assert repo.products["p-1"]["status"] == "pending_review"
 
 
-def test_partial_failure_does_not_duplicate_successful_channel(sample_products: list[RawProduct]) -> None:
-    """If Telegram succeeds but Instagram fails in cycle 1, cycle 2 must NOT re-post to Telegram."""
+class _LinkingTelegram(FakePublisher):
+    def __init__(self) -> None:
+        super().__init__("telegram")
+
+    def publish(self, post):
+        from publishers.base import PublishResult
+
+        result = super().publish(post)
+        number = len(self.published_posts)
+        return PublishResult(
+            success=result.success,
+            platform_post_id=result.platform_post_id,
+            links=(f"https://t.me/fashionalleyb/{number}",),
+        )
+
+
+def test_retry_posts_telegram_again_and_links_the_story_to_the_new_post(sample_products: list[RawProduct]) -> None:
+    """Telegram succeeds and Instagram fails in cycle 1. Cycle 2 posts to Telegram again,
+    because the price may have changed, and Instagram gets the link to that new post."""
     from publishers.base import PublishResult
 
     repo = FakeProductRepository()
@@ -173,7 +190,7 @@ def test_partial_failure_does_not_duplicate_successful_channel(sample_products: 
     fx = FixedRateConverter()
     config = AppConfig()
 
-    pub_telegram = FakePublisher("telegram")
+    pub_telegram = _LinkingTelegram()
 
     class FlakyInstagramPublisher(FakePublisher):
         def __init__(self, platform_name: str) -> None:
@@ -215,14 +232,36 @@ def test_partial_failure_does_not_duplicate_successful_channel(sample_products: 
     assert summary2.selected == 1
     assert summary2.published == 1
     assert summary2.failed == 0
-    # Telegram was SKIPPED in cycle 2 because it already succeeded in cycle 1!
-    assert len(pub_telegram.published_posts) == 1
-    # Instagram was published in cycle 2
+    assert len(pub_telegram.published_posts) == 2
     assert len(pub_instagram.published_posts) == 1
-    # Both post IDs are now present and status is published
+    assert pub_instagram.published_posts[0].telegram_links == ("https://t.me/fashionalleyb/2",)
     assert repo.products["p-1"]["status"] == "published"
-    assert repo.products["p-1"]["telegram_post_id"] is not None
+    assert repo.products["p-1"]["telegram_post_id"] == "telegram_2"
     assert repo.products["p-1"]["instagram_post_id"] is not None
+
+
+def test_retry_does_not_post_instagram_twice(sample_products: list[RawProduct]) -> None:
+    """Instagram succeeds and Telegram fails in cycle 1. Cycle 2 posts only to Telegram."""
+    repo = FakeProductRepository()
+    pub_telegram = FakePublisher("telegram", should_fail=True)
+    pub_instagram = FakePublisher("instagram")
+    runner = PipelineRunner(
+        source=FakeSourceAdapter([sample_products[0]]),
+        repo=repo,
+        llm=FakeLLMProvider(select_count=1),
+        fx=FixedRateConverter(),
+        publishers=[pub_telegram, pub_instagram],
+        config=AppConfig(),
+        prompt_loader=MockPromptLoader(),
+    )
+
+    assert runner.run_cycle().failed == 1
+    pub_telegram.should_fail = False
+    assert runner.run_cycle().published == 1
+
+    assert len(pub_telegram.published_posts) == 1
+    assert len(pub_instagram.published_posts) == 1
+    assert repo.products["p-1"]["status"] == "published"
 
 
 def test_pipeline_runner_channel_disabled(sample_products: list[RawProduct]) -> None:
