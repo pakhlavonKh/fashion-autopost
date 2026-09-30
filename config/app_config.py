@@ -185,7 +185,10 @@ class InstagramSettings(BaseModel):
     account_id: str = Field(default="mock-account-id")
     username: str | None = None
     caption_footer: str = Field(default=DEFAULT_INSTAGRAM_CAPTION_FOOTER)
-    # instagram.com sessionid cookie. Required to file stories into Highlights.
+    # App sign-in for the story link sticker and Highlights. Preferred over session_id.
+    login: str | None = None
+    password: str | None = None
+    # instagram.com sessionid cookie. Fallback when login and password are not set.
     session_id: str | None = None
 
 
@@ -355,6 +358,10 @@ class AppConfig(BaseModel):
             instagram_data["username"] = os.environ["INSTAGRAM_USERNAME"].strip().lstrip("@")
         if os.getenv("INSTAGRAM_SESSIONID"):
             instagram_data["session_id"] = unquote(os.environ["INSTAGRAM_SESSIONID"].strip())
+        if os.getenv("INSTAGRAM_LOGIN"):
+            instagram_data["login"] = os.environ["INSTAGRAM_LOGIN"].strip()
+        if os.getenv("INSTAGRAM_PASSWORD"):
+            instagram_data["password"] = os.environ["INSTAGRAM_PASSWORD"]
         yaml_data["instagram"] = instagram_data
 
         s3_data = yaml_data.get("s3", {})

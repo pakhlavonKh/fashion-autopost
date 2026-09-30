@@ -7,6 +7,8 @@ venv/
 .pytest_cache/
 data/*.db
 data/images/
+data/instagram_settings.json
+data/instagram_code.txt
 certbot/
 logs/*.log
 .env

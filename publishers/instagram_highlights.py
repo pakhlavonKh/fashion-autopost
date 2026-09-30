@@ -1,9 +1,13 @@
 """Publish a story with a link sticker and file it into an Instagram Highlight.
 
 The Graph API can publish a plain story, but it cannot attach a tappable link
-or edit Highlights. Both steps go through the Instagram app API, signed in with
-the instagram.com sessionid cookie sent as the app's bearer token. The web API
+or edit Highlights. Both steps go through the Instagram app API. The web API
 cannot do either: it drops link stickers and redirects Highlight calls.
+
+The preferred sign-in is the account login and password. The app device and
+its session are kept in data/instagram_settings.json, so every run looks like
+the same phone. A browser sessionid cookie still works as a fallback, but
+Instagram logs such a session out once it is used to post.
 """
 
 from __future__ import annotations
@@ -22,23 +26,46 @@ logger = logging.getLogger(__name__)
 
 MAX_HIGHLIGHT_TITLE = 16
 HIGHLIGHT_COVER_CROP = [0.0, 0.21830457, 1.0, 0.78094524]
+DEFAULT_SETTINGS_PATH = Path("data/instagram_settings.json")
 SESSION_REJECTED = (
     "Instagram rejected INSTAGRAM_SESSIONID. Open instagram.com while logged in, "
     "copy the full sessionid cookie again, put it in .env, and restart the program."
 )
+LOGIN_REJECTED = (
+    "Instagram did not accept the INSTAGRAM_LOGIN sign-in. If it asks to confirm the login, run "
+    "`docker compose exec app python -m publishers.instagram_login` on the server and enter the code."
+)
 
 
 class InstagramSessionExpired(RuntimeError):
-    """The browser session cookie is missing, expired, or was rejected."""
+    """The Instagram sign-in is missing, expired, or was rejected."""
 
 
 class InstagramHighlightClient:
     """Uploads a linked story and files it into Highlights with the app API."""
 
-    def __init__(self, session_id: str, user_id: str = "", client: Any | None = None) -> None:
-        self.session_id = unquote(session_id.strip())
-        self.user_id = str(user_id).strip() or self.session_id.split(":")[0]
+    def __init__(
+        self,
+        session_id: str = "",
+        user_id: str = "",
+        client: Any | None = None,
+        *,
+        login: str = "",
+        password: str = "",
+        settings_path: Path = DEFAULT_SETTINGS_PATH,
+    ) -> None:
+        self.session_id = unquote((session_id or "").strip())
+        self.login = (login or "").strip()
+        self.password = password or ""
+        self.settings_path = Path(settings_path)
+        self.user_id = str(user_id).strip() or (self.session_id.split(":")[0] if self.session_id else "")
         self._client = client
+        self._rejected = LOGIN_REJECTED if self.uses_password else SESSION_REJECTED
+        self._refused: tuple[float, str] | None = None
+
+    @property
+    def uses_password(self) -> bool:
+        return bool(self.login and self.password)
 
     def publish_linked_story(
         self,
@@ -198,13 +225,36 @@ class InstagramHighlightClient:
     def _session(self) -> Any:
         if self._client is not None:
             return self._client
+        # Repeated password attempts after a refusal can lock the account.
+        if self._refused and self._refused[0] == self._settings_mtime():
+            raise InstagramSessionExpired(self._refused[1])
         from instagrapi import Client
 
         client = Client()
-        client.delay_range = [0, 0]
-        self._call(client.login_by_sessionid, self.session_id)
+        client.delay_range = [1, 3]
+        try:
+            if self.uses_password:
+                if self.settings_path.is_file():
+                    client.load_settings(self.settings_path)
+                # Reuses the saved session; signs in again from the same device only when it was dropped.
+                self._call(client.login, self.login, self.password)
+                self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+                client.dump_settings(self.settings_path)
+            else:
+                self._call(client.login_by_sessionid, self.session_id)
+        except InstagramSessionExpired as exc:
+            self._refused = (self._settings_mtime(), str(exc))
+            raise
+        self._refused = None
+        self.user_id = str(client.user_id or self.user_id)
         self._client = client
         return client
+
+    def _settings_mtime(self) -> float:
+        try:
+            return self.settings_path.stat().st_mtime
+        except OSError:
+            return 0.0
 
     def _upload(self, client: Any, image: Path) -> tuple[str, int, int]:
         """Send the JPEG bytes as they are. instagrapi's uploader re-saves at quality 75."""
@@ -240,18 +290,33 @@ class InstagramHighlightClient:
             headers=headers,
         )
         if response.status_code in (401, 403) or "login_required" in response.text:
-            raise InstagramSessionExpired(SESSION_REJECTED)
+            raise InstagramSessionExpired(self._rejected)
         if response.status_code != 200:
             raise RuntimeError(f"Instagram story upload failed: HTTP {response.status_code} {response.text[:200]}")
         return upload_id, image_width, image_height
 
     def _call(self, method: Any, *args: Any, **kwargs: Any) -> Any:
-        from instagrapi.exceptions import ChallengeRequired, LoginRequired
+        from instagrapi.exceptions import (
+            BadCredentials,
+            BadPassword,
+            ChallengeRequired,
+            LoginRequired,
+            ReloginAttemptExceeded,
+            TwoFactorRequired,
+        )
 
         try:
             return method(*args, **kwargs)
-        except (LoginRequired, ChallengeRequired) as exc:
-            raise InstagramSessionExpired(SESSION_REJECTED) from exc
+        except (
+            LoginRequired,
+            ChallengeRequired,
+            TwoFactorRequired,
+            BadPassword,
+            BadCredentials,
+            ReloginAttemptExceeded,
+        ) as exc:
+            self._client = None
+            raise InstagramSessionExpired(f"{self._rejected} ({type(exc).__name__})") from exc
 
 
 def _clip_title(title: str) -> str:

@@ -70,6 +70,8 @@ class InstagramPublisher:
         use_instagram_login: bool | None = None,
         session_id: str | None = None,
         private_story: InstagramPrivateStory | None = None,
+        login: str | None = None,
+        password: str | None = None,
     ) -> None:
         self.access_token = access_token
         self.account_id = account_id
@@ -79,8 +81,12 @@ class InstagramPublisher:
         self.username = (username or "").strip().lstrip("@") or None
         if private_story is not None:
             self.private_story: InstagramPrivateStory | None = private_story
-        elif session_id and session_id.strip():
-            self.private_story = InstagramPrivateStory(session_id)
+        elif (login and password) or (session_id and session_id.strip()):
+            self.private_story = InstagramPrivateStory(
+                session_id or "",
+                login=login or "",
+                password=password or "",
+            )
         else:
             self.private_story = None
         self.downloader = ImageDownloader(timeout_seconds=self.timeout_seconds)

@@ -147,6 +147,8 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
             caption_footer=config.instagram.caption_footer,
             username=config.instagram.username,
             session_id=config.instagram.session_id,
+            login=config.instagram.login,
+            password=config.instagram.password,
         )
         publishers.append(instagram_pub)
         logger.info(

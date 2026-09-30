@@ -309,6 +309,15 @@ def test_rejected_session_does_not_publish_a_plain_story() -> None:
         assert len(story_posts) == 1
 
 
+def test_account_login_enables_the_linked_story() -> None:
+    publisher = InstagramPublisher(
+        "token", "1789", image_host=_Host(), login="shop@example.com", password="secret"
+    )
+    assert publisher.private_story is not None
+    assert publisher.private_story.login == "shop@example.com"
+    assert InstagramPublisher("token", "1789", image_host=_Host()).private_story is None
+
+
 def test_litterbox_host_returns_public_url() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         photo = Path(tmp) / "look.jpg"

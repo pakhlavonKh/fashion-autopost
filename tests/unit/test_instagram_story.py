@@ -179,6 +179,49 @@ def test_rejected_session_stops_before_upload() -> None:
     assert app.uploads == []
 
 
+def test_password_sign_in_reuses_the_saved_device() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = Path(tmp) / "instagram_settings.json"
+        settings.write_text("{}", encoding="utf-8")
+        _FakeInstagrapi.instances.clear()
+        client = InstagramHighlightClient(login="shop@example.com", password="secret", settings_path=settings)
+        with patch("instagrapi.Client", _FakeInstagrapi):
+            client._session()
+            client._session()
+
+    app = _FakeInstagrapi.instances[0]
+    assert len(_FakeInstagrapi.instances) == 1
+    assert app.calls == [("load", settings), ("login", "shop@example.com", "secret"), ("dump", settings)]
+    assert client.user_id == "27709919492"
+
+
+def test_refused_sign_in_is_not_retried_until_the_login_is_renewed() -> None:
+    from instagrapi.exceptions import ChallengeRequired
+
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = Path(tmp) / "instagram_settings.json"
+        _FakeInstagrapi.instances.clear()
+        _FakeInstagrapi.login_error = ChallengeRequired("challenge_required")
+        client = InstagramHighlightClient(login="shop@example.com", password="secret", settings_path=settings)
+        try:
+            with patch("instagrapi.Client", _FakeInstagrapi):
+                for _ in range(2):
+                    try:
+                        client._session()
+                    except InstagramSessionExpired as exc:
+                        assert "instagram_login" in str(exc)
+                    else:
+                        raise AssertionError("refused sign-in was accepted")
+                assert len(_FakeInstagrapi.instances) == 1
+
+                settings.write_text("{}", encoding="utf-8")
+                _FakeInstagrapi.login_error = None
+                client._session()
+        finally:
+            _FakeInstagrapi.login_error = None
+    assert len(_FakeInstagrapi.instances) == 2
+
+
 def test_existing_highlight_receives_the_story() -> None:
     app = _FakeAppClient(tray=[{"id": "highlight:1800", "title": "Платья"}])
     client = InstagramHighlightClient("session", "1789", client=app)
@@ -222,6 +265,31 @@ class _FakeHighlightClient:
             raise self.highlight_error
         self.highlight = (title, story_pk)
         return "hl-new"
+
+
+class _FakeInstagrapi:
+    """Stands in for instagrapi.Client during sign-in."""
+
+    instances: list["_FakeInstagrapi"] = []
+    login_error: Exception | None = None
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.user_id = None
+        _FakeInstagrapi.instances.append(self)
+
+    def load_settings(self, path) -> None:
+        self.calls.append(("load", path))
+
+    def login(self, username: str, password: str) -> bool:
+        self.calls.append(("login", username, password))
+        if _FakeInstagrapi.login_error:
+            raise _FakeInstagrapi.login_error
+        self.user_id = 27709919492
+        return True
+
+    def dump_settings(self, path) -> None:
+        self.calls.append(("dump", path))
 
 
 class _FakeAppClient:
