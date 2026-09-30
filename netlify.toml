@@ -3,8 +3,22 @@
   publish = "dashboard/static"
   command = ""
 
+# Proxy API and media directly to VPS Backend (avoids HTTPS -> HTTP Mixed Content block)
+[[redirects]]
+  from = "/api/*"
+  to = "http://194.62.52.152/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/images/*"
+  to = "http://194.62.52.152/images/:splat"
+  status = 200
+  force = true
+
 # Single Page App redirect rule
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+
