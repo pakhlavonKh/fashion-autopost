@@ -499,7 +499,12 @@ function clearAuthKey() {
 }
 
 function getApiBaseUrl() {
-  return localStorage.getItem(API_URL_STORAGE) || '';
+  const url = localStorage.getItem(API_URL_STORAGE) || '';
+  if (window.location.protocol === 'https:' && url.startsWith('http://')) {
+    localStorage.removeItem(API_URL_STORAGE);
+    return '';
+  }
+  return url;
 }
 
 function setApiBaseUrl(url) {
