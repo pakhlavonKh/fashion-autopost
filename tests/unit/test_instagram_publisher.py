@@ -13,7 +13,12 @@ from config.app_config import DEFAULT_INSTAGRAM_CAPTION_FOOTER
 from core.composer import compose_post
 from publishers.dry_run_publisher import DryRunPublisher
 from publishers.image_hosting import LitterboxImageHost
-from publishers.instagram_media import FEED_HEIGHT, FEED_WIDTH, prepare_feed_jpeg
+from publishers.instagram_media import (
+    FEED_HEIGHT,
+    FEED_WIDTH,
+    prepare_feed_jpeg,
+    render_feed_collage,
+)
 from publishers.instagram_publisher import InstagramPublisher, format_instagram_caption
 
 
@@ -109,6 +114,27 @@ def test_single_photo_publishes_after_container_is_ready() -> None:
         assert any(item[0] == "GET" and item[2]["fields"] == "status_code,status" for item in calls)
 
 
+def test_feed_collage_matches_boutique_cover() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        colors = ((20, 20, 20), (210, 180, 140), (40, 70, 120))
+        photos = []
+        for index, color in enumerate(colors):
+            path = folder / f"look-{index}.jpg"
+            Image.new("RGB", (800, 1200), color).save(path)
+            photos.append(path)
+        dest = render_feed_collage(photos, folder / "cover.jpg")
+        with Image.open(dest) as image:
+            assert image.size == (FEED_WIDTH, FEED_HEIGHT)
+            assert image.format == "JPEG"
+            # Hero (first photo) fills the right tile; the next two stack on the left.
+            assert _close(image.getpixel((FEED_WIDTH * 3 // 4, FEED_HEIGHT // 2)), colors[0])
+            assert _close(image.getpixel((FEED_WIDTH // 4, FEED_HEIGHT // 4)), colors[1])
+            assert _close(image.getpixel((FEED_WIDTH // 4, FEED_HEIGHT * 7 // 8)), colors[2])
+            # White gutter between the columns.
+            assert _close(image.getpixel((FEED_WIDTH // 2, FEED_HEIGHT // 2)), (255, 255, 255))
+
+
 def test_several_photos_become_a_carousel() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         photos = []
@@ -135,16 +161,18 @@ def test_several_photos_become_a_carousel() -> None:
 
         assert result.success is True
         posts = [item for item in calls if item[0] == "POST"]
-        assert len(posts) == 6
+        assert len(posts) == 7
         assert posts[0][2]["is_carousel_item"] == "true"
+        assert posts[0][2]["image_url"].endswith("look-0_ig_cover.jpg")
         assert posts[1][2]["is_carousel_item"] == "true"
+        assert posts[2][2]["is_carousel_item"] == "true"
         assert "caption" not in posts[0][2]
-        assert posts[2][2]["media_type"] == "CAROUSEL"
-        assert posts[2][2]["children"] == "id-1,id-2"
-        assert posts[2][2]["caption"].startswith("Silk Slip Dress-101$")
-        assert posts[3][2]["creation_id"] == "id-3"
-        assert posts[4][2]["media_type"] == "STORIES"
-        assert posts[5][2]["creation_id"] == "id-5"
+        assert posts[3][2]["media_type"] == "CAROUSEL"
+        assert posts[3][2]["children"] == "id-1,id-2,id-3"
+        assert posts[3][2]["caption"].startswith("Silk Slip Dress-101$")
+        assert posts[4][2]["creation_id"] == "id-4"
+        assert posts[5][2]["media_type"] == "STORIES"
+        assert posts[6][2]["creation_id"] == "id-6"
 
 
 def test_story_is_filed_into_the_dress_highlight() -> None:
@@ -213,6 +241,10 @@ def test_config_points_instagram_at_test_account() -> None:
     assert data["instagram"]["username"] == "mukhsinius"
     assert "t.me/fashionalleyb" in data["instagram"]["caption_footer"]
     assert "instagram.com" not in data["instagram"]["caption_footer"]
+
+
+def _close(pixel: tuple[int, ...], color: tuple[int, int, int], tolerance: int = 8) -> bool:
+    return all(abs(channel - expected) <= tolerance for channel, expected in zip(pixel, color))
 
 
 class _PrivateStory:

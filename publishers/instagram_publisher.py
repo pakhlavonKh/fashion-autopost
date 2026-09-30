@@ -3,6 +3,7 @@
 Per SDD §3.6 and SRS FR-5.2, FR-5.3.
 Publishes a single feed photo or a carousel, then a story collage of the same
 photos, and files that story into the Highlight for the garment category.
+A carousel opens on a cover collage: two photos stacked on the left, the hero on the right.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from core.image_downloader import ImageDownloader
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
 from publishers.image_hosting import ImageHostingService, LitterboxImageHost
-from publishers.instagram_media import prepare_feed_jpeg
+from publishers.instagram_media import prepare_feed_jpeg, render_feed_collage
 from publishers.instagram_private_story import InstagramPrivateStory
 from publishers.instagram_story import (
     LINK_LABEL,
@@ -100,7 +101,8 @@ class InstagramPublisher:
         try:
             target = f"@{self.username}" if self.username else self.account_id
             originals, prepared = self._prepare_local_images(post)
-            public_urls = [self.image_host.ensure_public_url(str(path)) for path in prepared]
+            slides = self._with_cover_collage(originals, prepared)
+            public_urls = [self.image_host.ensure_public_url(str(path)) for path in slides]
             post_id = self._publish_feed(public_urls, self.format_caption(post))
             logger.info("Instagram post %s published to %s", post_id, target)
         except Exception as exc:
@@ -211,6 +213,18 @@ class InstagramPublisher:
             prepared = prepared[:MAX_CAROUSEL_ITEMS]
             originals = originals[:MAX_CAROUSEL_ITEMS]
         return originals, prepared
+
+    def _with_cover_collage(self, originals: list[Path], prepared: list[Path]) -> list[Path]:
+        """Carousel cover is a collage; the original photos follow as the next slides."""
+        if len(originals) < 2:
+            return prepared
+        cover = prepared[0].with_name(f"{prepared[0].stem}_cover.jpg")
+        try:
+            render_feed_collage(originals, cover)
+        except Exception as exc:
+            logger.warning("Instagram cover collage skipped: %s", exc)
+            return prepared
+        return [cover, *prepared][:MAX_CAROUSEL_ITEMS]
 
     def _resolve_local_image(self, source: str, title: str, index: int) -> Path | None:
         local = Path(source)
