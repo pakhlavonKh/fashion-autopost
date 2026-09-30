@@ -68,9 +68,14 @@ class TelegramPublisher:
             except Exception as exc:
                 logger.warning("Failed to fetch dynamic Telegram channels from repository: %s", exc)
 
-        # Fallback to configured channel_id if no dynamic targets stored yet
-        if not target_ids and self.channel_id:
-            target_ids = [self.channel_id]
+        # Include all configured channel_ids (supports comma-separated list, e.g. group ID + channel username)
+        if self.channel_id:
+            configured_ids = [
+                cid.strip() for cid in str(self.channel_id).split(",") if cid.strip()
+            ]
+            for cid in configured_ids:
+                if cid not in target_ids:
+                    target_ids.append(cid)
 
         if not target_ids:
             logger.warning("Telegram publish skipped: no active channels configured or discovered.")
@@ -136,7 +141,7 @@ class TelegramPublisher:
         chat_id: str | None = None,
     ) -> str:
         """Call Telegram Bot API sendMediaGroup with exponential backoff for multiple photos."""
-        target_chat = chat_id or self.channel_id
+        target_chat = chat_id or (str(self.channel_id).split(",")[0].strip() if self.channel_id else None)
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMediaGroup"
 
         media_list = []
@@ -199,7 +204,7 @@ class TelegramPublisher:
         chat_id: str | None = None,
     ) -> str:
         """Call Telegram Bot API sendPhoto with exponential backoff."""
-        target_chat = chat_id or self.channel_id
+        target_chat = chat_id or (str(self.channel_id).split(",")[0].strip() if self.channel_id else None)
         url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
 
         local_candidate = Path(photo_url)

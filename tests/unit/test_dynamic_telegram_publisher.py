@@ -143,3 +143,33 @@ def test_dashboard_telegram_chat_endpoints(tmp_path: Path) -> None:
     # 3. DELETE /api/telegram/chats/-100777 (deactivate)
     res_del = client.delete("/api/telegram/chats/-100777")
     assert res_del.status_code == 200
+
+
+def test_telegram_publisher_comma_separated_destinations() -> None:
+    """TelegramPublisher supports comma-separated list of group ID and channel username."""
+    pub = TelegramPublisher(bot_token="test_token", channel_id="-1004363309099, @fashionalleyb")
+
+    post = ComposedPost(
+        title="Floral Blouse",
+        text="Stylish floral blouse.",
+        price=Decimal("45.00"),
+        currency="USD",
+        photo_url="https://example.com/blouse.jpg",
+        product_url="https://example.com/p/2",
+        source="mango",
+    )
+
+    sent_to = []
+
+    def mock_send(photo_url, caption, chat_id=None):
+        sent_to.append(chat_id)
+        return f"msg_{chat_id}"
+
+    with patch.object(pub, "_send_photo_with_retry", side_effect=mock_send):
+        res = pub.publish(post)
+
+    assert res.success is True
+    assert "-1004363309099" in sent_to
+    assert "@fashionalleyb" in sent_to
+    assert len(sent_to) == 2
+
