@@ -92,9 +92,12 @@ class InstagramPublisher:
     def platform_name(self) -> str:
         return "instagram"
 
-    def format_caption(self, post: ComposedPost) -> str:
+    def format_caption(self, post: ComposedPost, *, carousel: bool = False) -> str:
         """Build the feed caption: name and price, description, contacts, hashtags."""
-        return format_instagram_caption(post, self.caption_footer)
+        footer = self.caption_footer
+        if carousel:
+            footer = footer_for_carousel(footer)
+        return format_instagram_caption(post, footer)
 
     def publish(self, post: ComposedPost) -> PublishResult:
         """Publish the feed post, then the story collage of the same photos."""
@@ -103,7 +106,10 @@ class InstagramPublisher:
             originals, prepared = self._prepare_local_images(post)
             slides = self._with_cover_collage(originals, prepared)
             public_urls = [self.image_host.ensure_public_url(str(path)) for path in slides]
-            post_id = self._publish_feed(public_urls, self.format_caption(post))
+            post_id = self._publish_feed(
+                public_urls,
+                self.format_caption(post, carousel=len(public_urls) > 1),
+            )
             logger.info("Instagram post %s published to %s", post_id, target)
         except Exception as exc:
             logger.error("Instagram publish failed for %s: %s", post.title, exc)
@@ -328,6 +334,24 @@ class InstagramPublisher:
                 response=resp,
             )
         return data
+
+
+_CAROUSEL_DROPPED_LINE = re.compile(
+    r"обращаться|отзыв|в наличии|telegram|t\.me/",
+    re.IGNORECASE,
+)
+
+
+def footer_for_carousel(footer: str | None) -> str:
+    """Drop contact handles, reviews, stock account and the Telegram link from a carousel caption.
+
+    Phone and the quality line stay. Stories still read the full footer for the link sticker.
+    """
+    if not footer:
+        return ""
+    kept = [line for line in footer.splitlines() if not _CAROUSEL_DROPPED_LINE.search(line)]
+    text = "\n".join(kept)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def format_instagram_caption(post: ComposedPost, footer: str | None = None) -> str:

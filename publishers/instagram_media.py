@@ -7,6 +7,7 @@ Zara and Mango are often taller than 4:5, so each slide is fitted onto a
 
 from __future__ import annotations
 
+import io
 import logging
 from pathlib import Path
 
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 FEED_WIDTH = 1080
 FEED_HEIGHT = 1350
 MAX_JPEG_BYTES = 8 * 1024 * 1024
+JPEG_QUALITY = 100
 # Thin white gutter, same weight as the boutique grid covers.
 COLLAGE_GAP = 16
 # Top-left tile is a little taller than the detail under it.
@@ -38,24 +40,23 @@ def render_feed_collage(sources: list[Path], dest: Path) -> Path:
     for (x, y, width, height), path in zip(_collage_frames(len(photos)), ordered):
         canvas.paste(_cover_tile(path, width, height), (x, y))
     dest.parent.mkdir(parents=True, exist_ok=True)
-    _save_under_limit(canvas, dest)
+    save_publish_jpeg(canvas, dest)
     return dest
 
 
 def prepare_feed_jpeg(source: Path, dest: Path) -> Path:
     """Write a 4:5 sRGB JPEG that Instagram Graph API will accept."""
-    from PIL import Image, ImageOps
+    from PIL import Image
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(source) as image:
-        image = ImageOps.exif_transpose(image)
-        image = image.convert("RGB")
+        image = _open_rgb(image)
         background = _edge_color(image)
-        image.thumbnail((FEED_WIDTH, FEED_HEIGHT), Image.Resampling.LANCZOS)
+        image = _fit_inside(image, FEED_WIDTH, FEED_HEIGHT)
         canvas = Image.new("RGB", (FEED_WIDTH, FEED_HEIGHT), background)
         offset = ((FEED_WIDTH - image.width) // 2, (FEED_HEIGHT - image.height) // 2)
         canvas.paste(image, offset)
-        _save_under_limit(canvas, dest)
+        save_publish_jpeg(canvas, dest)
     return dest
 
 
@@ -78,18 +79,82 @@ def _collage_frames(count: int) -> list[tuple[int, int, int, int]]:
 
 
 def _cover_tile(path: Path, width: int, height: int):
-    from PIL import Image, ImageOps
+    from PIL import Image
 
     with Image.open(path) as image:
-        image = ImageOps.exif_transpose(image).convert("RGB")
-        scale = max(width / image.width, height / image.height)
-        resized = image.resize(
-            (max(width, int(image.width * scale)), max(height, int(image.height * scale))),
-            Image.Resampling.LANCZOS,
+        image = _open_rgb(image)
+        return _cover_rgb(image, width, height)
+
+
+def _cover_rgb(image, width: int, height: int):
+    from PIL import Image
+
+    scale = max(width / image.width, height / image.height)
+    resized = image.resize(
+        (max(width, int(image.width * scale)), max(height, int(image.height * scale))),
+        Image.Resampling.LANCZOS,
+    )
+    if scale < 0.99:
+        resized = _sharpen(resized)
+    left = max(0, (resized.width - width) // 2)
+    top = max(0, (resized.height - height) // 2)
+    return resized.crop((left, top, left + width, top + height))
+
+
+def _open_rgb(image):
+    """Apply camera rotation and convert embedded color profiles to sRGB."""
+    from PIL import ImageOps
+
+    image = ImageOps.exif_transpose(image)
+    profile = image.info.get("icc_profile")
+    if image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGB")
+    if not profile:
+        return image.convert("RGB")
+    try:
+        from PIL import ImageCms
+
+        source = ImageCms.ImageCmsProfile(io.BytesIO(profile))
+        target = ImageCms.createProfile("sRGB")
+        return ImageCms.profileToProfile(image.convert("RGB"), source, target, outputMode="RGB")
+    except Exception:
+        logger.debug("Keeping image colors without an ICC conversion", exc_info=True)
+        return image.convert("RGB")
+
+
+def _fit_inside(image, max_width: int, max_height: int):
+    from PIL import Image
+
+    source_size = image.size
+    fitted = image.copy()
+    fitted.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+    if fitted.size != source_size:
+        fitted = _sharpen(fitted)
+    return fitted
+
+
+def _sharpen(image):
+    """Restore the edge contrast a downscale removes, without crunching flat areas."""
+    from PIL import ImageFilter
+
+    return image.filter(ImageFilter.UnsharpMask(radius=0.8, percent=40, threshold=2))
+
+
+def save_publish_jpeg(image, dest: Path) -> None:
+    """Write a 4:4:4 JPEG and only drop quality if the file exceeds 8MB."""
+    quality = JPEG_QUALITY
+    while quality >= 60:
+        image.save(
+            dest,
+            "JPEG",
+            quality=quality,
+            subsampling=0,
+            optimize=True,
         )
-        left = max(0, (resized.width - width) // 2)
-        top = max(0, (resized.height - height) // 2)
-        return resized.crop((left, top, left + width, top + height))
+        if dest.stat().st_size <= MAX_JPEG_BYTES:
+            return
+        quality -= 5
+    logger.warning("Instagram JPEG is still over 8MB after compression: %s", dest)
 
 
 def _edge_color(image) -> tuple[int, int, int]:
@@ -105,13 +170,3 @@ def _edge_color(image) -> tuple[int, int, int]:
     for index in range(3):
         channels.append(sum(pixel[index] for pixel in corners) // len(corners))
     return channels[0], channels[1], channels[2]
-
-
-def _save_under_limit(image, dest: Path) -> None:
-    quality = 88
-    while quality >= 60:
-        image.save(dest, "JPEG", quality=quality, optimize=True)
-        if dest.stat().st_size <= MAX_JPEG_BYTES:
-            return
-        quality -= 8
-    logger.warning("Instagram JPEG is still over 8MB after compression: %s", dest)

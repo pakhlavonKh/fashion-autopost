@@ -19,7 +19,11 @@ from publishers.instagram_media import (
     prepare_feed_jpeg,
     render_feed_collage,
 )
-from publishers.instagram_publisher import InstagramPublisher, format_instagram_caption
+from publishers.instagram_publisher import (
+    InstagramPublisher,
+    footer_for_carousel,
+    format_instagram_caption,
+)
 
 
 def _sample_post(price: str = "101.39") -> object:
@@ -49,6 +53,14 @@ def test_caption_matches_boutique_card_and_instagram_limits() -> None:
     assert caption.startswith("Silk Slip Dress-101$\nРазмеры от XS до XL.")
     assert "Обращаться: @nigora_7" in caption
     assert "https://t.me/fashionalleyb" in caption
+    carousel = format_instagram_caption(post, footer_for_carousel(DEFAULT_INSTAGRAM_CAPTION_FOOTER))
+    assert "Обращаться" not in carousel
+    assert "Отзывы" not in carousel
+    assert "в наличии" not in carousel
+    assert "t.me" not in carousel
+    assert "Telegram" not in carousel
+    assert "Европейское качество" in carousel
+    assert "Тел:+998998484044" in carousel
     assert "https://www.zara.com/dress-100" not in caption
     assert "🏷" not in caption
     assert "Наш Instagram" not in caption
@@ -106,6 +118,7 @@ def test_single_photo_publishes_after_container_is_ready() -> None:
         assert posts[0][2]["image_url"].startswith("https://files.example.com/")
         assert posts[0][2]["caption"].startswith("Silk Slip Dress-101$")
         assert "is_carousel_item" not in posts[0][2]
+        assert "Обращаться: @nigora_7" in posts[0][2]["caption"]
         assert posts[1][2]["creation_id"] == "id-1"
         assert posts[2][2]["media_type"] == "STORIES"
         assert posts[2][2]["image_url"].endswith("_story.jpg")
@@ -170,6 +183,12 @@ def test_several_photos_become_a_carousel() -> None:
         assert posts[3][2]["media_type"] == "CAROUSEL"
         assert posts[3][2]["children"] == "id-1,id-2,id-3"
         assert posts[3][2]["caption"].startswith("Silk Slip Dress-101$")
+        assert "Обращаться" not in posts[3][2]["caption"]
+        assert "Отзывы" not in posts[3][2]["caption"]
+        assert "в наличии" not in posts[3][2]["caption"]
+        assert "t.me" not in posts[3][2]["caption"]
+        assert "Европейское качество" in posts[3][2]["caption"]
+        assert "Тел:+998998484044" in posts[3][2]["caption"]
         assert posts[4][2]["creation_id"] == "id-4"
         assert posts[5][2]["media_type"] == "STORIES"
         assert posts[6][2]["creation_id"] == "id-6"

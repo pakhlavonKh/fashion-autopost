@@ -10,9 +10,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont
 
 from core.pricing import whole_price
+from publishers.instagram_media import _cover_rgb, _open_rgb, save_publish_jpeg
 
 STORY_WIDTH = 1080
 STORY_HEIGHT = 1920
@@ -155,7 +156,7 @@ def render_story_collage(
     if include_link_pill:
         _draw_link_pill(draw)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(dest, "JPEG", quality=90, optimize=True)
+    save_publish_jpeg(canvas, dest)
     return dest
 
 
@@ -189,16 +190,7 @@ def _frames(count: int, width: int, height: int) -> list[tuple[int, int, int, in
 
 def _cover(path: Path, width: int, height: int) -> Image.Image:
     with Image.open(path) as image:
-        image = ImageOps.exif_transpose(image)
-        image = image.convert("RGB")
-        scale = max(width / image.width, height / image.height)
-        resized = image.resize(
-            (max(width, int(image.width * scale)), max(height, int(image.height * scale))),
-            Image.Resampling.LANCZOS,
-        )
-        left = max(0, (resized.width - width) // 2)
-        top = max(0, (resized.height - height) // 2)
-        return resized.crop((left, top, left + width, top + height))
+        return _cover_rgb(_open_rgb(image), width, height)
 
 
 def _draw_cards(draw: ImageDraw.ImageDraw, cards: list[str]) -> None:
