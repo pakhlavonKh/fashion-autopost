@@ -510,6 +510,8 @@ class PipelineRunner:
                     pub_name,
                     already_id,
                 )
+                if pub_name == "telegram" and hasattr(publisher, "public_links"):
+                    composed = replace(composed, telegram_links=tuple(publisher.public_links(already_id)))
                 continue
 
             res = publisher.publish(composed)

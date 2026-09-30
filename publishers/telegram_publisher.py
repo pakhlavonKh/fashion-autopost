@@ -130,11 +130,9 @@ class TelegramPublisher:
                         chat_id=chat_id,
                     )
                 successful_ids.append(f"{chat_id}:{msg_id}" if len(target_ids) > 1 else str(msg_id))
-                username = self._public_usernames.get(chat_id) or (
-                    chat_id[1:] if chat_id.startswith("@") else None
-                )
-                if username and msg_id and msg_id != "None":
-                    public_links.append(f"https://t.me/{username}/{msg_id}")
+                link = self._public_link(chat_id, str(msg_id))
+                if link:
+                    public_links.append(link)
             except Exception as exc:
                 logger.error("Telegram publish failed for channel %s (%s): %s", chat_id, post.title, exc)
                 errors.append(f"{chat_id}: {exc}")
@@ -147,6 +145,26 @@ class TelegramPublisher:
             )
 
         return PublishResult(success=False, error="; ".join(errors))
+
+    def public_links(self, platform_post_id: str) -> tuple[str, ...]:
+        """t.me links of an earlier post, from the "chat:message" ids that publish() returned."""
+        links: list[str] = []
+        for part in str(platform_post_id or "").split(","):
+            chat_id, _, msg_id = part.strip().rpartition(":")
+            if not chat_id or not msg_id.isdigit():
+                continue
+            if chat_id not in self._public_usernames:
+                self._canonical_chat_id(chat_id)
+            link = self._public_link(chat_id, msg_id)
+            if link:
+                links.append(link)
+        return tuple(links)
+
+    def _public_link(self, chat_id: str, msg_id: str) -> str | None:
+        username = self._public_usernames.get(chat_id) or (chat_id[1:] if chat_id.startswith("@") else None)
+        if username and msg_id and msg_id != "None":
+            return f"https://t.me/{username}/{msg_id}"
+        return None
 
     def _unique_chat_ids(self, chat_ids: list[str]) -> list[str]:
         """Collapse @username and the numeric id of the same chat into one send."""

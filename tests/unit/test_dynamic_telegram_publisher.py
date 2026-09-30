@@ -259,3 +259,19 @@ def test_telegram_publisher_returns_public_post_link() -> None:
     assert res.success is True
     assert res.links == ("https://t.me/fashionalleyb/205728",)
 
+
+def test_links_are_rebuilt_for_a_post_published_earlier() -> None:
+    """A retried product links its story to the Telegram post it already has."""
+    pub = TelegramPublisher(bot_token="test_token", channel_id="@fashionalleyb")
+
+    def resolve(chat_id: str) -> str:
+        if chat_id == "-1001246015920":
+            pub._public_usernames[chat_id] = "fashionalleyb"
+        return chat_id
+
+    with patch.object(pub, "_canonical_chat_id", side_effect=resolve):
+        links = pub.public_links("-1004363309099:291,-1001246015920:205676")
+
+    assert links == ("https://t.me/fashionalleyb/205676",)
+    assert pub.public_links("205676") == ()
+
