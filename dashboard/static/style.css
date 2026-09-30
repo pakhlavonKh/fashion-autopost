@@ -579,18 +579,24 @@ h1, h2, h3, h4, .brand-title {
 .brand-add-form {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
 }
 
 .brand-add-form .brand-name-input {
-  flex: 0 1 220px;
+  width: 220px;
   min-width: 180px;
+  height: 44px;
 }
 
 .brand-add-form .brand-url-input {
-  flex: 1 1 320px;
-  min-width: 220px;
+  flex: 1 1 280px;
+  min-width: 200px;
+  height: 44px;
+}
+
+.brand-add-form button {
+  height: 44px;
 }
 
 @media (max-width: 720px) {
@@ -1236,14 +1242,28 @@ input[type="checkbox"]:checked::after {
   }
 
   .brand-add-form {
+    display: flex !important;
     flex-direction: column !important;
-    gap: 8px !important;
-    width: 100%;
+    gap: 10px !important;
+    width: 100% !important;
+    align-items: stretch !important;
   }
 
+  .brand-add-form .brand-name-input,
+  .brand-add-form .brand-url-input,
   .brand-add-form input,
   .brand-add-form button {
     width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    flex: none !important;
+    height: 44px !important;
+    min-height: 44px !important;
+    max-height: 44px !important;
+    box-sizing: border-box !important;
+    border-radius: var(--radius-pill) !important;
+    padding: 10px 18px !important;
+    font-size: 16px !important;
   }
 
   /* Responsive Category & Status Filter Tabs */
@@ -1376,12 +1396,20 @@ input[type="checkbox"]:checked::after {
     gap: 8px !important;
   }
 
-  /* Touch-friendly Form Controls (prevents iOS auto-zoom) */
-  input.form-control,
-  textarea.form-control,
+  /* Touch-friendly Form Controls (prevents iOS auto-zoom and flex stretching) */
+  input.form-control:not([type="checkbox"]):not([type="radio"]),
   select.form-control {
     font-size: 16px !important;
-    min-height: 42px;
+    height: 44px !important;
+    min-height: 44px !important;
+    max-height: 44px !important;
+    box-sizing: border-box !important;
+  }
+
+  textarea.form-control {
+    font-size: 16px !important;
+    min-height: 140px;
+    box-sizing: border-box !important;
   }
 }
 

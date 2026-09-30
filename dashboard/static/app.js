@@ -36,6 +36,12 @@ const translations = {
     brandNamePlaceholder: "hm yoki stradivarius",
     brandUrlPlaceholder: "Havola ixtiyoriy",
     brandRemove: "O'chirish",
+    brandPause: "Pauza",
+    brandUnpause: "Davom ettirish",
+    brandStatusActive: "Faol",
+    brandStatusPaused: "Pauzada",
+    brandToastPaused: (name) => `Brend ${name}: To'xtatildi`,
+    brandToastResumed: (name) => `Brend ${name}: Faollashtirildi`,
     brandEmpty: "Hali brend qo'shilmagan.",
     brandErrorEurope: "Yevropa katalogi kerak: Ispaniya, Fransiya, Germaniya, Italiya yoki Buyuk Britaniya. Turkiya va AQSH havolalari qabul qilinmaydi.",
     brandErrorUnknown: "Bu brend ro'yxatda yo'q. O'ngdagi maydonga Yevropa katalogi havolasini qo'ying.",
@@ -153,6 +159,12 @@ const translations = {
     brandNamePlaceholder: "hm или stradivarius",
     brandUrlPlaceholder: "Ссылка необязательна",
     brandRemove: "Удалить",
+    brandPause: "Пауза",
+    brandUnpause: "Возобновить",
+    brandStatusActive: "Активен",
+    brandStatusPaused: "На паузе",
+    brandToastPaused: (name) => `Бренд ${name}: Приостановлен`,
+    brandToastResumed: (name) => `Бренд ${name}: Активирован`,
     brandEmpty: "Бренды ещё не добавлены.",
     brandErrorEurope: "Нужна ссылка на европейский каталог: Испания, Франция, Германия, Италия или Великобритания. Ссылки на Турцию и США не принимаются.",
     brandErrorUnknown: "Этого бренда нет в списке. Вставьте ссылку на европейский каталог в поле справа.",
@@ -270,6 +282,12 @@ const translations = {
     brandNamePlaceholder: "hm or stradivarius",
     brandUrlPlaceholder: "Link is optional",
     brandRemove: "Remove",
+    brandPause: "Pause",
+    brandUnpause: "Resume",
+    brandStatusActive: "Active",
+    brandStatusPaused: "Paused",
+    brandToastPaused: (name) => `Brand ${name}: Paused`,
+    brandToastResumed: (name) => `Brand ${name}: Activated`,
     brandEmpty: "No brands yet.",
     brandErrorEurope: "Use a European catalog link: Spain, France, Germany, Italy, or the UK. Turkey and US links are rejected.",
     brandErrorUnknown: "This brand is not in the list. Paste a European catalog link in the field on the right.",
@@ -356,8 +374,8 @@ const translations = {
   }
 };
 
-let currentLang = 'ru';
-localStorage.setItem('fashion_autopost_lang', 'ru');
+let currentLang = localStorage.getItem('fashion_autopost_lang') || 'ru';
+if (!translations[currentLang]) currentLang = 'ru';
 let currentFilter = 'all';
 let currentStore = 'all';
 let currentCategory = 'all';
@@ -365,12 +383,12 @@ let latestStats = null;
 let _brandStores = null;
 
 function t(key, ...args) {
-  const dict = translations.ru;
+  const dict = (translations && translations[currentLang]) || (translations && translations.ru) || {};
   const val = dict[key];
   if (typeof val === 'function') {
     return val(...args);
   }
-  return val || key;
+  return val !== undefined ? val : key;
 }
 
 function refreshLucide() {
@@ -1089,21 +1107,21 @@ function renderBrands(stores) {
     const url = store.url || '';
     const statusObj = _brandStatuses[name.toLowerCase()] || {};
     const isPaused = !!statusObj.is_paused;
-    const statusText = isPaused ? 'Paused' : 'Active';
+    const statusText = isPaused ? t('brandStatusPaused') : t('brandStatusActive');
     const statusClass = isPaused ? 'status-failed' : 'status-published';
 
     return `
       <div class="brand-row" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; background: rgba(15, 23, 42, 0.5); border: 1px solid var(--border-subtle); border-radius: 16px; margin-bottom: 8px;">
         <div style="display: flex; align-items: center; gap: 10px; min-width: 140px;">
           <span class="brand-row-name" style="font-weight: 600; font-size: 15px;">${escapeHtml(brandLabel(name))}</span>
-          <span class="status-pill ${statusClass}" style="font-size: 11px; padding: 2px 10px;">${statusText}</span>
+          <span class="status-pill ${statusClass}" style="font-size: 11px; padding: 2px 10px;">${escapeHtml(statusText)}</span>
         </div>
         <span class="brand-market" style="font-size: 12px; color: var(--text-muted);">${escapeHtml(market || 'EU')} · ${escapeHtml(currency)}</span>
         <a class="brand-row-url" href="${escapeHtml(url)}" target="_blank" rel="noopener" style="font-size: 12px; color: var(--accent-primary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 280px;">${escapeHtml(url)}</a>
         <div style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
           <button type="button" class="btn btn-sm ${isPaused ? 'btn-primary' : 'btn-secondary'}" data-toggle-brand-pause="${escapeHtml(name)}" data-is-paused="${isPaused ? 'true' : 'false'}" style="white-space: nowrap; font-size: 12px; padding: 6px 14px;">
             <i data-lucide="${isPaused ? 'play' : 'pause'}" style="width: 13px; height: 13px;"></i>
-            <span>${isPaused ? 'Unpause' : 'Pause Brand'}</span>
+            <span>${escapeHtml(isPaused ? t('brandUnpause') : t('brandPause'))}</span>
           </button>
           <button type="button" class="btn btn-secondary btn-sm" data-remove-brand="${escapeHtml(name)}" style="white-space: nowrap; font-size: 12px; padding: 6px 14px;">${t('brandRemove')}</button>
         </div>
@@ -1163,7 +1181,9 @@ if (brandsList) {
         });
         const data = await res.json();
         if (res.ok) {
-          showToast(`Бренд ${brandLabel(brandName)}: ${willPause ? 'Приостановлен' : 'Активирован'}`);
+          const bLabel = brandLabel(brandName);
+          const toastMsg = willPause ? t('brandToastPaused', bLabel) : t('brandToastResumed', bLabel);
+          showToast(toastMsg);
           await loadBrands();
           fetchProducts();
         } else {
