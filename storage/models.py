@@ -30,6 +30,7 @@ class ProductRecord(Base):
     external_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(String(512), nullable=False)
+    category: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     price_original: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     currency_original: Mapped[str] = mapped_column(String(16), nullable=False)
     price_final: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
@@ -43,6 +44,10 @@ class ProductRecord(Base):
     telegram_post_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     instagram_post_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     
+    telegram_message_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    telegram_message_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    telegram_published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -54,6 +59,77 @@ class ProductRecord(Base):
         Index("idx_products_status", "status"),
         Index("idx_products_published_at", "published_at"),
     )
+
+    @property
+    def name(self) -> str:
+        return self.title
+
+    @property
+    def description(self) -> str:
+        return self.description_gpt or ""
+
+    @property
+    def image(self) -> str:
+        return self.photo_url
+
+    @property
+    def telegramMessageId(self) -> Optional[str]:
+        return self.telegram_message_id or self.telegram_post_id
+
+    @property
+    def telegramMessageUrl(self) -> Optional[str]:
+        return self.telegram_message_url
+
+    @property
+    def telegramPublishedAt(self) -> Optional[datetime]:
+        return self.telegram_published_at or self.published_at
+
+
+class StoryJobRecord(Base):
+    """Tracks Instagram Story publishing linked to Telegram message."""
+    __tablename__ = "story_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    product_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    instagram_account_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    highlight_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    story_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    
+    # status: 'pending' | 'story_published' | 'highlight_failed' | 'completed' | 'failed'
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("idx_story_jobs_status", "status"),
+        Index("idx_story_jobs_product", "product_id"),
+    )
+
+    @property
+    def productId(self) -> int:
+        return self.product_id
+
+    @property
+    def instagramAccountId(self) -> str:
+        return self.instagram_account_id
+
+    @property
+    def highlightName(self) -> Optional[str]:
+        return self.highlight_name
+
+    @property
+    def storyId(self) -> Optional[str]:
+        return self.story_id
 
 
 class LogRecord(Base):

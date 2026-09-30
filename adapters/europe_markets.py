@@ -69,6 +69,10 @@ def market_code_from_url(url: str) -> str | None:
 
 def is_european_store_url(url: str) -> bool:
     """True only when the URL points at a European storefront."""
+    if not url:
+        return False
+    if url.startswith("file://") or "localhost" in url or "127.0.0.1" in url:
+        return True
     code = market_code_from_url(url)
     return code in EUROPEAN_MARKET_CODES
 

@@ -9,8 +9,12 @@ openai>=1.30.0
 boto3>=1.34.0
 playwright>=1.40.0
 playwright-stealth>=2.0.0
+curl_cffi>=0.7.0
+nodriver>=0.38.0
 fastapi>=0.110.0
 uvicorn>=0.28.0
+pillow>=10.0.0
+instagrapi>=3.0.15
 
 [dev]
 pytest>=8.0.0

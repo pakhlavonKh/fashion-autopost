@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, delete, select, update, func
 from sqlalchemy.orm import Session, sessionmaker
 
 from adapters.base import RawProduct
-from storage.models import Base, LogRecord, ManualPostRecord, ProductRecord, TelegramChatRecord
+from storage.models import Base, LogRecord, ManualPostRecord, ProductRecord, StoryJobRecord, TelegramChatRecord
 
 
 @dataclass
@@ -79,6 +79,33 @@ class ProductRepository(Protocol):
 
     def get_by_external_id(self, external_id: str) -> Optional[ProductRecord]:
         """Retrieve single product record by external_id."""
+        ...
+
+    def get_product(self, product_id: int) -> Optional[ProductRecord]:
+        """Retrieve single product record by primary key id."""
+        ...
+
+    def save_telegram_publication(self, external_id: str, message_id: str, message_url: str) -> None:
+        """Store Telegram message ID, exact message URL, and publish timestamp against product."""
+        ...
+
+    def create_story_job(self, product_id: int, instagram_account_id: str, highlight_name: str | None = None) -> "StoryJobRecord":
+        """Create a new story job referencing the product and highlight."""
+        ...
+
+    def update_story_job(
+        self,
+        job_id: int,
+        status: str,
+        story_id: str | None = None,
+        highlight_name: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Update story job status, story_id, highlight_name, or error."""
+        ...
+
+    def get_story_jobs(self, product_id: int | None = None, status: str | None = None) -> list["StoryJobRecord"]:
+        """Retrieve story jobs by product or status."""
         ...
 
     def get_active_telegram_targets(self) -> list["TelegramChatRecord"]:
@@ -340,6 +367,83 @@ class SqlAlchemyProductRepository:
             return session.scalar(
                 select(ProductRecord).where(ProductRecord.external_id == external_id)
             )
+
+    def get_product(self, product_id: int) -> Optional[ProductRecord]:
+        with self._get_session() as session:
+            return session.scalar(
+                select(ProductRecord).where(ProductRecord.id == product_id)
+            )
+
+    def save_telegram_publication(self, external_id: str, message_id: str, message_url: str) -> None:
+        """Store Telegram message ID, exact message URL, and publish timestamp against product."""
+        with self._get_session() as session:
+            now = datetime.now(timezone.utc)
+            stmt = (
+                update(ProductRecord)
+                .where(ProductRecord.external_id == external_id)
+                .values(
+                    telegram_message_id=message_id,
+                    telegram_message_url=message_url,
+                    telegram_published_at=now,
+                    telegram_post_id=message_id,
+                )
+            )
+            session.execute(stmt)
+            session.commit()
+
+    def create_story_job(
+        self, product_id: int, instagram_account_id: str, highlight_name: str | None = None
+    ) -> StoryJobRecord:
+        with self._get_session() as session:
+            job = StoryJobRecord(
+                product_id=product_id,
+                instagram_account_id=instagram_account_id,
+                highlight_name=highlight_name,
+                status="pending",
+            )
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            session.expunge(job)
+            return job
+
+    def update_story_job(
+        self,
+        job_id: int,
+        status: str,
+        story_id: str | None = None,
+        highlight_name: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self._get_session() as session:
+            values: dict[str, Any] = {"status": status}
+            if story_id is not None:
+                values["story_id"] = story_id
+            if highlight_name is not None:
+                values["highlight_name"] = highlight_name
+            if error is not None:
+                values["error"] = error
+            stmt = (
+                update(StoryJobRecord)
+                .where(StoryJobRecord.id == job_id)
+                .values(**values)
+            )
+            session.execute(stmt)
+            session.commit()
+
+    def get_story_jobs(
+        self, product_id: int | None = None, status: str | None = None
+    ) -> list[StoryJobRecord]:
+        with self._get_session() as session:
+            stmt = select(StoryJobRecord)
+            if product_id is not None:
+                stmt = stmt.where(StoryJobRecord.product_id == product_id)
+            if status is not None:
+                stmt = stmt.where(StoryJobRecord.status == status)
+            records = list(session.scalars(stmt).all())
+            for r in records:
+                session.expunge(r)
+            return records
 
     def get_active_telegram_targets(self) -> list[TelegramChatRecord]:
         with self._get_session() as session:

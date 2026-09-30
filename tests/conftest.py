@@ -3,15 +3,16 @@
 Per SDD §9.
 """
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 import pytest
 
 from adapters.base import RawProduct, SourceAdapter
 from core.composer import ComposedPost
-from llm.base import LLMProvider, SelectionResult
+from llm.base import HighlightSelectionResult, LLMProvider, SelectionResult
 from publishers.base import Publisher, PublishResult
-from storage.models import ProductRecord
+from storage.models import ProductRecord, StoryJobRecord
 from storage.repository import ProductRepository
 
 
@@ -139,25 +140,91 @@ class FakeProductRepository:
             "external_id": external_id,
         })
 
+    def save_telegram_publication(self, external_id: str, message_id: str, message_url: str) -> None:
+        if external_id in self.products:
+            self.products[external_id]["telegram_message_id"] = message_id
+            self.products[external_id]["telegram_message_url"] = message_url
+            self.products[external_id]["telegram_post_id"] = message_id
+            self.products[external_id]["telegram_published_at"] = datetime.now(timezone.utc)
+
     def get_by_external_id(self, external_id: str) -> Optional[ProductRecord]:
         data = self.products.get(external_id)
         if not data:
             return None
         rec = ProductRecord(
-            id=1,
+            id=data.get("id", 1),
             external_id=data["external_id"],
             source=data["source"],
             title=data["title"],
             price_original=data["price"],
             currency_original=data["currency"],
             price_final=data.get("price_final"),
-            photo_url="https://example.com/photo.jpg",
+            photo_url=data.get("photo_url", "https://example.com/photo.jpg"),
             description_gpt=data.get("description"),
             status=data["status"],
             telegram_post_id=data.get("telegram_post_id"),
             instagram_post_id=data.get("instagram_post_id"),
+            telegram_message_id=data.get("telegram_message_id") or data.get("telegram_post_id"),
+            telegram_message_url=data.get("telegram_message_url"),
+            telegram_published_at=data.get("telegram_published_at"),
         )
         return rec
+
+    def get_product(self, product_id: int) -> Optional[ProductRecord]:
+        for data in self.products.values():
+            if data.get("id", 1) == product_id:
+                return self.get_by_external_id(data["external_id"])
+        # Fallback to first if only one exists and matches default id
+        if self.products and product_id == 1:
+            first_ext = next(iter(self.products))
+            return self.get_by_external_id(first_ext)
+        return None
+
+    def create_story_job(
+        self, product_id: int, instagram_account_id: str, highlight_name: str | None = None
+    ) -> StoryJobRecord:
+        job = StoryJobRecord(
+            id=len(getattr(self, "story_jobs", [])) + 1,
+            product_id=product_id,
+            instagram_account_id=instagram_account_id,
+            highlight_name=highlight_name,
+            status="pending",
+        )
+        if not hasattr(self, "story_jobs"):
+            self.story_jobs = []
+        self.story_jobs.append(job)
+        return job
+
+    def update_story_job(
+        self,
+        job_id: int,
+        status: str,
+        story_id: str | None = None,
+        highlight_name: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        jobs = getattr(self, "story_jobs", [])
+        for job in jobs:
+            if job.id == job_id:
+                job.status = status
+                if story_id is not None:
+                    job.story_id = story_id
+                if highlight_name is not None:
+                    job.highlight_name = highlight_name
+                if error is not None:
+                    job.error = error
+                break
+
+    def get_story_jobs(
+        self, product_id: int | None = None, status: str | None = None
+    ) -> list[StoryJobRecord]:
+        jobs = getattr(self, "story_jobs", [])
+        res = list(jobs)
+        if product_id is not None:
+            res = [j for j in res if j.product_id == product_id]
+        if status is not None:
+            res = [j for j in res if j.status == status]
+        return res
 
 
 class FakeSourceAdapter:
@@ -190,6 +257,21 @@ class FakeLLMProvider:
             )
             for c in candidates[:count]
         ]
+
+    def select_highlight(
+        self, product: dict, existing_highlights: list[str]
+    ) -> HighlightSelectionResult:
+        name = str(product.get("name") or product.get("title") or "")
+        cat = str(product.get("category") or "")
+        for eh in existing_highlights:
+            if (eh.lower() in name.lower()) or (cat and eh.lower() in cat.lower()):
+                return HighlightSelectionResult(highlight=eh, confidence=0.96)
+        return HighlightSelectionResult(
+            highlight=None,
+            create_highlight=True,
+            suggested_name=cat or "New Arrivals",
+            confidence=0.90,
+        )
 
 
 class FakePublisher:

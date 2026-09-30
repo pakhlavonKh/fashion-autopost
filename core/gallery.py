@@ -116,32 +116,58 @@ def ordered_photos(
     brand_lower = (brand or "").lower()
     page = page_url or ""
     roles: dict[str, str] = {}
-    urls = list(fallback or [])
+    urls: list[str] = []
 
-    if "mango" in brand_lower or "mango.com" in page:
-        found = re.findall(r"https://media\.mango\.com/is/image/punto/[0-9]+-[0-9A-Z]+-[0-9A-Z]+", html_text)
-        variant = _mango_variant(found)
-        if variant:
-            urls = variant
-    elif "zara" in brand_lower or "zara.com" in page or "static.zara.net" in html_text:
-        labeled = _zara_entries(html_text)
-        if labeled:
-            urls = []
-            plain_index = 0
-            for url, kind in labeled:
-                if kind == "colorcut":
-                    continue
-                urls.append(url)
-                if kind == "plain" and plain_index < len(_TAIL_ROLES):
-                    roles[canonical_photo_key(url)] = _TAIL_ROLES[plain_index]
-                    plain_index += 1
-        elif not urls:
-            urls = _zara_urls(html_text)
+    if fallback and len(fallback) >= 2:
+        urls = list(fallback)
+
+    if not urls:
+        if "mango" in brand_lower or "mango.com" in page:
+            found = re.findall(r"https://media\.mango\.com/is/image/punto/[0-9]+-[0-9A-Z]+-[0-9A-Z]+", html_text)
+            variant = _mango_variant(found)
+            if variant:
+                urls.extend(variant)
+        elif "zara" in brand_lower or "zara.com" in page or "static.zara.net" in html_text:
+            labeled = _zara_entries(html_text)
+            if labeled:
+                plain_index = 0
+                for url, kind in labeled:
+                    if kind == "colorcut":
+                        continue
+                    urls.append(url)
+                    if kind == "plain" and plain_index < len(_TAIL_ROLES):
+                        roles[canonical_photo_key(url)] = _TAIL_ROLES[plain_index]
+                        plain_index += 1
+            else:
+                zara_found = _zara_urls(html_text)
+                for u in zara_found:
+                    if u not in urls:
+                        urls.append(u)
+        elif any(k in brand_lower or k in page for k in ("stradivarius", "massimodutti", "bershka", "pullandbear", "oysho")):
+            inditex_found = _inditex_urls(html_text)
+            urls.extend(inditex_found)
+        elif "hm" in brand_lower or "hm.com" in page:
+            hm_found = _hm_urls(html_text)
+            urls.extend(hm_found)
+
+        # If few or no brand-specific photos were matched, extract general gallery photos from DOM/scripts
+        if len(urls) < 3:
+            dom_photos = _extract_dom_gallery_urls(html_text, page_url)
+            for u in dom_photos:
+                if u not in urls:
+                    urls.append(u)
+
+        # Include fallback photos passed from parent parser
+        if fallback:
+            for u in fallback:
+                if u and u not in urls:
+                    urls.append(u)
 
     if not urls:
         og_images = re.findall(
-            r'<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']',
+            r'<meta[^>]*property=["\']og:image(?::secure_url)?["\'][^>]*content=["\']([^"\']+)["\']',
             html_text,
+            flags=re.IGNORECASE,
         )
         urls = [urljoin(page_url, item) for item in og_images if item]
 
@@ -151,22 +177,33 @@ def ordered_photos(
 def extract_gallery_photos(
     product_url: str,
     brand: str = "",
-    max_photos: int = 6,
-    timeout_seconds: float = 10.0,
+    max_photos: int = 10,
+    timeout_seconds: float = 12.0,
 ) -> list[str]:
     """Retrieve all high-resolution product photos from the product detail page (card)."""
     if not product_url or not product_url.startswith("http"):
         return []
 
+    html_text = ""
+    # Try browser-like fast fetch first to avoid WAF 403 blocks
     try:
-        with httpx.Client(timeout=timeout_seconds, follow_redirects=True, headers=BROWSER_HEADERS) as client:
-            resp = client.get(product_url)
-            if resp.status_code != 200:
-                logger.debug("Failed to fetch product page (%d): %s", resp.status_code, product_url)
-                return []
-            html_text = resp.text
+        from adapters.product_page import _fetch_html_fast
+        _, html_text = _fetch_html_fast(product_url, timeout_seconds=timeout_seconds)
     except Exception as exc:
-        logger.debug("Error fetching gallery from %s: %s", product_url, exc)
+        logger.debug("Fast fetch failed in extract_gallery_photos: %s", exc)
+
+    if not html_text:
+        try:
+            with httpx.Client(timeout=timeout_seconds, follow_redirects=True, headers=BROWSER_HEADERS) as client:
+                resp = client.get(product_url)
+                if resp.status_code == 200:
+                    html_text = resp.text
+                else:
+                    logger.debug("Failed to fetch product page (%d): %s", resp.status_code, product_url)
+        except Exception as exc:
+            logger.debug("Error fetching gallery from %s: %s", product_url, exc)
+
+    if not html_text:
         return []
 
     photos = ordered_photos(html_text, brand, product_url, max_photos=max_photos)
@@ -254,13 +291,90 @@ def _width_hint(url: str) -> int:
 
 
 def _zara_urls(html_text: str) -> list[str]:
-    found = re.findall(r"https://static\.zara\.net/(?:photos|assets)/[^\s\"'<>]+", html_text)
+    found = re.findall(r"https://static\.zara\.net/(?:photos|assets|stdphotos)/[^\s\"'<>]+", html_text)
     urls: list[str] = []
     for url in found:
-        if "{width}" in url or "/swatches/" in url or "_swatch" in url:
+        if "/swatches/" in url or "_swatch" in url or "swatch" in url.lower():
             continue
-        urls.append(url.split("?")[0])
+        cleaned = url.replace("{width}", "2048").split("?")[0].rstrip(".,;\"'")
+        if cleaned.lower().endswith((".jpg", ".jpeg", ".webp", ".png")) and cleaned not in urls:
+            urls.append(cleaned)
+
+    # Also parse JSON paths: "path":"/assets/public/..." and "name":"..." or "path":"/photos/..."
+    for match in re.finditer(r'"path"\s*:\s*"(/assets/public/[^"]+|/photos/[^"]+)"\s*,\s*"name"\s*:\s*"([^"]+)"', html_text):
+        p, n = match.group(1), match.group(2)
+        base = f"https://static.zara.net{p.rstrip('/')}/{n}"
+        if not base.lower().endswith((".jpg", ".jpeg", ".webp", ".png")):
+            base += ".jpg"
+        if base not in urls:
+            urls.append(base)
     return urls
+
+
+def _inditex_urls(html_text: str) -> list[str]:
+    pattern = r"https://static\.(?:stradivarius|massimodutti|bershka|pullandbear|oysho)\.net/(?:photos|assets|public)/[^\s\"'<>]+"
+    found = re.findall(pattern, html_text)
+    urls: list[str] = []
+    for url in found:
+        if "/swatches/" in url or "_swatch" in url or "swatch" in url.lower():
+            continue
+        cleaned = url.replace("{width}", "2048").split("?")[0].rstrip(".,;\"'")
+        if cleaned.lower().endswith((".jpg", ".jpeg", ".webp", ".png")) and cleaned not in urls:
+            urls.append(cleaned)
+    return urls
+
+
+def _hm_urls(html_text: str) -> list[str]:
+    found = re.findall(r"https://image\.hm\.com/assets/hm/[^\s\"'<>]+", html_text)
+    urls: list[str] = []
+    for url in found:
+        if "swatch" in url.lower():
+            continue
+        cleaned = url.split("?")[0].rstrip(".,;\"'")
+        if cleaned.lower().endswith((".jpg", ".jpeg", ".webp", ".png")) and cleaned not in urls:
+            urls.append(cleaned)
+    return urls
+
+
+def _extract_dom_gallery_urls(html_text: str, page_url: str) -> list[str]:
+    urls: list[str] = []
+    # 1. <source srcset="..."> inside <picture>
+    for match in re.finditer(r'<picture[^>]*>(.*?)</picture>', html_text, flags=re.DOTALL | re.IGNORECASE):
+        pic = match.group(1)
+        srcsets = re.findall(r'srcset=[\'"]([^\'"]+)[\'"]', pic, flags=re.IGNORECASE)
+        for s in srcsets:
+            candidates = [p.strip().split()[0] for p in s.split(",") if p.strip()]
+            if candidates:
+                cand = candidates[-1].split("?")[0]
+                u = urljoin(page_url, cand)
+                if _is_usable_product_image(u) and u not in urls:
+                    urls.append(u)
+
+    # 2. <img ... data-zoom-src/data-large-img-url/data-high-res-src/data-src/src>
+    for match in re.finditer(r'<img[^>]+(?:data-zoom-src|data-large-img-url|data-high-res-src|data-src|src)=[\'"]([^\'"]+)[\'"]', html_text, flags=re.IGNORECASE):
+        cand = match.group(1).split("?")[0]
+        u = urljoin(page_url, cand)
+        if _is_usable_product_image(u) and u not in urls:
+            urls.append(u)
+
+    # 3. JSON arrays in script tags with image URLs
+    for match in re.finditer(r'["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png))["\']', html_text, flags=re.IGNORECASE):
+        cand = match.group(1).split("?")[0]
+        if _is_usable_product_image(cand) and cand not in urls:
+            urls.append(cand)
+    return urls
+
+
+def _is_usable_product_image(url: str) -> bool:
+    lower = url.lower()
+    if not lower.startswith(("http://", "https://")):
+        return False
+    if not lower.endswith((".jpg", ".jpeg", ".webp", ".png")):
+        return False
+    skip_keywords = ("logo", "icon", "badge", "avatar", "banner", "spinner", "pixel", "tracking", "swatch", "favicon", "arrow", "social")
+    if any(k in lower for k in skip_keywords):
+        return False
+    return True
 
 
 def _zara_entries(html_text: str) -> list[tuple[str, str]]:

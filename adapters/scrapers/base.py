@@ -14,9 +14,27 @@ CURRENCY_SYMBOL_MAP = {
     "£": "GBP",
     "₺": "TRY",
     "TL": "TRY",
+    "zł": "PLN",
+    "PLN": "PLN",
+    "Kč": "CZK",
+    "CZK": "CZK",
     "CHF": "CHF",
+    "lei": "RON",
+    "RON": "RON",
+    "₸": "KZT",
+    "KZT": "KZT",
+    "AED": "AED",
+    "₽": "RUB",
+    "RUB": "RUB",
     "CAD": "CAD",
     "AUD": "AUD",
+    "SEK": "SEK",
+    "NOK": "NOK",
+    "DKK": "DKK",
+    "UZS": "UZS",
+    "so'm": "UZS",
+    "som": "UZS",
+    "сум": "UZS",
 }
 
 
@@ -42,7 +60,10 @@ def parse_price(text: str, default_currency: str = "EUR") -> tuple[Decimal, str]
             clean_text = clean_text.replace(sym, "")
             break
     else:
-        for code in ["EUR", "USD", "GBP", "TRY", "CHF", "CAD", "AUD"]:
+        for code in [
+            "EUR", "USD", "GBP", "TRY", "PLN", "CZK", "CHF", "RON",
+            "KZT", "AED", "RUB", "CAD", "AUD", "SEK", "NOK", "DKK", "UZS",
+        ]:
             if code in clean_text.upper():
                 detected_currency = code
                 clean_text = re.sub(code, "", clean_text, flags=re.IGNORECASE)

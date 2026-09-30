@@ -17,6 +17,24 @@ class SelectionResult:
     title: str | None = None
 
 
+@dataclass
+class HighlightSelectionResult:
+    """Structured result of AI highlight selection."""
+    highlight: str | None = None
+    confidence: float = 1.0
+    create_highlight: bool = False
+    suggested_name: str | None = None
+
+    @property
+    def selected_highlight_name(self) -> str:
+        """Returns the chosen existing highlight or suggested new highlight."""
+        if self.highlight and self.highlight.strip():
+            return self.highlight.strip()
+        if self.suggested_name and self.suggested_name.strip():
+            return self.suggested_name.strip()
+        return "New Arrivals"
+
+
 @runtime_checkable
 class PromptLoader(Protocol):
     """Interface for dynamically loading the selection & copywriting prompt."""
@@ -37,4 +55,12 @@ class LLMProvider(Protocol):
         max_items: int,
     ) -> list[SelectionResult]:
         """Curate candidate products according to prompt criteria and generate copy."""
+        ...
+
+    def select_highlight(
+        self,
+        product: dict,
+        existing_highlights: list[str],
+    ) -> HighlightSelectionResult:
+        """Select existing Highlight or suggest new Highlight for product."""
         ...

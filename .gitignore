@@ -9,6 +9,7 @@ data/*.db
 data/images/
 data/instagram_settings.json
 data/instagram_code.txt
+data/fx_rates_cache.json
 certbot/
 logs/*.log
 .env

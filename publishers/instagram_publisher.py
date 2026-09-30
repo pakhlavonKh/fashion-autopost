@@ -72,6 +72,9 @@ class InstagramPublisher:
         private_story: InstagramPrivateStory | None = None,
         login: str | None = None,
         password: str | None = None,
+        repo: Any | None = None,
+        llm: Any | None = None,
+        story_worker: Any | None = None,
     ) -> None:
         self.access_token = access_token
         self.account_id = account_id
@@ -79,6 +82,8 @@ class InstagramPublisher:
         self.timeout_seconds = timeout_seconds
         self.caption_footer = caption_footer if caption_footer is not None else DEFAULT_INSTAGRAM_CAPTION_FOOTER
         self.username = (username or "").strip().lstrip("@") or None
+        self.repo = repo
+        self.llm = llm
         if private_story is not None:
             self.private_story: InstagramPrivateStory | None = private_story
         elif (login and password) or (session_id and session_id.strip()):
@@ -89,6 +94,18 @@ class InstagramPublisher:
             )
         else:
             self.private_story = None
+        if story_worker is not None:
+            self.story_worker = story_worker
+        elif self.repo is not None and self.llm is not None:
+            from publishers.playwright_story_worker import PlaywrightStoryWorker
+            self.story_worker = PlaywrightStoryWorker(
+                repo=self.repo,
+                llm=self.llm,
+                account_id=self.account_id,
+                private_story=self.private_story,
+            )
+        else:
+            self.story_worker = None
         self.downloader = ImageDownloader(timeout_seconds=self.timeout_seconds)
         # Auto-detect: IGAA tokens come from graph.instagram.com (Instagram Login)
         if use_instagram_login is None:
@@ -152,6 +169,26 @@ class InstagramPublisher:
 
     def _publish_story_and_highlight(self, post: ComposedPost, prepared: list[Path]) -> None:
         """Story uses the same photos as the post, with a Telegram link sticker and a Highlight."""
+        link_url = (
+            post.telegram_links[0]
+            if (post.telegram_links and len(post.telegram_links) > 0)
+            else story_link_url(post.telegram_links, self.caption_footer)
+        )
+
+        if self.story_worker and self.repo:
+            try:
+                product = self.repo.get_by_external_id(post.product_id)
+                if product:
+                    ok, msg, story_id = self.story_worker.process_story_job(
+                        product.id,
+                        prepared,
+                        price_label=format_story_price(post.price, post.currency),
+                        quality_line=quality_line_from_footer(self.caption_footer),
+                    )
+                    return
+            except Exception as exc:
+                logger.warning("PlaywrightStoryWorker failed: %s, falling back to direct story publish", exc)
+
         highlight = detect_highlight(post.title, post.text, post.product_url or "")
         link_url = story_link_url(post.telegram_links, self.caption_footer)
         use_real_sticker = self.private_story is not None

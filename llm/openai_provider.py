@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from openai import OpenAI, OpenAIError
 
 from adapters.base import RawProduct
-from llm.base import LLMProvider, PromptLoader, SelectionResult
+from llm.base import HighlightSelectionResult, LLMProvider, PromptLoader, SelectionResult
 
 logger = logging.getLogger(__name__)
 
@@ -190,3 +190,105 @@ class OpenAIProvider:
             )
             selected.append(SelectionResult(external_id=product.external_id, description=desc, title=product.title))
         return selected
+
+    def select_highlight(
+        self,
+        product: dict[str, Any],
+        existing_highlights: list[str],
+    ) -> HighlightSelectionResult:
+        """Select an existing Highlight or suggest creating a new Highlight using ChatGPT."""
+        clean_highlights = [h.strip() for h in existing_highlights if h and h.strip()]
+
+        if self._is_mock:
+            return self._mock_highlight_selection(product, clean_highlights)
+
+        payload = {
+            "product": {
+                "name": str(product.get("name") or product.get("title") or ""),
+                "category": str(product.get("category") or ""),
+                "description": str(product.get("description") or product.get("description_gpt") or ""),
+            },
+            "existingHighlights": clean_highlights,
+        }
+
+        system_instruction = (
+            "You are an AI fashion classifier for Instagram Highlights.\n"
+            "Given product information (name, category, description) and a list of existing Instagram Highlights, "
+            "select the most appropriate Highlight for this product.\n"
+            "Prefer an existing Highlight over creating a new one.\n\n"
+            "You MUST respond ONLY with a JSON object in one of two formats:\n"
+            "If an existing Highlight is suitable:\n"
+            '{"highlight": "ExistingHighlightName", "confidence": 0.95}\n\n'
+            "If no existing Highlight is suitable and a new one should be created:\n"
+            '{"highlight": null, "createHighlight": true, "suggestedName": "SuggestedName", "confidence": 0.90}\n'
+            "Keep the suggestedName concise (under 16 characters)."
+        )
+
+        client = OpenAI(api_key=self.api_key)
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.2,
+                )
+                raw_json = response.choices[0].message.content or "{}"
+                data = json.loads(raw_json)
+                highlight = data.get("highlight")
+                confidence = float(data.get("confidence") or 1.0)
+                create_hl = bool(data.get("createHighlight", False))
+                suggested = data.get("suggestedName")
+
+                if highlight:
+                    highlight_str = str(highlight).strip()
+                    matched = next((h for h in clean_highlights if h.lower() == highlight_str.lower()), None)
+                    if matched:
+                        return HighlightSelectionResult(highlight=matched, confidence=confidence)
+                    else:
+                        return HighlightSelectionResult(
+                            highlight=None,
+                            create_highlight=True,
+                            suggested_name=highlight_str[:16],
+                            confidence=confidence,
+                        )
+
+                return HighlightSelectionResult(
+                    highlight=None,
+                    create_highlight=create_hl,
+                    suggested_name=str(suggested).strip()[:16] if suggested else None,
+                    confidence=confidence,
+                )
+            except Exception as exc:
+                logger.warning("OpenAI highlight selection attempt %d failed: %s", attempt + 1, exc)
+
+        return self._mock_highlight_selection(product, clean_highlights)
+
+    def _mock_highlight_selection(
+        self, product: dict[str, Any], existing_highlights: list[str]
+    ) -> HighlightSelectionResult:
+        from publishers.instagram_story import detect_highlight
+        title = str(product.get("name") or product.get("title") or "")
+        desc = str(product.get("description") or product.get("description_gpt") or "")
+        cat = str(product.get("category") or "")
+
+        rule_hl = detect_highlight(title, f"{desc}\n{cat}")
+        for eh in existing_highlights:
+            if eh.lower() == rule_hl.lower() or rule_hl.lower() in eh.lower() or eh.lower() in title.lower():
+                return HighlightSelectionResult(highlight=eh, confidence=0.96)
+
+        if existing_highlights:
+            for eh in existing_highlights:
+                if eh.lower() in title.lower() or (cat and cat.lower() in eh.lower()):
+                    return HighlightSelectionResult(highlight=eh, confidence=0.92)
+
+        suggested = rule_hl if rule_hl != "Одежда" else (cat or "Одежда")
+        return HighlightSelectionResult(
+            highlight=None,
+            create_highlight=True,
+            suggested_name=suggested[:16],
+            confidence=0.90,
+        )

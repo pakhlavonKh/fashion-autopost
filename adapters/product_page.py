@@ -93,6 +93,8 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
 
     brand = brand_from_url(url)
     default_currency = currency_hint(url)
+    default_currency = _detect_page_currency(html_text, default_currency)
+
     from_ld = _best_json_ld(html_text, url, default_currency)
     from_embedded = _from_embedded_article(html_text, url, default_currency)
     chosen = _merge_parsed(from_ld, from_embedded)
@@ -102,7 +104,16 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
     if chosen is None or chosen.price <= 0 or not chosen.images:
         return None
 
-    images = _merge_images(chosen.images, _brand_image_urls(html_text, brand, url))
+    page_curr = _detect_page_currency(html_text, chosen.currency)
+    if page_curr and page_curr != chosen.currency:
+        chosen.currency = page_curr
+
+    if len(chosen.images) >= 2:
+        images = chosen.images
+    else:
+        images = _merge_images(chosen.images, _brand_image_urls(html_text, brand, url), base_url=url)
+    if not images:
+        images = chosen.images
     if not images:
         return None
     images = ordered_photos(html_text, brand, url, images, max_photos=10)
@@ -130,6 +141,16 @@ def brand_from_url(url: str) -> str:
         return "mango"
     if host == "hm.com" or host.endswith(".hm.com"):
         return "hm"
+    if "stradivarius" in host:
+        return "stradivarius"
+    if "massimodutti" in host:
+        return "massimodutti"
+    if "bershka" in host:
+        return "bershka"
+    if "pullandbear" in host:
+        return "pullandbear"
+    if "oysho" in host:
+        return "oysho"
     label = host.split(".")[0] if host else "store"
     return label or "store"
 
@@ -142,11 +163,67 @@ def currency_hint(url: str) -> str:
         return "GBP"
     if "/us/" in path or "/en-us" in path or "/en_us" in path:
         return "USD"
-    if "/tr/" in path:
+    if "/tr/" in path or "/tr_" in path or "tr." in host:
         return "TRY"
-    if "/es" in path or host.endswith(".hm.com"):
+    if "/pl/" in path or "/pl_" in path or host.endswith(".pl"):
+        return "PLN"
+    if "/cz/" in path or "/cz_" in path or host.endswith(".cz"):
+        return "CZK"
+    if "/ro/" in path or "/ro_" in path or host.endswith(".ro"):
+        return "RON"
+    if "/ch/" in path or host.endswith(".ch"):
+        return "CHF"
+    if "/ae/" in path or "/ae_" in path or host.endswith(".ae"):
+        return "AED"
+    if "/kz/" in path or host.endswith(".kz"):
+        return "KZT"
+    if "/se/" in path or host.endswith(".se"):
+        return "SEK"
+    if "/no/" in path or host.endswith(".no"):
+        return "NOK"
+    if "/dk/" in path or host.endswith(".dk"):
+        return "DKK"
+    if "/ru/" in path or host.endswith(".ru"):
+        return "RUB"
+    if "/uz/" in path or host.endswith(".uz"):
+        return "UZS"
+    if "/es" in path or host.endswith(".hm.com") or "/de" in path or "/fr" in path or "/it" in path:
         return "EUR"
     return "EUR"
+
+
+def _detect_page_currency(html_text: str, default_currency: str) -> str:
+    from adapters.scrapers.base import CURRENCY_SYMBOL_MAP
+
+    # 1. Check meta tags
+    meta_curr = _meta(html_text, "product:price:currency") or _meta(html_text, "og:price:currency")
+    if meta_curr and meta_curr.strip().upper() in CURRENCY_SYMBOL_MAP.values():
+        return meta_curr.strip().upper()
+
+    # 2. Check JSON-LD priceCurrency
+    m = re.search(r'"priceCurrency"\s*:\s*"([A-Za-z]{3})"', html_text)
+    if m:
+        curr = m.group(1).upper()
+        if curr in CURRENCY_SYMBOL_MAP.values():
+            return curr
+
+    # 3. Check distinctive symbols in text (e.g. TL/₺ before $, €)
+    if "₺" in html_text or " TL" in html_text or "TL " in html_text:
+        return "TRY"
+    if "zł" in html_text or " PLN" in html_text:
+        return "PLN"
+    if "Kč" in html_text or " CZK" in html_text:
+        return "CZK"
+    if "£" in html_text or " GBP" in html_text:
+        return "GBP"
+    if "lei" in html_text or " RON" in html_text:
+        return "RON"
+    if "₸" in html_text or " KZT" in html_text:
+        return "KZT"
+    if "AED" in html_text or "د.إ" in html_text:
+        return "AED"
+
+    return default_currency
 
 
 def _unreadable_message(url: str) -> str:
@@ -556,17 +633,70 @@ def _absolute_url(value: str, page_url: str) -> str:
 
 def _brand_image_urls(html_text: str, brand: str, url: str) -> list[str]:
     found: list[str] = []
-    if "mango" in brand or "mango.com" in url:
+    brand_lower = (brand or "").lower()
+    url_lower = (url or "").lower()
+
+    if "mango" in brand_lower or "mango.com" in url_lower:
         found.extend(re.findall(r"https://media\.mango\.com/is/image/punto/[0-9]+-[0-9A-Z]+-[0-9A-Z]+", html_text))
-    if "zara" in brand or "zara.com" in url:
-        found.extend(re.findall(r"https://static\.zara\.net/photos/[^\"'\s]+", html_text))
-    return found
+
+    if "zara" in brand_lower or "zara.com" in url_lower or "static.zara.net" in html_text:
+        found.extend(re.findall(r"https://static\.zara\.net/(?:photos|assets|stdphotos)/[^\s\"'<>]+", html_text))
+        for match in re.finditer(r'"path"\s*:\s*"(/assets/public/[^"]+|/photos/[^"]+)"\s*,\s*"name"\s*:\s*"([^"]+)"', html_text):
+            p, n = match.group(1), match.group(2)
+            base = f"https://static.zara.net{p.rstrip('/')}/{n}"
+            if not base.lower().endswith((".jpg", ".jpeg", ".webp", ".png")):
+                base += ".jpg"
+            found.append(base)
+
+    if any(k in brand_lower or k in url_lower for k in ("stradivarius", "massimodutti", "bershka", "pullandbear", "oysho")):
+        pattern = r"https://static\.(?:stradivarius|massimodutti|bershka|pullandbear|oysho)\.net/(?:photos|assets|public)/[^\s\"'<>]+"
+        found.extend(re.findall(pattern, html_text))
+
+    if "hm" in brand_lower or "hm.com" in url_lower:
+        found.extend(re.findall(r"https://image\.hm\.com/assets/hm/[^\s\"'<>]+", html_text))
+
+    # General DOM / picture / srcset / img extraction
+    for match in re.finditer(r'<picture[^>]*>(.*?)</picture>', html_text, flags=re.DOTALL | re.IGNORECASE):
+        pic = match.group(1)
+        srcsets = re.findall(r'srcset=[\'"]([^\'"]+)[\'"]', pic, flags=re.IGNORECASE)
+        for s in srcsets:
+            candidates = [part.strip().split()[0] for part in s.split(",") if part.strip()]
+            if candidates:
+                cand = candidates[-1].split("?")[0]
+                if _is_likely_product_photo(cand):
+                    found.append(urljoin(url, cand))
+
+    for match in re.finditer(r'<img[^>]+(?:data-zoom-src|data-large-img-url|data-high-res-src|data-src|src)=[\'"]([^\'"]+)[\'"]', html_text, flags=re.IGNORECASE):
+        cand = match.group(1).split("?")[0]
+        if _is_likely_product_photo(cand):
+            found.append(urljoin(url, cand))
+
+    cleaned_found: list[str] = []
+    for item in found:
+        cleaned = item.replace("{width}", "2048").split("?")[0].rstrip(".,;\"'")
+        if cleaned.startswith("http") and cleaned not in cleaned_found:
+            cleaned_found.append(cleaned)
+
+    return cleaned_found
 
 
-def _merge_images(primary: list[str], extra: list[str]) -> list[str]:
+def _is_likely_product_photo(url_str: str) -> bool:
+    lower = url_str.lower()
+    if not lower.startswith(("http://", "https://", "//", "/")):
+        return False
+    if not any(lower.endswith(ext) or ext in lower for ext in (".jpg", ".jpeg", ".webp", ".png")):
+        return False
+    skip = ("logo", "icon", "badge", "avatar", "banner", "spinner", "pixel", "tracking", "swatch", "favicon", "arrow", "social")
+    if any(k in lower for k in skip):
+        return False
+    return True
+
+
+def _merge_images(primary: list[str], extra: list[str], base_url: str = "") -> list[str]:
     merged: list[str] = []
+    base = base_url if (base_url and base_url.startswith("http")) else "https://example.com/"
     for image in list(primary) + list(extra):
-        cleaned = _absolute_url(image, "https://example.com/")
+        cleaned = _absolute_url(image, base)
         if cleaned.startswith("http") and cleaned not in merged:
             merged.append(cleaned)
     return merged

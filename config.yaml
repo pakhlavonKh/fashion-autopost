@@ -20,7 +20,7 @@ db_url: sqlite:///./data/app.db
 dry_run: false
 fx:
   fixed_rate: 1.08
-  mode: fixed
+  mode: dynamic
   rates:
     EUR: 1.08
     GBP: 1.29

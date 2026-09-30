@@ -499,7 +499,13 @@ class PipelineRunner:
         all_succeeded = True
         publish_errors: list[str] = []
 
-        for publisher in active_publishers:
+        # Enforce publication order: Telegram MUST publish first so its message URL can link the Instagram Story
+        ordered_publishers = sorted(
+            active_publishers,
+            key=lambda p: 0 if p.platform_name.lower() == "telegram" else 1,
+        )
+
+        for publisher in ordered_publishers:
             pub_name = publisher.platform_name.lower()
             already_id = existing_post_ids.get(pub_name)
 
@@ -514,11 +520,34 @@ class PipelineRunner:
                 )
                 continue
 
+            # Ensure publisher has access to repo and llm for AI highlight selection & story worker
+            if hasattr(publisher, "repo") and getattr(publisher, "repo", None) is None:
+                setattr(publisher, "repo", self.repo)
+            if hasattr(publisher, "llm") and getattr(publisher, "llm", None) is None:
+                setattr(publisher, "llm", self.llm)
+            if pub_name == "instagram" and hasattr(publisher, "story_worker") and getattr(publisher, "story_worker", None) is None:
+                try:
+                    from publishers.playwright_story_worker import PlaywrightStoryWorker
+                    publisher.story_worker = PlaywrightStoryWorker(
+                        repo=self.repo,
+                        llm=self.llm,
+                        account_id=getattr(publisher, "account_id", "instagram"),
+                        private_story=getattr(publisher, "private_story", None),
+                    )
+                except Exception as exc:
+                    logger.debug("Could not initialize story_worker on Instagram publisher: %s", exc)
+
             res = publisher.publish(composed)
 
             if res.success:
                 if pub_name == "telegram":
                     telegram_post_id = res.platform_post_id
+                    telegram_url = res.links[0] if (res.links and len(res.links) > 0) else None
+                    if hasattr(self.repo, "save_telegram_publication") and telegram_url:
+                        try:
+                            self.repo.save_telegram_publication(external_id, telegram_post_id, telegram_url)
+                        except Exception as exc:
+                            logger.warning("Could not save Telegram publication for %s: %s", external_id, exc)
                     if res.links:
                         composed = replace(composed, telegram_links=tuple(res.links))
                 elif pub_name == "instagram":
@@ -544,6 +573,15 @@ class PipelineRunner:
                 self._notify_error(f"publish_{pub_name}", err_msg, external_id)
                 if on_platform is not None and pub_name in {"telegram", "instagram"}:
                     on_platform(pub_name, False, str(res.error or "неизвестная ошибка"))
+
+                # Failure handling requirement:
+                # If Telegram publication fails: STOP -> Do not create Instagram Story!
+                if pub_name == "telegram":
+                    logger.warning("Telegram publish failed for %s. Aborting workflow before Instagram Story.", external_id)
+                    self.repo.mark_failed(external_id, err_msg)
+                    summary.failed += 1
+                    summary.errors.append(err_msg)
+                    return
 
         # 7f. Persist publication status in repository (FR-6.1)
         if all_succeeded:

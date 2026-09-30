@@ -149,6 +149,8 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
             session_id=config.instagram.session_id,
             login=config.instagram.login,
             password=config.instagram.password,
+            repo=repo,
+            llm=llm,
         )
         publishers.append(instagram_pub)
         logger.info(

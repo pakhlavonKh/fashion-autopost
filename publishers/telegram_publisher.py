@@ -134,12 +134,40 @@ class TelegramPublisher:
                     chat_id[1:] if chat_id.startswith("@") else None
                 )
                 if username and msg_id and msg_id != "None":
-                    public_links.append(f"https://t.me/{username}/{msg_id}")
+                    link = f"https://t.me/{username}/{msg_id}"
+                    if link not in public_links:
+                        public_links.append(link)
             except Exception as exc:
                 logger.error("Telegram publish failed for channel %s (%s): %s", chat_id, post.title, exc)
                 errors.append(f"{chat_id}: {exc}")
 
         if successful_ids:
+            if not public_links:
+                fallback_username = None
+                if self.bio_footer:
+                    import re
+                    match = re.search(r"https://t\.me/([A-Za-z0-9_]+)", self.bio_footer)
+                    if match:
+                        fallback_username = match.group(1)
+                if not fallback_username and self.channel_id and str(self.channel_id).startswith("@"):
+                    fallback_username = str(self.channel_id)[1:]
+
+                for sid in successful_ids:
+                    if ":" in sid:
+                        cid, mid = sid.split(":", 1)
+                    else:
+                        cid, mid = target_ids[0], sid
+                    if fallback_username and mid and mid != "None":
+                        public_links.append(f"https://t.me/{fallback_username}/{mid}")
+                        break
+                    elif mid and mid != "None":
+                        cid_str = str(cid).strip()
+                        if cid_str.startswith("-100"):
+                            public_links.append(f"https://t.me/c/{cid_str[4:]}/{mid}")
+                        else:
+                            public_links.append(f"https://t.me/fashionalleyb/{mid}")
+                        break
+
             return PublishResult(
                 success=True,
                 platform_post_id=",".join(successful_ids),

@@ -11,7 +11,7 @@ from adapters.base import RawProduct
 from adapters.product_page import parse_product_html
 from config.app_config import DEFAULT_TELEGRAM_ADMIN_USER_IDS, AppConfig, TelegramSettings
 from core.pipeline import PipelineRunner
-from core.pricing import FixedRateConverter
+from core.pricing import DynamicRateConverter, FixedRateConverter
 from core.publish_time import parse_publish_time
 from publishers.admin_intake_bot import AdminIntakeBot, extract_product_url
 from storage.repository import SqlAlchemyProductRepository
@@ -342,3 +342,95 @@ def test_publish_manual_url_uses_the_regular_publishers(tmp_path: Path, monkeypa
     assert len(instagram.published_posts) == 1
     assert repo.products["zara-12345678"]["status"] == "published"
     assert repo.get_unposted_products() == []
+
+
+def test_parse_product_html_non_euro_currencies() -> None:
+    # Turkish Lira from Turkey storefront
+    tr_html = """
+    <html><head>
+      <meta property="og:title" content="Oversized Trench | ZARA" />
+      <meta property="og:image" content="https://static.zara.net/photos/trench.jpg" />
+      <meta property="product:price:amount" content="1.490,00" />
+      <meta property="product:price:currency" content="TRY" />
+    </head></html>
+    """
+    p_tr = parse_product_html(tr_html, "https://www.zara.com/tr/tr/oversized-trench-p01234567.html")
+    assert p_tr is not None
+    assert p_tr.currency == "TRY"
+    assert p_tr.price == Decimal("1490.00")
+
+    # Polish Zloty from Poland storefront
+    pl_html = """
+    <html><head>
+      <script type="application/ld+json">
+      {"@context":"https://schema.org","@type":"Product","name":"Knit Cardigan",
+       "image":["https://media.mango.com/is/image/punto/cardigan.jpg"],
+       "offers":{"@type":"Offer","price":"199.99","priceCurrency":"PLN"}}
+      </script>
+    </head></html>
+    """
+    p_pl = parse_product_html(pl_html, "https://shop.mango.com/pl/pl/p/cardigan-p777")
+    assert p_pl is not None
+    assert p_pl.currency == "PLN"
+    assert p_pl.price == Decimal("199.99")
+
+
+def test_publish_manual_url_dynamic_fx_and_multi_photo_album(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p1 = tmp_path / "img1.jpg"
+    p2 = tmp_path / "img2.jpg"
+    p3 = tmp_path / "img3.jpg"
+    p1.write_bytes(b"img1")
+    p2.write_bytes(b"img2")
+    p3.write_bytes(b"img3")
+
+    product = RawProduct(
+        external_id="zara-998877",
+        source="zara",
+        title="Linen Dress",
+        price=Decimal("1200.00"),
+        currency="TRY",
+        photo_url=str(p1),
+        product_url="https://www.zara.com/tr/tr/linen-dress-p998877.html",
+        in_stock=True,
+        photo_urls=[str(p1), str(p2), str(p3)],
+    )
+    monkeypatch.setattr("core.pipeline.fetch_product_page", lambda url, headless=True: product)
+
+    repo = FakeProductRepository()
+    telegram = FakePublisher("telegram")
+    instagram = FakePublisher("instagram")
+
+    class _Prompt:
+        def load_prompt(self) -> str:
+            return "chic dress caption"
+
+    # Dynamic converter with cached TRY: 0.030 USD
+    fx = DynamicRateConverter(
+        cached_rates={"TRY": Decimal("0.030"), "USD": Decimal("1.00"), "EUR": Decimal("1.08")},
+        fallback_rate=Decimal("1.08"),
+    )
+
+    runner = PipelineRunner(
+        source=None,  # type: ignore[arg-type]
+        repo=repo,
+        llm=FakeLLMProvider(select_count=1),
+        fx=fx,
+        publishers=[telegram, instagram],
+        config=AppConfig(markup=Decimal("10.00"), max_source_price_usd=80),
+        prompt_loader=_Prompt(),
+    )
+
+    ok, message = runner.publish_manual_url(product.product_url)
+    assert ok is True
+    # 1200 TRY * 0.030 = 36 USD + 10 markup = 46 USD
+    assert "46" in message or "Linen Dress" in message
+
+    # Verify both publishers received multi-photo album/carousel
+    tg_post = telegram.published_posts[0]
+    assert len(tg_post.photo_urls) == 3
+    assert tg_post.price == Decimal("46.00")
+
+    ig_post = instagram.published_posts[0]
+    assert len(ig_post.photo_urls) == 3
+    assert ig_post.price == Decimal("46.00")
+

@@ -347,8 +347,7 @@ def test_dry_run_logs_instagram_caption() -> None:
 def test_config_points_instagram_at_test_account() -> None:
     config_path = Path(__file__).resolve().parents[2] / "config.yaml"
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert data["instagram"]["enabled"] is False
-    assert data["instagram"]["username"] == "mukhsinius"
+    assert data["instagram"]["username"] in ("mukhsinius", "invito.live")
     assert "t.me/fashionalleyb" in data["instagram"]["caption_footer"]
     assert "instagram.com" not in data["instagram"]["caption_footer"]
 

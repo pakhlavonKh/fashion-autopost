@@ -231,6 +231,8 @@ class PlaywrightScraperAdapter:
                 current = stores.get(brand)
                 if current is not None and not current.enabled:
                     continue
+                if current is not None and (current.url.startswith("file://") or "127.0.0.1" in current.url or "localhost" in current.url):
+                    continue
                 if current is None:
                     stores[brand] = ScraperStoreConfig(
                         enabled=True,
