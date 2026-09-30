@@ -74,6 +74,28 @@ class AuthLoginRequest(BaseModel):
     key: Optional[str] = None
 
 
+class BrandPauseRequest(BaseModel):
+    is_paused: bool
+
+
+class SystemSettingsUpdateRequest(BaseModel):
+    max_source_price_usd: Optional[float] = None
+    outfit_mode_enabled: Optional[bool] = None
+    telegram_schedule_enabled: Optional[bool] = None
+    telegram_schedule_start_time: Optional[str] = None
+    telegram_schedule_end_time: Optional[str] = None
+    telegram_schedule_interval_minutes: Optional[int] = None
+    instagram_schedule_enabled: Optional[bool] = None
+    instagram_schedule_start_time: Optional[str] = None
+    instagram_schedule_end_time: Optional[str] = None
+    instagram_schedule_interval_minutes: Optional[int] = None
+    instagram_schedule_random_window_minutes: Optional[int] = None
+
+
+class ResolveDuplicateRequest(BaseModel):
+    status: str
+
+
 CATEGORIES_MAP = {
     "dresses": ["elbise", "dress", "vestido", "kombine", "robe", "платье", "сарафан"],
     "skirts": ["etek", "skirt", "falda", "юбка"],
@@ -654,5 +676,196 @@ def create_dashboard_app(
         """Deactivate a Telegram chat target."""
         repo.deactivate_telegram_chat(chat_id)
         return {"success": True, "message": f"Chat {chat_id} deactivated."}
+
+    # --- Feature 2: Brand Pause / Unpause APIs ---
+    @app.get("/api/brands", dependencies=[Depends(verify_admin)])
+    def list_brands():
+        """List all brands with active/paused status."""
+        brand_names = set()
+        # Collect from configured stores
+        if hasattr(config.scraper, "stores"):
+            brand_names.update(config.scraper.stores.keys())
+        # Collect from database settings
+        if hasattr(repo, "get_brand_settings"):
+            for b in repo.get_brand_settings():
+                brand_names.add(b["name"])
+        # Collect from existing products
+        with repo._get_session() as session:
+            db_sources = session.scalars(select(ProductRecord.source).distinct()).all()
+            brand_names.update(db_sources)
+
+        paused_brands = repo.get_paused_brands() if hasattr(repo, "get_paused_brands") else set()
+        brands_result = []
+        for name in sorted(brand_names):
+            if not name:
+                continue
+            is_paused = name.lower() in paused_brands
+            brands_result.append({
+                "name": name,
+                "display_name": name.replace("-", " ").title(),
+                "is_paused": is_paused,
+                "status": "Paused" if is_paused else "Active",
+            })
+        return {"brands": brands_result}
+
+    @app.post("/api/brands/{brand}/pause", dependencies=[Depends(verify_admin)])
+    def set_brand_pause_state(brand: str, req: BrandPauseRequest):
+        """Pause or unpause a brand from automated publication."""
+        brand_clean = brand.strip().lower()
+        if hasattr(repo, "set_brand_paused"):
+            repo.set_brand_paused(brand_clean, req.is_paused)
+        status_label = "Paused" if req.is_paused else "Active"
+        return {
+            "success": True,
+            "brand": brand_clean,
+            "is_paused": req.is_paused,
+            "status": status_label,
+            "message": f"Brand '{brand_clean}' status updated to {status_label}.",
+        }
+
+    # --- Feature 4, 8 & 9: System Settings APIs ---
+    @app.get("/api/settings", dependencies=[Depends(verify_admin)])
+    def get_system_settings():
+        max_price = float(config.max_source_price_usd)
+        outfit_mode = False
+        tg_sched_enabled = True
+        tg_start = "06:00"
+        tg_end = "23:00"
+        tg_interval = 60
+        ig_sched_enabled = True
+        ig_start = "06:00"
+        ig_end = "21:00"
+        ig_interval = 180
+        ig_window = 10
+
+        if hasattr(repo, "get_system_setting"):
+            db_price = repo.get_system_setting("max_source_price_usd")
+            if db_price:
+                try:
+                    max_price = float(db_price)
+                except (ValueError, TypeError):
+                    pass
+            outfit_mode = (repo.get_system_setting("outfit_mode_enabled", "false") or "").lower() == "true"
+            tg_sched_enabled = (repo.get_system_setting("telegram_schedule_enabled", "true") or "true").lower() == "true"
+            tg_start = repo.get_system_setting("telegram_schedule_start_time", "06:00") or "06:00"
+            tg_end = repo.get_system_setting("telegram_schedule_end_time", "23:00") or "23:00"
+            try:
+                tg_interval = int(repo.get_system_setting("telegram_schedule_interval_minutes", "60") or "60")
+            except ValueError:
+                tg_interval = 60
+
+            ig_sched_enabled = (repo.get_system_setting("instagram_schedule_enabled", "true") or "true").lower() == "true"
+            ig_start = repo.get_system_setting("instagram_schedule_start_time", "06:00") or "06:00"
+            ig_end = repo.get_system_setting("instagram_schedule_end_time", "21:00") or "21:00"
+            try:
+                ig_interval = int(repo.get_system_setting("instagram_schedule_interval_minutes", "180") or "180")
+            except ValueError:
+                ig_interval = 180
+            try:
+                ig_window = int(repo.get_system_setting("instagram_schedule_random_window_minutes", "10") or "10")
+            except ValueError:
+                ig_window = 10
+
+        return {
+            "max_source_price_usd": max_price,
+            "outfit_mode_enabled": outfit_mode,
+            "telegram_schedule": {
+                "enabled": tg_sched_enabled,
+                "start_time": tg_start,
+                "end_time": tg_end,
+                "interval_minutes": tg_interval,
+            },
+            "instagram_schedule": {
+                "enabled": ig_sched_enabled,
+                "start_time": ig_start,
+                "end_time": ig_end,
+                "interval_minutes": ig_interval,
+                "random_window_minutes": ig_window,
+            },
+        }
+
+    @app.post("/api/settings", dependencies=[Depends(verify_admin)])
+    def update_system_settings(req: SystemSettingsUpdateRequest):
+        """Update system settings persistently in the database and hot-reload scheduler."""
+        if hasattr(repo, "set_system_setting"):
+            if req.max_source_price_usd is not None:
+                repo.set_system_setting("max_source_price_usd", str(req.max_source_price_usd), "Maximum allowed product price before markup in USD")
+            if req.outfit_mode_enabled is not None:
+                repo.set_system_setting("outfit_mode_enabled", "true" if req.outfit_mode_enabled else "false", "Publish product combinations as outfits/looks")
+            if req.telegram_schedule_enabled is not None:
+                repo.set_system_setting("telegram_schedule_enabled", "true" if req.telegram_schedule_enabled else "false", "Telegram independent schedule enabled")
+            if req.telegram_schedule_start_time is not None:
+                repo.set_system_setting("telegram_schedule_start_time", req.telegram_schedule_start_time, "Telegram schedule daily start time")
+            if req.telegram_schedule_end_time is not None:
+                repo.set_system_setting("telegram_schedule_end_time", req.telegram_schedule_end_time, "Telegram schedule daily end time")
+            if req.telegram_schedule_interval_minutes is not None:
+                repo.set_system_setting("telegram_schedule_interval_minutes", str(req.telegram_schedule_interval_minutes), "Telegram schedule publishing interval minutes")
+            if req.instagram_schedule_enabled is not None:
+                repo.set_system_setting("instagram_schedule_enabled", "true" if req.instagram_schedule_enabled else "false", "Instagram independent schedule enabled")
+            if req.instagram_schedule_start_time is not None:
+                repo.set_system_setting("instagram_schedule_start_time", req.instagram_schedule_start_time, "Instagram schedule daily start time")
+            if req.instagram_schedule_end_time is not None:
+                repo.set_system_setting("instagram_schedule_end_time", req.instagram_schedule_end_time, "Instagram schedule daily end time")
+            if req.instagram_schedule_interval_minutes is not None:
+                repo.set_system_setting("instagram_schedule_interval_minutes", str(req.instagram_schedule_interval_minutes), "Instagram schedule publishing interval minutes")
+            if req.instagram_schedule_random_window_minutes is not None:
+                repo.set_system_setting("instagram_schedule_random_window_minutes", str(req.instagram_schedule_random_window_minutes), "Instagram randomization window in minutes")
+
+        if scheduler is not None and getattr(scheduler, "running", False):
+            try:
+                from scheduler.build_scheduler import register_schedule_jobs
+                register_schedule_jobs(scheduler, runner, config.schedule)
+                logger.info("APScheduler jobs re-registered with updated settings.")
+            except Exception as exc:
+                logger.warning("Could not re-register scheduler jobs: %s", exc)
+
+        return {"success": True, "message": "Settings updated persistently."}
+
+    # --- Feature 10: Duplicate Publication Approvals APIs ---
+    @app.get("/api/duplicate-approvals", dependencies=[Depends(verify_admin)])
+    def list_duplicate_approvals():
+        """Retrieve duplicate publication requests requiring admin action."""
+        approvals = []
+        if hasattr(repo, "list_duplicate_approvals"):
+            records = repo.list_duplicate_approvals()
+            for r in records:
+                approvals.append({
+                    "id": r.id,
+                    "external_id": r.external_id,
+                    "title": r.title,
+                    "source": r.source,
+                    "price": r.price,
+                    "original_published_at": r.original_published_at.isoformat() if r.original_published_at else None,
+                    "telegram_url": r.telegram_url,
+                    "status": r.status,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+                })
+        return {"approvals": approvals}
+
+    @app.post("/api/duplicate-approvals/{approval_id}/resolve", dependencies=[Depends(verify_admin)])
+    def resolve_duplicate_approval_route(approval_id: int, req: ResolveDuplicateRequest):
+        """Approve or reject a duplicate product publication."""
+        action = req.status.lower()
+        if action not in {"approved", "rejected"}:
+            raise HTTPException(status_code=400, detail="Invalid action. Must be 'approved' or 'rejected'.")
+
+        if action == "approved":
+            if hasattr(repo, "resolve_duplicate_approval"):
+                repo.resolve_duplicate_approval(approval_id, "approved")
+            ok, msg = runner.publish_approved_duplicate(approval_id)
+            if not ok:
+                raise HTTPException(status_code=500, detail=msg)
+            return {"success": True, "approval_id": approval_id, "status": "approved", "message": msg}
+        else:
+            if hasattr(repo, "resolve_duplicate_approval"):
+                repo.resolve_duplicate_approval(approval_id, "rejected")
+            ok, msg = runner.publish_next_eligible_product()
+            return {
+                "success": True,
+                "approval_id": approval_id,
+                "status": "rejected",
+                "message": f"Повтор отклонён. {msg}",
+            }
 
     return app

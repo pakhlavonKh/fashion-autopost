@@ -20,6 +20,8 @@ class RawProduct:
     product_url: str
     in_stock: bool
     photo_urls: list[str] = field(default_factory=list)
+    original_product_url: str | None = None
+    heel_height: str | None = None
 
 
 @runtime_checkable

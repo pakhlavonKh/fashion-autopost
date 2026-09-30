@@ -887,17 +887,53 @@ if (btnAddTime) {
 const configModal = document.getElementById('configModal');
 document.getElementById('btnOpenConfig').addEventListener('click', async () => {
   try {
-    const res = await apiFetch('/api/config');
-    const data = await res.json();
+    const [cfgRes, setRes] = await Promise.all([
+      apiFetch('/api/config'),
+      apiFetch('/api/settings').catch(() => null),
+    ]);
+    const data = await cfgRes.json();
+    let settings = {};
+    if (setRes && setRes.ok) {
+      settings = await setRes.json();
+    }
 
     document.getElementById('inputMarkup').value = data.markup;
     document.getElementById('inputCurrency').value = data.target_currency;
     document.getElementById('inputMaxItems').value = data.max_products_per_run;
     document.getElementById('inputDailyCap').value = data.daily_publish_cap || '';
 
-    // Populate time tags
-    _scheduleTimes = (data.schedule && data.schedule.times) ? [...data.schedule.times] : [];
-    renderTimeTags();
+    // Feature 4: Max product price setting
+    const maxPriceInput = document.getElementById('inputMaxSourcePrice');
+    if (maxPriceInput) {
+      maxPriceInput.value = settings.max_source_price_usd != null ? settings.max_source_price_usd : 80;
+    }
+
+    // Feature 5 & 6: Separate Telegram and Instagram Schedules
+    const tgSched = settings.telegram_schedule || {};
+    const tgEnabled = document.getElementById('checkTgScheduleEnabled');
+    if (tgEnabled) tgEnabled.checked = tgSched.enabled !== false;
+    const tgStart = document.getElementById('inputTgStartTime');
+    if (tgStart) tgStart.value = tgSched.start_time || '06:00';
+    const tgEnd = document.getElementById('inputTgEndTime');
+    if (tgEnd) tgEnd.value = tgSched.end_time || '23:00';
+    const tgInterval = document.getElementById('inputTgInterval');
+    if (tgInterval) tgInterval.value = tgSched.interval_minutes != null ? tgSched.interval_minutes : 60;
+
+    const igSched = settings.instagram_schedule || {};
+    const igEnabled = document.getElementById('checkIgScheduleEnabled');
+    if (igEnabled) igEnabled.checked = igSched.enabled !== false;
+    const igStart = document.getElementById('inputIgStartTime');
+    if (igStart) igStart.value = igSched.start_time || '06:00';
+    const igEnd = document.getElementById('inputIgEndTime');
+    if (igEnd) igEnd.value = igSched.end_time || '21:00';
+    const igInterval = document.getElementById('inputIgInterval');
+    if (igInterval) igInterval.value = igSched.interval_minutes != null ? igSched.interval_minutes : 180;
+    const igJitter = document.getElementById('inputIgJitter');
+    if (igJitter) igJitter.value = igSched.random_window_minutes != null ? igSched.random_window_minutes : 10;
+
+    // Feature 9: Outfit / Looks Mode
+    const outfitCheck = document.getElementById('checkOutfitMode');
+    if (outfitCheck) outfitCheck.checked = !!settings.outfit_mode_enabled;
 
     // Timezone
     const tzEl = document.getElementById('inputTimezone');
@@ -918,28 +954,59 @@ document.getElementById('btnSaveConfig').addEventListener('click', async () => {
   const dailyCapVal = document.getElementById('inputDailyCap').value;
   const checkDryRunEl = document.getElementById('checkDryRun');
   const tzEl = document.getElementById('inputTimezone');
+  const maxPriceEl = document.getElementById('inputMaxSourcePrice');
+  const tgEnabledEl = document.getElementById('checkTgScheduleEnabled');
+  const tgStartEl = document.getElementById('inputTgStartTime');
+  const tgEndEl = document.getElementById('inputTgEndTime');
+  const tgIntervalEl = document.getElementById('inputTgInterval');
+  const igEnabledEl = document.getElementById('checkIgScheduleEnabled');
+  const igStartEl = document.getElementById('inputIgStartTime');
+  const igEndEl = document.getElementById('inputIgEndTime');
+  const igIntervalEl = document.getElementById('inputIgInterval');
+  const igJitterEl = document.getElementById('inputIgJitter');
+  const outfitCheckEl = document.getElementById('checkOutfitMode');
 
   const payload = {
     markup: parseFloat(document.getElementById('inputMarkup').value),
     target_currency: document.getElementById('inputCurrency').value.trim().toUpperCase(),
     max_products_per_run: parseInt(document.getElementById('inputMaxItems').value),
     daily_publish_cap: dailyCapVal ? parseInt(dailyCapVal) : null,
-    interval_minutes: null,          // always use cron times, never interval
-    schedule_times: [..._scheduleTimes],
+    interval_minutes: null,
     timezone: tzEl ? (tzEl.value.trim() || 'UTC') : 'UTC',
     dry_run: checkDryRunEl ? checkDryRunEl.checked : false,
     moderation_enabled: document.getElementById('checkModeration').checked,
   };
 
-  try {
-    const res = await apiFetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+  const settingsPayload = {
+    max_source_price_usd: maxPriceEl && maxPriceEl.value ? parseFloat(maxPriceEl.value) : 80.0,
+    outfit_mode_enabled: outfitCheckEl ? outfitCheckEl.checked : false,
+    telegram_schedule_enabled: tgEnabledEl ? tgEnabledEl.checked : true,
+    telegram_schedule_start_time: tgStartEl ? tgStartEl.value : '06:00',
+    telegram_schedule_end_time: tgEndEl ? tgEndEl.value : '23:00',
+    telegram_schedule_interval_minutes: tgIntervalEl ? parseInt(tgIntervalEl.value) : 60,
+    instagram_schedule_enabled: igEnabledEl ? igEnabledEl.checked : true,
+    instagram_schedule_start_time: igStartEl ? igStartEl.value : '06:00',
+    instagram_schedule_end_time: igEndEl ? igEndEl.value : '21:00',
+    instagram_schedule_interval_minutes: igIntervalEl ? parseInt(igIntervalEl.value) : 180,
+    instagram_schedule_random_window_minutes: igJitterEl ? parseInt(igJitterEl.value) : 10,
+  };
 
-    if (res.ok) {
-      showToast(t('toastSettingsSaved'));
+  try {
+    const [cfgRes, setRes] = await Promise.all([
+      apiFetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }),
+      apiFetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settingsPayload)
+      }),
+    ]);
+
+    if (cfgRes.ok && setRes.ok) {
+      showToast(t('toastSettingsSaved') || 'Настройки сохранены');
       configModal.classList.remove('active');
       fetchStats();
     } else {
@@ -992,6 +1059,8 @@ function brandErrorMessage(detail) {
   return t('brandErrorUnknown');
 }
 
+let _brandStatuses = {};
+
 function renderBrands(stores) {
   _brandStores = stores || {};
   const names = Object.keys(_brandStores).sort();
@@ -1018,21 +1087,46 @@ function renderBrands(stores) {
     const market = (store.market || '').toUpperCase();
     const currency = store.currency || 'EUR';
     const url = store.url || '';
+    const statusObj = _brandStatuses[name.toLowerCase()] || {};
+    const isPaused = !!statusObj.is_paused;
+    const statusText = isPaused ? 'Paused' : 'Active';
+    const statusClass = isPaused ? 'status-failed' : 'status-published';
+
     return `
-      <div class="brand-row">
-        <span class="brand-row-name">${escapeHtml(brandLabel(name))}</span>
-        <span class="brand-market">${escapeHtml(market || 'EU')} · ${escapeHtml(currency)}</span>
-        <a class="brand-row-url" href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>
-        <button type="button" class="btn btn-secondary btn-sm" data-remove-brand="${escapeHtml(name)}">${t('brandRemove')}</button>
+      <div class="brand-row" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; background: rgba(15, 23, 42, 0.5); border: 1px solid var(--border-subtle); border-radius: 16px; margin-bottom: 8px;">
+        <div style="display: flex; align-items: center; gap: 10px; min-width: 140px;">
+          <span class="brand-row-name" style="font-weight: 600; font-size: 15px;">${escapeHtml(brandLabel(name))}</span>
+          <span class="status-pill ${statusClass}" style="font-size: 11px; padding: 2px 10px;">${statusText}</span>
+        </div>
+        <span class="brand-market" style="font-size: 12px; color: var(--text-muted);">${escapeHtml(market || 'EU')} · ${escapeHtml(currency)}</span>
+        <a class="brand-row-url" href="${escapeHtml(url)}" target="_blank" rel="noopener" style="font-size: 12px; color: var(--accent-primary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 280px;">${escapeHtml(url)}</a>
+        <div style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
+          <button type="button" class="btn btn-sm ${isPaused ? 'btn-primary' : 'btn-secondary'}" data-toggle-brand-pause="${escapeHtml(name)}" data-is-paused="${isPaused ? 'true' : 'false'}" style="white-space: nowrap; font-size: 12px; padding: 6px 14px;">
+            <i data-lucide="${isPaused ? 'play' : 'pause'}" style="width: 13px; height: 13px;"></i>
+            <span>${isPaused ? 'Unpause' : 'Pause Brand'}</span>
+          </button>
+          <button type="button" class="btn btn-secondary btn-sm" data-remove-brand="${escapeHtml(name)}" style="white-space: nowrap; font-size: 12px; padding: 6px 14px;">${t('brandRemove')}</button>
+        </div>
       </div>
     `;
   }).join('');
+  refreshLucide();
 }
 
 async function loadBrands() {
   try {
-    const res = await apiFetch('/api/scraper/stores');
-    const data = await res.json();
+    const [storesRes, brandsRes] = await Promise.all([
+      apiFetch('/api/scraper/stores'),
+      apiFetch('/api/brands').catch(() => null)
+    ]);
+    const data = await storesRes.json();
+    if (brandsRes && brandsRes.ok) {
+      const bData = await brandsRes.json();
+      _brandStatuses = {};
+      (bData.brands || []).forEach(b => {
+        _brandStatuses[b.name.toLowerCase()] = b;
+      });
+    }
     renderBrands(data.stores || {});
   } catch (err) {
     if (err.message !== 'Unauthorized') {
@@ -1056,6 +1150,33 @@ if (storeFilterTabs) {
 const brandsList = document.getElementById('brandsList');
 if (brandsList) {
   brandsList.addEventListener('click', async (e) => {
+    const pauseBtn = e.target.closest('[data-toggle-brand-pause]');
+    if (pauseBtn) {
+      const brandName = pauseBtn.dataset.toggleBrandPause;
+      const willPause = pauseBtn.dataset.isPaused !== 'true';
+      pauseBtn.disabled = true;
+      try {
+        const res = await apiFetch(`/api/brands/${encodeURIComponent(brandName)}/pause`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ is_paused: willPause })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast(`Бренд ${brandLabel(brandName)}: ${willPause ? 'Приостановлен' : 'Активирован'}`);
+          await loadBrands();
+          fetchProducts();
+        } else {
+          showToast(data.detail || 'Ошибка обновления статуса бренда', true);
+        }
+      } catch (err) {
+        showToast(err.message, true);
+      } finally {
+        pauseBtn.disabled = false;
+      }
+      return;
+    }
+
     const button = e.target.closest('[data-remove-brand]');
     if (!button) return;
     const name = button.dataset.removeBrand;
@@ -1222,6 +1343,7 @@ async function handleLogin() {
       await fetchStats();
       await loadBrands();
       await fetchProducts();
+      await loadDuplicateApprovals();
     } else {
       clearAuthKey();
       updateUserBadge(null);
@@ -1241,6 +1363,7 @@ async function handleLogin() {
         const statsData = await fallbackRes.json();
         updateStatsUI(statsData);
         await fetchProducts();
+        await loadDuplicateApprovals();
       } else {
         clearAuthKey();
         updateUserBadge(null);
@@ -1309,6 +1432,90 @@ if (inputAdminKey) {
   });
 }
 
+// Duplicate publication approvals handling (Feature 10)
+async function loadDuplicateApprovals() {
+  const section = document.getElementById('duplicateApprovalsSection');
+  const list = document.getElementById('duplicateApprovalsList');
+  const badge = document.getElementById('duplicateApprovalsBadge');
+  if (!section || !list) return;
+
+  try {
+    const res = await apiFetch('/api/duplicate-approvals');
+    if (!res.ok) return;
+    const data = await res.json();
+    const pending = (data.approvals || []).filter(a => a.status === 'pending');
+    if (pending.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = 'block';
+    if (badge) badge.textContent = `${pending.length} на рассмотрении`;
+
+    list.innerHTML = pending.map(item => {
+      const prevUrl = item.telegram_url ? `<a href="${escapeHtml(item.telegram_url)}" target="_blank" style="color: var(--accent-primary); text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">Посмотреть пост <i data-lucide="external-link" style="width: 12px; height: 12px;"></i></a>` : '—';
+      return `
+        <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 16px; padding: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
+          <div style="flex: 1; min-width: 260px;">
+            <div style="font-weight: 700; font-size: 15px; color: var(--text-primary); margin-bottom: 4px;">
+              ${escapeHtml(item.title)}
+            </div>
+            <div style="font-size: 13px; color: var(--text-secondary); display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 4px;">
+              <span><b>Бренд:</b> ${escapeHtml(item.source.toUpperCase())}</span>
+              ${item.price ? `<span><b>Цена:</b> ${escapeHtml(item.price)}</span>` : ''}
+              <span><b>Ранее опубликован:</b> ${item.original_published_at ? new Date(item.original_published_at).toLocaleString() : 'Ранее'}</span>
+            </div>
+            <div style="font-size: 12px; color: var(--text-muted);">
+              ${prevUrl}
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button type="button" class="btn btn-primary btn-sm" data-resolve-dup="${item.id}" data-action="approved" style="background: linear-gradient(135deg, #10b981, #059669); white-space: nowrap;">
+              <i data-lucide="check"></i> Одобрить повторную публикацию
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" data-resolve-dup="${item.id}" data-action="rejected" style="white-space: nowrap;">
+              <i data-lucide="x"></i> Отклонить (следующий товар)
+            </button>
+          </div>
+        </div>
+      `;
+    }).join('');
+    refreshLucide();
+  } catch (err) {
+    console.error('Failed to load duplicate approvals:', err);
+  }
+}
+
+const dupList = document.getElementById('duplicateApprovalsList');
+if (dupList) {
+  dupList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-resolve-dup]');
+    if (!btn) return;
+    const approvalId = btn.dataset.resolveDup;
+    const action = btn.dataset.action;
+    btn.disabled = true;
+    try {
+      const res = await apiFetch(`/api/duplicate-approvals/${approvalId}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: action })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(action === 'approved' ? 'Повторная публикация одобрена!' : 'Повтор отклонён. Выбран следующий товар.');
+        await loadDuplicateApprovals();
+        fetchStats();
+        fetchProducts();
+      } else {
+        showToast(data.detail || 'Ошибка обработки решения', true);
+      }
+    } catch (err) {
+      showToast(err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 // Initial boot
 applyTranslations();
 if (!getAuthKey()) {
@@ -1319,4 +1526,12 @@ if (!getAuthKey()) {
   fetchStats();
   loadBrands();
   fetchProducts();
+  loadDuplicateApprovals();
 }
+
+setInterval(() => {
+  if (getAuthKey()) {
+    fetchStats();
+    loadDuplicateApprovals();
+  }
+}, 30000);

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from adapters.base import RawProduct
+from core.description_rules import apply_description_rules
 from core.pricing import whole_price
 
 
@@ -32,9 +33,12 @@ def compose_post(
     price: Decimal,
     target_currency: str = "USD",
     include_link: bool = True,
+    outfit_info: str | None = None,
 ) -> ComposedPost:
     """Compose a clean, platform-agnostic post text from product details and AI copy."""
-    clean_desc = description.strip()
+    # Apply reusable description enrichment rules (e.g. high-heel footwear heel height)
+    enriched_desc = apply_description_rules(product, description)
+    clean_desc = enriched_desc.strip()
     clean_title = product.title.strip()
     brand = product.source.upper()
 
@@ -45,11 +49,15 @@ def compose_post(
 
     lines = [
         f"✨ {clean_title} | {brand}",
+    ]
+    if outfit_info:
+        lines.append(f"👗 Образ дня: {outfit_info}")
+    lines.extend([
         "",
         clean_desc,
         "",
         f"🏷 Цена: {price_str}",
-    ]
+    ])
 
     link_to_include = product.product_url if (include_link and product.product_url) else None
     if link_to_include:

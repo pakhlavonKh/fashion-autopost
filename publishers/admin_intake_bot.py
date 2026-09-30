@@ -101,11 +101,66 @@ class AdminIntakeBot:
             self._arm_job(post.id, run_at)
 
     def handle_update(self, update: dict[str, Any]) -> None:
+        callback_query = update.get("callback_query")
+        if isinstance(callback_query, dict):
+            self._handle_callback_query(callback_query)
+            return
         message = update.get("message")
         if isinstance(message, dict) and (message.get("chat") or {}).get("type") == "private":
             self._handle_private_message(message)
             return
         self.discovery._process_single_update(update)
+
+    def _handle_callback_query(self, query: dict[str, Any]) -> None:
+        query_id = str(query.get("id") or "")
+        from_user = query.get("from") or {}
+        user_id = int(from_user.get("id") or 0)
+        message = query.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = str(chat.get("id") or user_id)
+        data = str(query.get("data") or "")
+
+        if user_id not in self.admin_user_ids:
+            self._answer_callback(query_id, "Доступ только для администраторов.")
+            return
+
+        self._answer_callback(query_id, "Обрабатываю...")
+
+        if data.startswith("dup_approve:"):
+            try:
+                approval_id = int(data.split(":")[1])
+            except (ValueError, IndexError):
+                return
+            self._send(chat_id, f"✅ Одобрена повторная публикация #{approval_id}. Начинаю публикацию...")
+            try:
+                ok, msg = self.runner.publish_approved_duplicate(approval_id)
+            except Exception as exc:
+                ok, msg = False, f"Ошибка публикации: {exc}"
+            self._send(chat_id, msg or ("Товар успешно опубликован!" if ok else "Ошибка публикации."))
+
+        elif data.startswith("dup_reject:"):
+            try:
+                approval_id = int(data.split(":")[1])
+            except (ValueError, IndexError):
+                return
+            if hasattr(self.repo, "resolve_duplicate_approval"):
+                self.repo.resolve_duplicate_approval(approval_id, "rejected")
+            self._send(chat_id, f"❌ Повторная публикация #{approval_id} отклонена. Выбираю следующий подходящий товар из базы...")
+            try:
+                ok, msg = self.runner.publish_next_eligible_product()
+            except Exception as exc:
+                ok, msg = False, f"Ошибка при выборе следующего товара: {exc}"
+            self._send(chat_id, msg or ("Следующий товар опубликован!" if ok else "Нет доступных товаров."))
+
+    def _answer_callback(self, query_id: str, text: str = "") -> None:
+        if not query_id:
+            return
+        url = f"https://api.telegram.org/bot{self.bot_token}/answerCallbackQuery"
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                client.post(url, json={"callback_query_id": query_id, "text": text})
+        except Exception as exc:
+            logger.debug("Failed to answer callback query %s: %s", query_id, exc)
 
     def _handle_private_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat") or {}
@@ -147,20 +202,79 @@ class AdminIntakeBot:
 
     def _accept_link(self, user_id: int, chat_id: str, product_url: str) -> str:
         from core.dedup import extract_duplicate_signatures
+        from adapters.playwright_url_processor import process_product_url_with_playwright
 
-        open_post = self.repo.find_open_manual_by_url(product_url)
+        original_url = product_url
+        try:
+            processed_url, _ = process_product_url_with_playwright(original_url)
+        except Exception as exc:
+            logger.warning("Playwright URL processing fell back to input: %s", exc)
+            processed_url = original_url
+
+        open_post = self.repo.find_open_manual_by_url(processed_url) or self.repo.find_open_manual_by_url(original_url)
         if open_post and open_post.status in {"scheduled", "publishing"} and open_post.publish_at:
             when = self._format_local(open_post.publish_at)
             return f"Эта ссылка уже стоит в очереди на {when} ({self.timezone_name})."
-        signatures = extract_duplicate_signatures("", "", product_url, "")
+
+        signatures = extract_duplicate_signatures("", "", processed_url, "") | extract_duplicate_signatures("", "", original_url, "")
         if signatures & self.repo.get_published_signatures():
-            return "Этот товар уже публиковался. Пришлите другую ссылку."
-        self.repo.create_manual_draft(str(user_id), chat_id, product_url)
+            appr_rec = None
+            if hasattr(self.repo, "create_duplicate_approval"):
+                appr_rec = self.repo.create_duplicate_approval(
+                    external_id=f"manual_{int(datetime.now(timezone.utc).timestamp())}",
+                    title=f"Товар по ссылке {processed_url[:60]}...",
+                    source="manual",
+                    telegram_url=processed_url,
+                )
+            if appr_rec:
+                self._send_duplicate_warning(
+                    chat_id=chat_id,
+                    approval_id=appr_rec.id,
+                    url=processed_url,
+                )
+            return (
+                "⚠️ Этот товар уже публиковался в Telegram-канале!\n"
+                "Выше отправлен запрос с кнопками [Опубликовать повторно] и [Отклонить]."
+            )
+
+        self.repo.create_manual_draft(str(user_id), chat_id, processed_url, original_product_url=original_url)
         return (
-            "Ссылку принял. В какое время выложить пост?\n"
+            "Ссылку принял и обработал через Playwright.\n"
+            "В какое время выложить пост?\n"
             "Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
             f"Часовой пояс: {self.timezone_name}."
         )
+
+    def _send_duplicate_warning(self, chat_id: str, approval_id: int, url: str) -> None:
+        text = (
+            f"⚠️ <b>ВНИМАНИЕ: ПОВТОРНАЯ ПУБЛИКАЦИЯ</b>\n\n"
+            f"Ссылка на товар уже встречалась среди опубликованных постов:\n"
+            f"<code>{url}</code>\n\n"
+            f"Выберите действие:"
+        )
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Опубликовать повторно", "callback_data": f"dup_approve:{approval_id}"},
+                    {"text": "❌ Отклонить", "callback_data": f"dup_reject:{approval_id}"},
+                ]
+            ]
+        }
+        api_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                client.post(
+                    api_url,
+                    json={
+                        "chat_id": chat_id,
+                        "text": text,
+                        "parse_mode": "HTML",
+                        "reply_markup": reply_markup,
+                        "disable_web_page_preview": True,
+                    },
+                )
+        except Exception as exc:
+            logger.warning("Failed to send duplicate warning inline message: %s", exc)
 
     def _accept_time(self, user_id: int, text: str) -> str:
         draft = self.repo.get_awaiting_manual(str(user_id))
@@ -268,7 +382,7 @@ class AdminIntakeBot:
         url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
         params: dict[str, Any] = {
             "timeout": timeout,
-            "allowed_updates": json.dumps(["message", "channel_post", "my_chat_member"]),
+            "allowed_updates": json.dumps(["message", "channel_post", "my_chat_member", "callback_query"]),
         }
         if self._offset is not None:
             params["offset"] = self._offset

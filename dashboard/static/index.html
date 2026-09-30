@@ -132,6 +132,21 @@
       </form>
     </section>
 
+    <!-- Duplicate Approvals Warning & Approval Section (Feature 10) -->
+    <section class="duplicate-panel" id="duplicateApprovalsSection" style="display: none; margin-bottom: 32px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: var(--radius-lg); padding: 24px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <i data-lucide="alert-triangle" style="color: var(--warning); width: 22px; height: 22px;"></i>
+          <h2 style="font-size: 18px; margin: 0; color: #fbbf24; font-family: 'Outfit', sans-serif;">Запросы на повторную публикацию (Дубликаты)</h2>
+        </div>
+        <span class="status-pill status-pending_review" id="duplicateApprovalsBadge">0 на рассмотрении</span>
+      </div>
+      <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; line-height: 1.5;">
+        Эти товары уже публиковались в Telegram-канале. Подтвердите повторную публикацию или отклоните её. При отклонении бот автоматически выберет следующий подходящий товар из базы.
+      </p>
+      <div id="duplicateApprovalsList" class="duplicate-list" style="display: flex; flex-direction: column; gap: 12px;"></div>
+    </section>
+
     <!-- Products & Moderation Section -->
     <section>
       <div class="section-header">
@@ -233,6 +248,18 @@
         </button>
       </div>
       <div class="modal-body">
+        <!-- Feature 4: Maximum Product Price Setting -->
+        <div class="form-group" style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: var(--radius-sm); padding: 14px;">
+          <label class="form-label" style="font-weight: 600; color: #a5b4fc;">Максимальная цена товара до наценки (USD)</label>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="number" id="inputMaxSourcePrice" step="1" class="form-control" placeholder="80" style="flex: 1;">
+            <span style="font-size: 14px; font-weight: 600; color: var(--text-muted);">$ USD</span>
+          </div>
+          <small style="font-size: 11px; color: var(--text-muted); margin-top: 4px; display: block;">
+            Товары, оригинальная цена которых превышает этот лимит (до наценки), не будут выбираться для публикации.
+          </small>
+        </div>
+
         <div class="form-group">
           <label class="form-label" data-i18n="labelMarkup">Ustama miqdori (Markup)</label>
           <input type="number" id="inputMarkup" step="0.5" class="form-control">
@@ -246,29 +273,82 @@
           <input type="number" id="inputMaxItems" class="form-control">
         </div>
         <div class="form-group">
-          <label class="form-label" data-i18n="labelDailyCap">Kunlik nashr limiti (bo'sh qoldirilsa -
-            cheklovsiz)</label>
+          <label class="form-label" data-i18n="labelDailyCap">Kunlik nashr limiti (bo'sh qoldirilsa - cheklovsiz)</label>
           <input type="number" id="inputDailyCap" class="form-control">
         </div>
-        <!-- Schedule Times Picker -->
-        <div class="form-group">
-          <label class="form-label" data-i18n="labelScheduleTimes">Nashr vaqtlari</label>
-          <div id="scheduleTimeTags" style="
-            display: flex; flex-wrap: wrap; gap: 6px; min-height: 36px;
-            padding: 6px 10px; background: var(--surface-2, #1e1e2e);
-            border: 1px solid var(--border, #333); border-radius: 12px; margin-bottom: 8px;
-          "></div>
-          <div style="display: flex; gap: 8px; align-items: center;">
-            <input type="time" id="inputTimePickerValue" class="form-control" style="flex: 1; min-width: 0; border-radius: 9999px !important;">
-            <button id="btnAddScheduleTime" type="button" class="btn btn-secondary btn-sm" style="flex-shrink: 0; border-radius: 9999px !important; white-space: nowrap; display: flex; align-items: center; gap: 6px;">
-              <i data-lucide="plus" style="width: 14px; height: 14px;"></i>
-              <span data-i18n="btnAddTime">Vaqt qo'shish</span>
-            </button>
+
+        <!-- Feature 5 & 6: Separate Telegram and Instagram Publishing Schedules -->
+        <div class="schedule-section-card" style="background: rgba(14, 165, 233, 0.06); border: 1px solid rgba(14, 165, 233, 0.25); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 16px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+            <span style="font-weight: 600; font-size: 14px; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
+              <i data-lucide="send" style="width: 16px; height: 16px;"></i> Расписание Telegram
+            </span>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px;">
+              <input type="checkbox" id="checkTgScheduleEnabled" checked> Включено
+            </label>
           </div>
-          <div style="font-size: 11px; color: var(--text-muted, #888); margin-top: 6px;" data-i18n="hintScheduleTimes">
-            Har kuni qaysi vaqtlarda post chop etilishini belgilang. Vaqt qo'shmasangiz – faqat qo'lda ishga tushirish ishlaydi.
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted); display: block;">С (Start):</label>
+              <input type="time" id="inputTgStartTime" class="form-control" value="06:00" style="padding: 6px 12px; font-size: 13px;">
+            </div>
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted); display: block;">По (End):</label>
+              <input type="time" id="inputTgEndTime" class="form-control" value="23:00" style="padding: 6px 12px; font-size: 13px;">
+            </div>
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted); display: block;">Интервал (мин):</label>
+              <input type="number" id="inputTgInterval" class="form-control" value="60" style="padding: 6px 12px; font-size: 13px;">
+            </div>
           </div>
+          <small style="font-size: 11px; color: var(--text-muted); margin-top: 6px; display: block;">По умолчанию: каждый час с 06:00 до 23:00.</small>
         </div>
+
+        <div class="schedule-section-card" style="background: rgba(236, 72, 153, 0.06); border: 1px solid rgba(236, 72, 153, 0.25); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 16px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+            <span style="font-weight: 600; font-size: 14px; color: #f472b6; display: flex; align-items: center; gap: 6px;">
+              <i data-lucide="instagram" style="width: 16px; height: 16px;"></i> Расписание Instagram
+            </span>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px;">
+              <input type="checkbox" id="checkIgScheduleEnabled" checked> Включено
+            </label>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px;">
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted); display: block;">С:</label>
+              <input type="time" id="inputIgStartTime" class="form-control" value="06:00" style="padding: 6px 12px; font-size: 13px;">
+            </div>
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted); display: block;">По:</label>
+              <input type="time" id="inputIgEndTime" class="form-control" value="21:00" style="padding: 6px 12px; font-size: 13px;">
+            </div>
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted); display: block;">Интервал (мин):</label>
+              <input type="number" id="inputIgInterval" class="form-control" value="180" style="padding: 6px 12px; font-size: 13px;">
+            </div>
+            <div>
+              <label style="font-size: 11px; color: var(--text-muted); display: block;">Сдвиг (0..X мин):</label>
+              <input type="number" id="inputIgJitter" class="form-control" value="10" style="padding: 6px 12px; font-size: 13px;">
+            </div>
+          </div>
+          <small style="font-size: 11px; color: var(--text-muted); margin-top: 6px; display: block;">
+            Каждые 3 часа (06:00–21:00) со случайной задержкой 0–10 мин для естественности.
+          </small>
+        </div>
+
+        <!-- Feature 9: Outfit / Looks Mode Setting -->
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="checkOutfitMode">
+            <span style="font-weight: 500; font-size: 14px;">
+              👗 Публиковать образы (Looks / Outfits)
+            </span>
+          </label>
+          <small style="color: var(--text-muted); font-size: 11px; margin-left: 30px; display: block;">
+            Публикует 2–3 последовательных поста, составляющих гармоничный образ (Верх → Низ → Обувь или Платье → Обувь → Аксессуары).
+          </small>
+        </div>
+
         <!-- Timezone -->
         <div class="form-group">
           <label class="form-label" data-i18n="labelTimezone">Vaqt mintaqasi (Timezone)</label>
@@ -278,8 +358,7 @@
         <div class="form-group">
           <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
             <input type="checkbox" id="checkModeration">
-            <span data-i18n="labelModerationCheck">Qo'lda moderatsiyani yoqish (chop etishdan oldin ko'rib
-              chiqish)</span>
+            <span data-i18n="labelModerationCheck">Qo'lda moderatsiyani yoqish (chop etishdan oldin ko'rib chiqish)</span>
           </label>
         </div>
       </div>

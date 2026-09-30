@@ -6,18 +6,23 @@ and comprehensive audit logging.
 """
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from decimal import Decimal
 import logging
 import threading
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from adapters.base import RawProduct, SourceAdapter
+from adapters.playwright_url_processor import process_product_url_with_playwright
 from adapters.product_page import ProductPageError, fetch_product_page
 from config.app_config import AppConfig
 from core.composer import compose_post
 from core.dedup import extract_duplicate_signatures, filter_unseen
 from core.image_downloader import ImageDownloader
 from core.moderation import ConfigurableModerationGate, ModerationGate
+from core.outfits import OutfitCoordinator
 from core.pricing import FxConverter, calculate_final_price, source_price_usd
+from core.similarity import rank_products_by_channel_similarity
 from llm.base import LLMProvider, PromptLoader, SelectionResult
 from publishers.base import Publisher
 from storage.repository import ProductRepository
@@ -80,6 +85,32 @@ class PipelineRunner:
         with self._cycle_lock:
             return self._run_cycle_locked()
 
+    def run_telegram_cycle(self) -> CycleSummary:
+        """Execute one complete publishing cycle for Telegram channel schedule."""
+        with self._cycle_lock:
+            return self._run_cycle_locked(publishers_filter="telegram")
+
+    def run_instagram_cycle(self) -> CycleSummary:
+        """Execute one complete publishing cycle for Instagram Stories schedule."""
+        with self._cycle_lock:
+            return self._run_cycle_locked(publishers_filter="instagram")
+
+    def publish_next_eligible_product(self, publishers_filter: str | None = None) -> tuple[bool, str]:
+        """Publish next eligible product when previous was rejected or skipped."""
+        with self._cycle_lock:
+            return self._publish_next_eligible_product_locked(publishers_filter=publishers_filter)
+
+    def get_effective_max_source_price(self) -> Decimal:
+        """Retrieve dynamic maximum source price from DB or fallback to config."""
+        if hasattr(self.repo, "get_system_setting"):
+            val = self.repo.get_system_setting("max_source_price_usd")
+            if val:
+                try:
+                    return Decimal(str(val))
+                except Exception:
+                    pass
+        return self.config.max_source_price_usd
+
     def publish_manual_url(
         self,
         product_url: str,
@@ -99,14 +130,38 @@ class PipelineRunner:
         except Exception as exc:
             logger.warning("Failed to reload hot config fields before manual publish: %s", exc)
 
+        # Feature 1: Pass URL through Playwright worker
         try:
-            product = fetch_product_page(product_url, headless=self.config.scraper.headless)
+            processed_url, _ = process_product_url_with_playwright(
+                product_url,
+                headless=self.config.scraper.headless,
+            )
+        except Exception as exc:
+            logger.warning("Playwright URL processing fell back to input URL: %s", exc)
+            processed_url = product_url
+
+        logger.info(
+            "Playwright URL processing for manual post: original='%s' -> processed='%s'",
+            product_url,
+            processed_url,
+        )
+
+        try:
+            product = fetch_product_page(processed_url, headless=self.config.scraper.headless)
         except ProductPageError as exc:
             return False, str(exc)
         except Exception as exc:
-            logger.error("Manual product fetch failed for %s: %s", product_url, exc, exc_info=True)
+            logger.error("Manual product fetch failed for %s: %s", processed_url, exc, exc_info=True)
             return False, f"Не удалось открыть ссылку: {exc}"
 
+        # Attach original URL for traceability
+        if getattr(product, "original_product_url", None) is None:
+            try:
+                object.__setattr__(product, "original_product_url", product_url)
+            except Exception:
+                pass
+
+        # Feature 10: Duplicate check with Admin Approval
         signatures = extract_duplicate_signatures(
             product.source,
             product.external_id,
@@ -117,7 +172,22 @@ class PipelineRunner:
             signatures & self.repo.get_published_signatures()
         )
         if already_published:
-            return False, "Этот товар уже публиковался. Повторно выкладывать его не буду."
+            has_approval = False
+            if hasattr(self.repo, "get_pending_duplicate_approval_by_external_id"):
+                appr = self.repo.get_pending_duplicate_approval_by_external_id(product.external_id)
+                if appr and appr.status == "approved":
+                    has_approval = True
+            if not has_approval:
+                if hasattr(self.repo, "create_duplicate_approval"):
+                    self.repo.create_duplicate_approval(
+                        external_id=product.external_id,
+                        title=product.title,
+                        source=product.source,
+                        price=f"{product.price} {product.currency}",
+                        original_published_at=datetime.now(timezone.utc),
+                        telegram_url=product.product_url,
+                    )
+                return False, "Этот товар уже публиковался. Запрос на подтверждение повторной публикации отправлен администратору."
 
         held = getattr(self.repo, "upsert_held", None)
         if held is not None:
@@ -184,9 +254,9 @@ class PipelineRunner:
         err = "; ".join(summary.errors) or "публикация не выполнена"
         return False, f"Не удалось опубликовать: {err}"
 
-    def _run_cycle_locked(self) -> CycleSummary:
+    def _run_cycle_locked(self, publishers_filter: str | None = None) -> CycleSummary:
         summary = CycleSummary()
-        logger.info("=== Starting Pipeline Cycle (dry_run=%s) ===", self.config.dry_run)
+        logger.info("=== Starting Pipeline Cycle (dry_run=%s, filter=%s) ===", self.config.dry_run, publishers_filter)
 
         # 1. Hot-reload operational parameters (FR-2.3, FR-3.2, FR-8.2)
         try:
@@ -218,6 +288,14 @@ class PipelineRunner:
             except Exception as exc:
                 logger.warning("Could not fetch unposted products from repository: %s", exc)
 
+        # Feature 2: Filter out products belonging to paused brands
+        paused_brands = self.repo.get_paused_brands() if hasattr(self.repo, "get_paused_brands") else set()
+        if paused_brands and db_candidates:
+            active_db = [p for p in db_candidates if p.source.lower() not in paused_brands]
+            if len(active_db) < len(db_candidates):
+                logger.info("Filtered out %d unposted DB candidates from paused brands", len(db_candidates) - len(active_db))
+            db_candidates = active_db
+
         if db_candidates:
             affordable, rejected = self._split_by_source_price(db_candidates)
             for product in rejected:
@@ -238,6 +316,14 @@ class PipelineRunner:
                 summary.errors.append(err_msg)
                 self._notify_error("ingestion", err_msg)
                 return summary
+
+            # Feature 2: Filter scraped products by paused brands
+            if paused_brands and raw_products:
+                active_scraped = [p for p in raw_products if p.source.lower() not in paused_brands]
+                if len(active_scraped) < len(raw_products):
+                    logger.info("Filtered out %d scraped products from paused brands", len(raw_products) - len(active_scraped))
+                raw_products = active_scraped
+
             affordable, rejected = self._split_by_source_price(raw_products)
             for product in rejected:
                 self._reject_over_source_price(product, already_stored=False)
@@ -255,9 +341,47 @@ class PipelineRunner:
             logger.info("All fetched products have already been published. Cycle complete.")
             return summary
 
+        # Feature 8: Rank unseen products based on similarity to Telegram channel history
+        try:
+            ranked_scored = rank_products_by_channel_similarity(
+                unseen_products,
+                self.repo,
+                max_price_usd=self.get_effective_max_source_price(),
+            )
+            ranked_candidates = [p for p, _ in ranked_scored] if ranked_scored else unseen_products
+        except Exception as exc:
+            logger.warning("Channel similarity ranking skipped due to error: %s", exc)
+            ranked_candidates = unseen_products
+
+        # Feature 9: Check if outfit mode is enabled to publish 2-3 consecutive posts as a coordinated look
+        outfit_mode = False
+        if hasattr(self.repo, "get_system_setting"):
+            outfit_mode = (self.repo.get_system_setting("outfit_mode_enabled", "false") or "").lower() == "true"
+
+        if outfit_mode and len(ranked_candidates) >= 2:
+            outfit = OutfitCoordinator.find_coordinated_outfit(ranked_candidates)
+            if outfit:
+                logger.info(
+                    "Assembled coordinated look '%s' with %d items: %s",
+                    outfit.outfit_id,
+                    len(outfit.items),
+                    outfit.theme,
+                )
+                for idx, item in enumerate(outfit.items):
+                    pos_name = outfit.positions[idx] if idx < len(outfit.positions) else f"Деталь {idx+1}"
+                    outfit_info = f"«{outfit.theme}» — {pos_name} ({idx+1}/{len(outfit.items)})"
+                    self._process_single_product(
+                        item,
+                        f"Стильный образ: {item.title}",
+                        summary,
+                        outfit_info=outfit_info,
+                        publishers_filter=publishers_filter,
+                    )
+                return summary
+
         # 5. Persist newly discovered products in status 'new'
         product_map: dict[str, RawProduct] = {}
-        for p in unseen_products:
+        for p in ranked_candidates:
             product_map[p.external_id] = p
             try:
                 self.repo.upsert_new(p)
@@ -268,7 +392,7 @@ class PipelineRunner:
         prompt_text = self.prompt_loader.load_prompt()
         try:
             selections = self.llm.select_products(
-                candidates=unseen_products,
+                candidates=ranked_candidates,
                 prompt=prompt_text,
                 max_items=max_to_select,
             )
@@ -281,13 +405,13 @@ class PipelineRunner:
             return summary
 
         if not selections:
-            if unseen_products:
+            if ranked_candidates:
                 logger.info(
                     "No products chosen by LLM filter; selecting first candidate %s to maintain publishing schedule.",
-                    unseen_products[0].external_id,
+                    ranked_candidates[0].external_id,
                 )
                 from llm.base import SelectionResult
-                first = unseen_products[0]
+                first = ranked_candidates[0]
                 selections = [
                     SelectionResult(
                         external_id=first.external_id,
@@ -314,6 +438,7 @@ class PipelineRunner:
                     selection.description,
                     summary,
                     title_override=selection.title,
+                    publishers_filter=publishers_filter,
                 )
             except Exception as exc:
                 summary.failed += 1
@@ -345,7 +470,7 @@ class PipelineRunner:
         products: list[RawProduct],
     ) -> tuple[list[RawProduct], list[RawProduct]]:
         """Keep products whose store price, converted to USD before markup, is within the limit."""
-        limit = self.config.max_source_price_usd
+        limit = self.get_effective_max_source_price()
         kept: list[RawProduct] = []
         rejected: list[RawProduct] = []
         for product in products:
@@ -390,7 +515,10 @@ class PipelineRunner:
         summary: CycleSummary,
         title_override: str | None = None,
         on_platform: Callable[[str, bool, str], None] | None = None,
-    ) -> None:
+        publishers_filter: str | None = None,
+        outfit_info: str | None = None,
+        bypass_duplicate_gate: bool = False,
+    ) -> bool:
         """Process price calculation, moderation, composition, and publishing for one item."""
         external_id = product.external_id
 
@@ -411,7 +539,7 @@ class PipelineRunner:
             self.repo.mark_pending_review(external_id)
             summary.pending_review += 1
             logger.info("Product %s held in 'pending_review' per ModerationGate.", external_id)
-            return
+            return False
 
         # Collect all gallery photos for the product card
         from core.gallery import arrange_carousel, extract_gallery_photos
@@ -452,21 +580,55 @@ class PipelineRunner:
                 product_url=product.product_url,
                 in_stock=product.in_stock,
                 photo_urls=downloaded_strings,
+                original_product_url=getattr(product, "original_product_url", None),
+                heel_height=getattr(product, "heel_height", None),
             ),
             description=description,
             price=final_price,
             target_currency=self.config.target_currency,
             include_link=self.config.include_product_link,
+            outfit_info=outfit_info,
         )
 
-        # Double check idempotency right before publishing (FR-6.2)
+        # Feature 10: Duplicate publication check and Admin approval gate
         sigs = extract_duplicate_signatures(product.source, external_id, product.product_url, product.title)
         published_sigs = getattr(self.repo, "get_published_signatures", lambda: set())()
-        if (external_id in self.repo.get_published_ids()) or bool(sigs & published_sigs):
-            logger.warning("Product %s was published concurrently! Skipping duplicate.", external_id)
-            return
+        is_already_in_channel = (external_id in self.repo.get_published_ids()) or bool(sigs & published_sigs)
 
-        # Filter to only currently enabled publishers
+        if is_already_in_channel and not bypass_duplicate_gate:
+            approved = False
+            if hasattr(self.repo, "get_pending_duplicate_approval_by_external_id"):
+                appr = self.repo.get_pending_duplicate_approval_by_external_id(external_id)
+                if appr and appr.status == "approved":
+                    approved = True
+
+            if not approved:
+                logger.info("Product %s has already appeared in Telegram channel. Halting for Admin Approval.", external_id)
+                prev_record = self.repo.get_by_external_id(external_id) if hasattr(self.repo, "get_by_external_id") else None
+                prev_date = getattr(prev_record, "published_at", None) or getattr(prev_record, "telegram_published_at", None)
+                prev_url = getattr(prev_record, "telegram_message_url", None) or getattr(prev_record, "product_url", None)
+
+                appr_rec = None
+                if hasattr(self.repo, "create_duplicate_approval"):
+                    appr_rec = self.repo.create_duplicate_approval(
+                        external_id=external_id,
+                        title=product.title,
+                        source=product.source,
+                        price=f"{product.price} {product.currency}",
+                        original_published_at=prev_date,
+                        telegram_url=prev_url,
+                    )
+
+                approval_id = getattr(appr_rec, "id", 0) if appr_rec else 0
+                self._notify_duplicate_warning(
+                    approval_id=approval_id,
+                    product=product,
+                    previous_published_at=prev_date,
+                    previous_telegram_url=prev_url,
+                )
+                return False
+
+        # Filter to only currently enabled publishers, taking publishers_filter into account
         active_publishers = [
             p for p in self.publishers
             if (p.platform_name.lower() == "telegram" and self.config.telegram.enabled)
@@ -474,14 +636,17 @@ class PipelineRunner:
             or (p.platform_name.lower() not in ("telegram", "instagram"))
         ]
 
+        if publishers_filter:
+            active_publishers = [p for p in active_publishers if p.platform_name.lower() == publishers_filter.lower()]
+
         if not active_publishers:
-            err_msg = f"No active publishers enabled to publish product {external_id}."
+            err_msg = f"No active publishers enabled to publish product {external_id} (filter={publishers_filter})."
             logger.warning(err_msg)
             self.repo.mark_failed(external_id, err_msg)
             summary.failed += 1
-            return
+            return False
 
-        # Check existing publication records to prevent re-posting to Instagram on partial retries
+        # Check existing publication records to prevent re-posting on partial retries
         existing_record = None
         try:
             existing_record = self.repo.get_by_external_id(external_id)
@@ -492,6 +657,10 @@ class PipelineRunner:
             "telegram": getattr(existing_record, "telegram_post_id", None) if existing_record else None,
             "instagram": getattr(existing_record, "instagram_post_id", None) if existing_record else None,
         }
+
+        # If publishing to Instagram alone, attach existing Telegram link from previous publication
+        if existing_record and getattr(existing_record, "telegram_message_url", None):
+            composed = replace(composed, telegram_links=(existing_record.telegram_message_url,))
 
         # 7e. Publish to each active configured channel (FR-5)
         telegram_post_id: str | None = existing_post_ids.get("telegram")
@@ -509,8 +678,7 @@ class PipelineRunner:
             pub_name = publisher.platform_name.lower()
             already_id = existing_post_ids.get(pub_name)
 
-            # Telegram always gets a fresh post: the price may have changed, and the
-            # Instagram story links to the latest Telegram post.
+            # Telegram always gets a fresh post unless it was already published in this exact session
             if already_id and pub_name != "telegram":
                 logger.info(
                     "Product %s was already published to %s (post_id=%s). Skipping duplicate publish.",
@@ -601,3 +769,141 @@ class PipelineRunner:
                 self.notifier.notify_critical(stage, message, external_id)
             except Exception as exc:
                 logger.warning("Failed to send admin notification: %s", exc)
+
+    def _notify_duplicate_warning(
+        self,
+        approval_id: int,
+        product: RawProduct,
+        previous_published_at: datetime | None,
+        previous_telegram_url: str | None,
+    ) -> None:
+        """Send duplicate publication warning and approval request to admin bot."""
+        if self.notifier and hasattr(self.notifier, "notify_duplicate_warning"):
+            try:
+                prev_date_str = (
+                    previous_published_at.strftime("%Y-%m-%d %H:%M UTC")
+                    if previous_published_at
+                    else "Ранее"
+                )
+                self.notifier.notify_duplicate_warning(
+                    approval_id=approval_id,
+                    title=product.title,
+                    source=product.source,
+                    price=f"{product.price} {product.currency}",
+                    previous_date=prev_date_str,
+                    previous_url=previous_telegram_url,
+                    proposed_date=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                )
+            except Exception as exc:
+                logger.warning("Failed to send duplicate warning alert: %s", exc)
+
+    def publish_approved_duplicate(self, approval_id: int) -> tuple[bool, str]:
+        """Admin approved a repeat publication: resolve approval and publish with duplicate bypass."""
+        if hasattr(self.repo, "resolve_duplicate_approval"):
+            self.repo.resolve_duplicate_approval(approval_id, "approved")
+        rec = None
+        if hasattr(self.repo, "get_duplicate_approval"):
+            rec = self.repo.get_duplicate_approval(approval_id)
+        if not rec:
+            return False, f"Duplicate approval #{approval_id} not found"
+
+        product = None
+        existing = self.repo.get_by_external_id(rec.external_id) if hasattr(self.repo, "get_by_external_id") else None
+        if existing:
+            product = RawProduct(
+                external_id=existing.external_id,
+                source=existing.source,
+                title=existing.title,
+                price=existing.price_original,
+                currency=existing.currency_original,
+                photo_url=existing.photo_url,
+                product_url=existing.product_url,
+                in_stock=True,
+                original_product_url=getattr(existing, "original_product_url", None),
+                heel_height=getattr(existing, "heel_height", None),
+            )
+        if not product:
+            return False, f"Товар {rec.external_id} не найден в базе для повторной публикации"
+
+        summary = CycleSummary()
+        try:
+            self._process_single_product(
+                product,
+                description=getattr(existing, "description_gpt", None) or f"Повторный показ: {product.title}",
+                summary=summary,
+                bypass_duplicate_gate=True,
+            )
+            if summary.published:
+                return True, f"Повторный пост опубликован: {product.title}"
+            err = "; ".join(summary.errors) or "публикация не выполнена"
+            return False, f"Не удалось опубликовать: {err}"
+        except Exception as exc:
+            logger.error("Failed to publish approved duplicate %s: %s", rec.external_id, exc)
+            return False, str(exc)
+
+    def _publish_next_eligible_product_locked(self, publishers_filter: str | None = None) -> tuple[bool, str]:
+        """Iterate unposted products in database queue, verifying brand pause, max price,
+        and duplicate check, and publish the first eligible product.
+        If a duplicate is encountered, triggers duplicate approval and continues."""
+        if not hasattr(self.repo, "get_unposted_products"):
+            return False, "База данных не поддерживает очередь товаров"
+
+        candidates = self.repo.get_unposted_products(limit=50)
+        paused_brands = self.repo.get_paused_brands() if hasattr(self.repo, "get_paused_brands") else set()
+        max_price = self.get_effective_max_source_price()
+        published_ids = self.repo.get_published_ids()
+        published_sigs = getattr(self.repo, "get_published_signatures", lambda: set())()
+
+        for candidate in candidates:
+            # 1. Brand pause check
+            if candidate.source.lower() in paused_brands:
+                continue
+
+            # 2. Max price check
+            usd_price = source_price_usd(candidate.price, candidate.currency, self.fx)
+            if usd_price > max_price:
+                self._reject_over_source_price(candidate, already_stored=True)
+                continue
+
+            # 3. Duplicate check
+            sigs = extract_duplicate_signatures(candidate.source, candidate.external_id, candidate.product_url, candidate.title)
+            if (candidate.external_id in published_ids) or bool(sigs & published_sigs):
+                pending = getattr(self.repo, "get_pending_duplicate_approval_by_external_id", lambda x: None)(candidate.external_id)
+                if not pending:
+                    prev_rec = self.repo.get_by_external_id(candidate.external_id) if hasattr(self.repo, "get_by_external_id") else None
+                    prev_date = getattr(prev_rec, "published_at", None) or getattr(prev_rec, "telegram_published_at", None)
+                    prev_url = getattr(prev_rec, "telegram_message_url", None) or getattr(prev_rec, "product_url", None)
+                    if hasattr(self.repo, "create_duplicate_approval"):
+                        appr_rec = self.repo.create_duplicate_approval(
+                            external_id=candidate.external_id,
+                            title=candidate.title,
+                            source=candidate.source,
+                            price=f"{candidate.price} {candidate.currency}",
+                            original_published_at=prev_date,
+                            telegram_url=prev_url,
+                        )
+                        self._notify_duplicate_warning(
+                            approval_id=appr_rec.id,
+                            product=candidate,
+                            previous_published_at=prev_date,
+                            previous_telegram_url=prev_url,
+                        )
+                continue
+
+            # Eligible product found! Publish it
+            summary = CycleSummary()
+            try:
+                self._process_single_product(
+                    candidate,
+                    description="Размеры от XS до XL.\nЦвет: классический.",
+                    summary=summary,
+                    publishers_filter=publishers_filter,
+                )
+                if summary.published:
+                    return True, f"Опубликован следующий подходящий товар: {candidate.title}"
+            except Exception as exc:
+                logger.error("Failed to publish candidate %s: %s", candidate.external_id, exc)
+                continue
+
+        return False, "В базе нет подходящих товаров для публикации."
+

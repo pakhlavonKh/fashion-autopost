@@ -2,9 +2,12 @@
 
 Per SDD §3.8 and SRS FR-8.
 Registers cron triggers for specified daily publishing times and supports hot schedule updates.
+Features independent schedules for Telegram and Instagram, plus configurable Instagram publication jitter.
 """
 
 import logging
+import random
+import time
 import zoneinfo
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.schedulers.base import BaseScheduler
@@ -17,15 +20,41 @@ from core.pipeline import PipelineRunner
 logger = logging.getLogger(__name__)
 
 
+def generate_schedule_times(start_time: str, end_time: str, interval_minutes: int) -> list[str]:
+    """Generate daily time strings formatted as 'HH:MM' from start_time to end_time stepping by interval_minutes."""
+    try:
+        sh, sm = [int(p) for p in start_time.split(":", 1)]
+        eh, em = [int(p) for p in end_time.split(":", 1)]
+    except Exception:
+        sh, sm = 6, 0
+        eh, em = 23, 0
+
+    start_mins = sh * 60 + sm
+    end_mins = eh * 60 + em
+    step = interval_minutes if interval_minutes > 0 else 60
+
+    if end_mins < start_mins:
+        end_mins += 24 * 60
+
+    times: list[str] = []
+    current = start_mins
+    while current <= end_mins:
+        actual_min = current % (24 * 60)
+        times.append(f"{actual_min // 60:02d}:{actual_min % 60:02d}")
+        current += step
+
+    return times
+
+
 def register_schedule_jobs(
     scheduler: BaseScheduler,
     runner: PipelineRunner,
     schedule_cfg: ScheduleSettings,
 ) -> None:
     """Clear existing cycle jobs and register interval and cron triggers for publication and scrape checks."""
-    # Remove previous pipeline jobs
+    # Remove previous pipeline and platform jobs
     for job in scheduler.get_jobs():
-        if job.id.startswith("pipeline_cycle_"):
+        if job.id.startswith(("pipeline_cycle_", "tg_sched_", "ig_sched_")):
             job.remove()
 
     try:
@@ -38,7 +67,106 @@ def register_schedule_jobs(
         )
         tz = zoneinfo.ZoneInfo("UTC")
 
-    # 1. Register interval job for autonomous recurrent scraping (e.g. every 15 minutes)
+    repo = getattr(runner, "repo", None)
+
+    # 1. Independent Telegram Schedule (Feature 5)
+    # Default: Hourly 06:00-23:00
+    tg_enabled = True
+    tg_start = "06:00"
+    tg_end = "23:00"
+    tg_interval = 60
+
+    if repo and hasattr(repo, "get_system_setting"):
+        tg_enabled = (repo.get_system_setting("telegram_schedule_enabled", "true") or "true").lower() == "true"
+        tg_start = repo.get_system_setting("telegram_schedule_start_time", "06:00") or "06:00"
+        tg_end = repo.get_system_setting("telegram_schedule_end_time", "23:00") or "23:00"
+        try:
+            tg_interval = int(repo.get_system_setting("telegram_schedule_interval_minutes", "60") or "60")
+        except ValueError:
+            tg_interval = 60
+
+    if tg_enabled and getattr(runner.config.telegram, "enabled", True):
+        tg_times = generate_schedule_times(tg_start, tg_end, tg_interval)
+        for idx, time_str in enumerate(tg_times):
+            hour_str, minute_str = time_str.split(":")
+            h, m = int(hour_str), int(minute_str)
+            job_id = f"tg_sched_{h:02d}{m:02d}"
+            trigger = CronTrigger(hour=h, minute=m, timezone=tz)
+            scheduler.add_job(
+                func=runner.run_telegram_cycle,
+                trigger=trigger,
+                id=job_id,
+                name=f"Telegram Scheduled Publication at {time_str} ({schedule_cfg.timezone})",
+                replace_existing=True,
+                misfire_grace_time=300,
+            )
+        logger.info(
+            "Configured independent Telegram schedule: %s-%s every %dm (%d jobs registered)",
+            tg_start,
+            tg_end,
+            tg_interval,
+            len(tg_times),
+        )
+
+    # 2. Independent Instagram Schedule & Randomization Window (Feature 5 & 6)
+    # Default: 06:00-21:00 every 3 hours (180 mins), with 0-10 min randomization
+    ig_enabled = True
+    ig_start = "06:00"
+    ig_end = "21:00"
+    ig_interval = 180
+    ig_window = 10
+
+    if repo and hasattr(repo, "get_system_setting"):
+        ig_enabled = (repo.get_system_setting("instagram_schedule_enabled", "true") or "true").lower() == "true"
+        ig_start = repo.get_system_setting("instagram_schedule_start_time", "06:00") or "06:00"
+        ig_end = repo.get_system_setting("instagram_schedule_end_time", "21:00") or "21:00"
+        try:
+            ig_interval = int(repo.get_system_setting("instagram_schedule_interval_minutes", "180") or "180")
+        except ValueError:
+            ig_interval = 180
+        try:
+            ig_window = int(repo.get_system_setting("instagram_schedule_random_window_minutes", "10") or "10")
+        except ValueError:
+            ig_window = 10
+
+    def _make_instagram_job(p_runner: PipelineRunner, max_jitter_mins: int):
+        def _job():
+            if max_jitter_mins > 0:
+                jitter_sec = random.randint(0, max_jitter_mins * 60)
+                logger.info(
+                    "Instagram scheduled run applying %d sec randomization jitter (window: 0-%d min)...",
+                    jitter_sec,
+                    max_jitter_mins,
+                )
+                time.sleep(jitter_sec)
+            p_runner.run_instagram_cycle()
+        return _job
+
+    if ig_enabled and getattr(runner.config.instagram, "enabled", True):
+        ig_times = generate_schedule_times(ig_start, ig_end, ig_interval)
+        for idx, time_str in enumerate(ig_times):
+            hour_str, minute_str = time_str.split(":")
+            h, m = int(hour_str), int(minute_str)
+            job_id = f"ig_sched_{h:02d}{m:02d}"
+            trigger = CronTrigger(hour=h, minute=m, timezone=tz)
+            scheduler.add_job(
+                func=_make_instagram_job(runner, ig_window),
+                trigger=trigger,
+                id=job_id,
+                name=f"Instagram Scheduled Publication at {time_str} [+{ig_window}m jitter] ({schedule_cfg.timezone})",
+                replace_existing=True,
+                misfire_grace_time=600,
+            )
+        logger.info(
+            "Configured independent Instagram schedule: %s-%s every %dm with %dm jitter (%d jobs registered)",
+            ig_start,
+            ig_end,
+            ig_interval,
+            ig_window,
+            len(ig_times),
+        )
+
+    # 3. Optional interval job for autonomous recurrent background scraping
     if schedule_cfg.interval_minutes and schedule_cfg.interval_minutes > 0:
         job_id = f"pipeline_cycle_interval_{schedule_cfg.interval_minutes}m"
         trigger = IntervalTrigger(minutes=schedule_cfg.interval_minutes, timezone=tz)
@@ -57,29 +185,30 @@ def register_schedule_jobs(
             schedule_cfg.timezone,
         )
 
-    # 2. Register fixed daily cron times if any configured
-    for idx, time_str in enumerate(schedule_cfg.times):
-        hour_str, minute_str = time_str.split(":")
-        hour, minute = int(hour_str), int(minute_str)
+    # 4. Legacy daily cron times if any explicitly set in YAML and no independent schedules configured
+    if schedule_cfg.times and not (tg_enabled or ig_enabled):
+        for idx, time_str in enumerate(schedule_cfg.times):
+            hour_str, minute_str = time_str.split(":")
+            hour, minute = int(hour_str), int(minute_str)
 
-        job_id = f"pipeline_cycle_cron_{idx}_{hour:02d}{minute:02d}"
-        trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
+            job_id = f"pipeline_cycle_cron_{idx}_{hour:02d}{minute:02d}"
+            trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
 
-        scheduler.add_job(
-            func=runner.run_cycle,
-            trigger=trigger,
-            id=job_id,
-            name=f"Fashion Autopost Run at {time_str} {schedule_cfg.timezone}",
-            replace_existing=True,
-            misfire_grace_time=300,
-        )
-        logger.info(
-            "Registered scheduled job '%s' at %02d:%02d (%s)",
-            job_id,
-            hour,
-            minute,
-            schedule_cfg.timezone,
-        )
+            scheduler.add_job(
+                func=runner.run_cycle,
+                trigger=trigger,
+                id=job_id,
+                name=f"Fashion Autopost Run at {time_str} {schedule_cfg.timezone}",
+                replace_existing=True,
+                misfire_grace_time=300,
+            )
+            logger.info(
+                "Registered scheduled job '%s' at %02d:%02d (%s)",
+                job_id,
+                hour,
+                minute,
+                schedule_cfg.timezone,
+            )
 
 
 def build_scheduler(

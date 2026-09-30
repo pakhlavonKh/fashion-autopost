@@ -12,7 +12,13 @@ from adapters.base import RawProduct, SourceAdapter
 from core.composer import ComposedPost
 from llm.base import HighlightSelectionResult, LLMProvider, SelectionResult
 from publishers.base import Publisher, PublishResult
-from storage.models import ProductRecord, StoryJobRecord
+from storage.models import (
+    BrandSettingRecord,
+    DuplicateApprovalRecord,
+    ProductRecord,
+    StoryJobRecord,
+    SystemSettingRecord,
+)
 from storage.repository import ProductRepository
 
 
@@ -225,6 +231,94 @@ class FakeProductRepository:
         if status is not None:
             res = [j for j in res if j.status == status]
         return res
+
+    def get_brand_settings(self) -> list[dict]:
+        brands = getattr(self, "_brands", {})
+        return [
+            {"id": idx + 1, "name": b, "display_name": b.capitalize(), "is_paused": paused, "status": "Paused" if paused else "Active"}
+            for idx, (b, paused) in enumerate(brands.items())
+        ]
+
+    def set_brand_paused(self, name: str, is_paused: bool) -> None:
+        if not hasattr(self, "_brands"):
+            self._brands = {}
+        self._brands[name.strip().lower()] = is_paused
+
+    def is_brand_paused(self, name: str) -> bool:
+        brands = getattr(self, "_brands", {})
+        return bool(brands.get(name.strip().lower(), False))
+
+    def get_paused_brands(self) -> set[str]:
+        brands = getattr(self, "_brands", {})
+        return {b for b, paused in brands.items() if paused}
+
+    def get_system_setting(self, key: str, default: str | None = None) -> str | None:
+        settings = getattr(self, "_settings", {})
+        return settings.get(key, default)
+
+    def set_system_setting(self, key: str, value: str, description: str | None = None) -> None:
+        if not hasattr(self, "_settings"):
+            self._settings = {}
+        self._settings[key] = str(value)
+
+    def get_all_system_settings(self) -> dict[str, str]:
+        return dict(getattr(self, "_settings", {}))
+
+    def create_duplicate_approval(
+        self,
+        external_id: str,
+        title: str,
+        source: str,
+        price: str | None = None,
+        original_published_at: datetime | None = None,
+        telegram_url: str | None = None,
+    ) -> DuplicateApprovalRecord:
+        if not hasattr(self, "_approvals"):
+            self._approvals = []
+        rec = DuplicateApprovalRecord(
+            id=len(self._approvals) + 1,
+            external_id=external_id,
+            title=title,
+            source=source,
+            price=price,
+            original_published_at=original_published_at,
+            telegram_url=telegram_url,
+            status="pending",
+            created_at=datetime.now(timezone.utc),
+        )
+        self._approvals.append(rec)
+        return rec
+
+    def get_duplicate_approval(self, approval_id: int) -> DuplicateApprovalRecord | None:
+        approvals = getattr(self, "_approvals", [])
+        return next((a for a in approvals if a.id == approval_id), None)
+
+    def get_pending_duplicate_approval_by_external_id(self, external_id: str) -> DuplicateApprovalRecord | None:
+        approvals = getattr(self, "_approvals", [])
+        return next((a for a in approvals if a.external_id == external_id and a.status == "pending"), None)
+
+    def resolve_duplicate_approval(self, approval_id: int, status: str) -> bool:
+        rec = self.get_duplicate_approval(approval_id)
+        if rec:
+            rec.status = status
+            rec.resolved_at = datetime.now(timezone.utc)
+            return True
+        return False
+
+    def list_duplicate_approvals(self, status: str | None = None) -> list[DuplicateApprovalRecord]:
+        approvals = getattr(self, "_approvals", [])
+        if status:
+            return [a for a in approvals if a.status == status]
+        return list(approvals)
+
+    def get_recent_published_products(self, limit: int = 50) -> list[ProductRecord]:
+        res: list[ProductRecord] = []
+        for ext_id, data in self.products.items():
+            if data.get("status") == "published":
+                rec = self.get_by_external_id(ext_id)
+                if rec:
+                    res.append(rec)
+        return res[:limit]
 
 
 class FakeSourceAdapter:

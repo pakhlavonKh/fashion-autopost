@@ -37,6 +37,10 @@ class ProductRecord(Base):
     photo_url: Mapped[str] = mapped_column(Text, nullable=False)
     description_gpt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     product_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    original_product_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    heel_height: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    outfit_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    outfit_position: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     
     # Status: 'new' | 'selected' | 'pending_review' | 'published' | 'failed'
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="new", index=True)
@@ -58,6 +62,7 @@ class ProductRecord(Base):
     __table_args__ = (
         Index("idx_products_status", "status"),
         Index("idx_products_published_at", "published_at"),
+        Index("idx_products_outfit", "outfit_id"),
     )
 
     @property
@@ -185,6 +190,7 @@ class ManualPostRecord(Base):
     admin_user_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     chat_id: Mapped[str] = mapped_column(String(64), nullable=False)
     product_url: Mapped[str] = mapped_column(Text, nullable=False)
+    original_product_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     publish_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     # awaiting_time | scheduled | publishing | published | failed | cancelled
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="awaiting_time", index=True)
@@ -200,3 +206,56 @@ class ManualPostRecord(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class BrandSettingRecord(Base):
+    """Stores brand active/paused states persistently in database."""
+    __tablename__ = "brand_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_paused: Mapped[bool] = mapped_column(nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class SystemSettingRecord(Base):
+    """General key-value persistent configuration settings in database."""
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class DuplicateApprovalRecord(Base):
+    """Tracks duplicate products requiring Admin approval prior to repeat publication."""
+    __tablename__ = "duplicate_approvals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    price: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    original_published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    telegram_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # status: 'pending' | 'approved' | 'rejected'
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
