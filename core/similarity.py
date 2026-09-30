@@ -1,19 +1,16 @@
-"""Channel style profile and product similarity ranking.
-
-Performs analysis of products previously published to the Telegram channel
-to identify style patterns, category distribution, and pricing affinity.
-Uses this intelligence to rank future product candidates for selection.
-"""
+from __future__ import annotations
 
 from collections import Counter
 from decimal import Decimal
 import logging
 import re
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from adapters.base import RawProduct
 from storage.models import ProductRecord
-from storage.repository import ProductRepository
+
+if TYPE_CHECKING:
+    from storage.repository import ProductRepository
 
 logger = logging.getLogger(__name__)
 

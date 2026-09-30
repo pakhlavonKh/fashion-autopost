@@ -1,16 +1,13 @@
-"""Deduplication service.
-
-Per SDD §3.2 and SRS FR-1.4 & FR-6.2.
-Filters candidate products against previously published items stored in the repository
-using multi-layer deterministic signatures (external_id, canonical URL, and brand SKU),
-and prevents duplicate items within the current candidate batch.
-"""
+from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 from adapters.base import RawProduct
-from storage.repository import ProductRepository
+
+if TYPE_CHECKING:
+    from storage.repository import ProductRepository
 
 logger = logging.getLogger(__name__)
 

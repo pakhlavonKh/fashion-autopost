@@ -5,12 +5,14 @@ Guarantees per-product error isolation, idempotency, hot config reloading,
 and comprehensive audit logging.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 import logging
 import threading
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable, TYPE_CHECKING
 
 from adapters.base import RawProduct, SourceAdapter
 from adapters.playwright_url_processor import process_product_url_with_playwright
@@ -25,7 +27,9 @@ from core.pricing import FxConverter, calculate_final_price, source_price_usd
 from core.similarity import rank_products_by_channel_similarity
 from llm.base import LLMProvider, PromptLoader, SelectionResult
 from publishers.base import Publisher
-from storage.repository import ProductRepository
+
+if TYPE_CHECKING:
+    from storage.repository import ProductRepository
 
 logger = logging.getLogger(__name__)
 

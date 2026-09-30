@@ -238,6 +238,8 @@ class SqlAlchemyProductRepository:
             with self.engine.connect() as conn:
                 res = conn.exec_driver_sql("PRAGMA table_info(products)")
                 cols = {row[1] for row in res.fetchall()}
+                if "category" not in cols:
+                    conn.exec_driver_sql("ALTER TABLE products ADD COLUMN category VARCHAR(128)")
                 if "original_product_url" not in cols:
                     conn.exec_driver_sql("ALTER TABLE products ADD COLUMN original_product_url TEXT")
                 if "heel_height" not in cols:
@@ -246,6 +248,12 @@ class SqlAlchemyProductRepository:
                     conn.exec_driver_sql("ALTER TABLE products ADD COLUMN outfit_id VARCHAR(64)")
                 if "outfit_position" not in cols:
                     conn.exec_driver_sql("ALTER TABLE products ADD COLUMN outfit_position INTEGER")
+                if "telegram_message_id" not in cols:
+                    conn.exec_driver_sql("ALTER TABLE products ADD COLUMN telegram_message_id VARCHAR(255)")
+                if "telegram_message_url" not in cols:
+                    conn.exec_driver_sql("ALTER TABLE products ADD COLUMN telegram_message_url TEXT")
+                if "telegram_published_at" not in cols:
+                    conn.exec_driver_sql("ALTER TABLE products ADD COLUMN telegram_published_at DATETIME")
 
                 mres = conn.exec_driver_sql("PRAGMA table_info(manual_posts)")
                 mcols = {row[1] for row in mres.fetchall()}
@@ -253,7 +261,7 @@ class SqlAlchemyProductRepository:
                     conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN original_product_url TEXT")
                 conn.commit()
         except Exception as exc:
-            pass
+            logger.warning("Auto-migration in _ensure_columns encountered: %s", exc)
 
     def _get_session(self) -> Session:
         return self.SessionLocal()
