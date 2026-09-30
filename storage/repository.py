@@ -6,6 +6,7 @@ Per SDD §3.7 and SRS FR-6 (Anti-duplicate tracking).
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+import logging
 from pathlib import Path
 from typing import Any, Optional, Protocol, runtime_checkable
 import zoneinfo
@@ -24,6 +25,8 @@ from storage.models import (
     SystemSettingRecord,
     TelegramChatRecord,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
