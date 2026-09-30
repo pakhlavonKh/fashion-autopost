@@ -78,6 +78,8 @@ class TelegramPublisher:
                 if cid not in target_ids:
                     target_ids.append(cid)
 
+        target_ids = self._unique_chat_ids(target_ids)
+
         if not target_ids:
             logger.warning("Telegram publish skipped: no active channels configured or discovered.")
             return PublishResult(
@@ -134,6 +136,40 @@ class TelegramPublisher:
             return PublishResult(success=True, platform_post_id=",".join(successful_ids))
 
         return PublishResult(success=False, error="; ".join(errors))
+
+    def _unique_chat_ids(self, chat_ids: list[str]) -> list[str]:
+        """Collapse @username and the numeric id of the same chat into one send."""
+        unique: list[str] = []
+        seen: set[str] = set()
+        for chat_id in chat_ids:
+            canonical = self._canonical_chat_id(chat_id)
+            if canonical in seen:
+                logger.info(
+                    "Skipping Telegram destination %s because it is the same chat as %s",
+                    chat_id,
+                    canonical,
+                )
+                continue
+            seen.add(canonical)
+            unique.append(canonical)
+        return unique
+
+    def _canonical_chat_id(self, chat_id: str) -> str:
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.get(
+                    f"https://api.telegram.org/bot{self.bot_token}/getChat",
+                    params={"chat_id": chat_id},
+                )
+                data = response.json()
+            result = data.get("result") if isinstance(data, dict) else None
+            if data.get("ok") and isinstance(result, dict) and result.get("id") is not None:
+                return str(result["id"])
+        except Exception as exc:
+            logger.warning("Could not resolve Telegram chat %s: %s", chat_id, exc)
+        if chat_id.startswith("@"):
+            return chat_id.casefold()
+        return chat_id
 
     def _uniform_slides(self, photos: list[str]) -> list[str]:
         """Same 4:5 JPEG for every slide, with duplicate pictures removed."""

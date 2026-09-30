@@ -41,8 +41,9 @@ def test_telegram_publisher_multi_channel_broadcast(tmp_path: Path) -> None:
         sent_to.append(chat_id)
         return f"msg_{chat_id}"
 
-    with patch.object(pub, "_send_photo_with_retry", side_effect=mock_send):
-        res = pub.publish(post)
+    with patch.object(pub, "_canonical_chat_id", side_effect=lambda chat_id: chat_id):
+        with patch.object(pub, "_send_photo_with_retry", side_effect=mock_send):
+            res = pub.publish(post)
 
     assert res.success is True
     assert "-100111" in sent_to
@@ -76,8 +77,9 @@ def test_telegram_publisher_channel_error_isolation(tmp_path: Path) -> None:
             raise RuntimeError("Bot was kicked from this channel")
         return f"msg_{chat_id}"
 
-    with patch.object(pub, "_send_photo_with_retry", side_effect=mock_send):
-        res = pub.publish(post)
+    with patch.object(pub, "_canonical_chat_id", side_effect=lambda chat_id: chat_id):
+        with patch.object(pub, "_send_photo_with_retry", side_effect=mock_send):
+            res = pub.publish(post)
 
     # Returns success because working channel succeeded
     assert res.success is True
@@ -165,11 +167,55 @@ def test_telegram_publisher_comma_separated_destinations() -> None:
         sent_to.append(chat_id)
         return f"msg_{chat_id}"
 
-    with patch.object(pub, "_send_photo_with_retry", side_effect=mock_send):
-        res = pub.publish(post)
+    with patch.object(pub, "_canonical_chat_id", side_effect=lambda chat_id: chat_id):
+        with patch.object(pub, "_send_photo_with_retry", side_effect=mock_send):
+            res = pub.publish(post)
 
     assert res.success is True
     assert "-1004363309099" in sent_to
     assert "@fashionalleyb" in sent_to
     assert len(sent_to) == 2
+
+
+def test_telegram_publisher_sends_once_when_username_matches_numeric_id(tmp_path: Path) -> None:
+    """@channel and its numeric id are the same chat and must not both receive the post."""
+    db_url = f"sqlite:///{tmp_path / 'tg_pub.db'}"
+    repo = SqlAlchemyProductRepository(db_url)
+    repo.upsert_telegram_chat(
+        chat_id="-1001246015920",
+        title="Fashion Nest Boutique",
+        chat_type="channel",
+        role="publish_target",
+    )
+    pub = TelegramPublisher(
+        bot_token="test_token",
+        channel_id="-1004363309099, @fashionalleyb",
+        repo=repo,
+    )
+    post = ComposedPost(
+        title="Floral Blouse",
+        text="Stylish floral blouse.",
+        price=Decimal("45.00"),
+        currency="USD",
+        photo_url="https://example.com/blouse.jpg",
+        product_url="https://example.com/p/2",
+        source="mango",
+    )
+    sent_to: list[str] = []
+
+    def mock_send(photo_url, caption, chat_id=None):
+        sent_to.append(chat_id)
+        return f"msg_{chat_id}"
+
+    def resolve(chat_id: str) -> str:
+        if chat_id in {"@fashionalleyb", "-1001246015920"}:
+            return "-1001246015920"
+        return chat_id
+
+    with patch.object(pub, "_canonical_chat_id", side_effect=resolve):
+        with patch.object(pub, "_send_photo_with_retry", side_effect=mock_send):
+            res = pub.publish(post)
+
+    assert res.success is True
+    assert sent_to == ["-1001246015920", "-1004363309099"]
 

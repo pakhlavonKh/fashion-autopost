@@ -163,11 +163,26 @@ class InstagramPublisher:
                 return
             except Exception as exc:
                 logger.error(
-                    "Story link sticker and highlight failed for %s: %s",
+                    "Story link sticker and highlight failed for %s: %s. Publishing a plain story instead.",
                     post.title,
                     exc,
                 )
-            return
+                try:
+                    collage = render_story_collage(
+                        prepared,
+                        dest,
+                        title=post.title,
+                        price_label=format_story_price(post.price, post.currency),
+                        description=product_description(post.text),
+                        quality_line=quality_line_from_footer(self.caption_footer),
+                        include_link_pill=True,
+                    )
+                except Exception as render_exc:
+                    logger.error(
+                        "Instagram story collage retry failed for %s: %s",
+                        post.title,
+                        render_exc,
+                    )
 
         try:
             story_url = self.image_host.ensure_public_url(str(collage))
@@ -175,11 +190,16 @@ class InstagramPublisher:
             self._wait_until_ready(container_id)
             story_id = self._publish_container(container_id)
             logger.info("Instagram story %s published for %s", story_id, post.title)
+            reason = (
+                "the web session failed"
+                if use_real_sticker
+                else "INSTAGRAM_SESSIONID is not set"
+            )
             logger.warning(
-                "Story %s has no tappable link and was not added to Highlights «%s»: "
-                "INSTAGRAM_SESSIONID is not set.",
+                "Story %s has no tappable link and was not added to Highlights «%s»: %s.",
                 story_id,
                 highlight,
+                reason,
             )
         except Exception as exc:
             logger.error("Instagram story failed for %s: %s", post.title, exc)

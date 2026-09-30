@@ -257,7 +257,11 @@ def test_rejected_session_does_not_publish_a_plain_story() -> None:
             result = publisher.publish(post)
 
         assert result.success is True
-        assert all(item[2].get("media_type") != "STORIES" for item in calls)
+        story_posts = [
+            item for item in calls
+            if item[0] == "POST" and item[2].get("media_type") == "STORIES"
+        ]
+        assert len(story_posts) == 1
 
 
 def test_litterbox_host_returns_public_url() -> None:

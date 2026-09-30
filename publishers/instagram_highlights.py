@@ -43,6 +43,8 @@ class InstagramHighlightClient:
         self.user_id = str(user_id).strip() or self.session_id.split(":")[0]
         self.timeout_seconds = timeout_seconds
         self._csrf: str | None = None
+        self._www_claim = "0"
+        self._http_client: httpx.Client | None = None
 
     def publish_linked_story(
         self,
@@ -57,11 +59,16 @@ class InstagramHighlightClient:
     ) -> str:
         """Upload the collage and attach a tappable link sticker. Returns the story pk."""
         self._ensure_session()
-        self._request(
-            "POST",
-            f"{WEB_ROOT}/api/v1/media/validate_reel_url/",
-            {"url": link_url, "_uid": self.user_id, "_uuid": self.user_id},
-        )
+        try:
+            self._request(
+                "POST",
+                f"{UPLOAD_ROOT}/api/v1/media/validate_reel_url/",
+                {"url": link_url, "_uid": self.user_id, "_uuid": self.user_id},
+            )
+        except InstagramSessionExpired:
+            raise
+        except Exception as exc:
+            logger.warning("Instagram did not preview the story link, continuing: %s", exc)
         upload_id, image_width, image_height = self._rupload(image)
         sticker = {
             "x": x,
@@ -253,19 +260,31 @@ class InstagramHighlightClient:
         body: bytes | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        with httpx.Client(timeout=self.timeout_seconds, follow_redirects=False) as client:
-            self._apply_cookies(client)
-            self._ensure_csrf(client)
-            headers = self._headers()
-            if extra_headers:
-                headers.update(extra_headers)
-            if method == "GET":
-                response = client.get(url, headers=headers)
-            elif body is not None:
-                response = client.post(url, headers=headers, content=body)
-            else:
-                response = client.post(url, headers=headers, data=fields or {})
+        client = self._http()
+        self._apply_cookies(client)
+        self._ensure_csrf(client)
+        headers = self._headers()
+        if extra_headers:
+            headers.update(extra_headers)
+        if method == "GET":
+            response = client.get(url, headers=headers)
+        elif body is not None:
+            response = client.post(url, headers=headers, content=body)
+        else:
+            response = client.post(url, headers=headers, data=fields or {})
+        self._note_claim(response)
         return self._parse(response)
+
+    def _http(self) -> httpx.Client:
+        """One client so mid, rur and ig_did from earlier responses stay on the next call."""
+        if self._http_client is None:
+            self._http_client = httpx.Client(timeout=self.timeout_seconds, follow_redirects=False)
+        return self._http_client
+
+    def _note_claim(self, response: httpx.Response) -> None:
+        raw = response.headers.get("x-ig-set-www-claim") if hasattr(response.headers, "get") else None
+        if isinstance(raw, str) and raw and raw != "0":
+            self._www_claim = raw
 
     def _apply_cookies(self, client: httpx.Client) -> None:
         client.cookies.set("sessionid", self.session_id, domain=".instagram.com")
@@ -277,13 +296,9 @@ class InstagramHighlightClient:
         if self._csrf:
             client.cookies.set("csrftoken", self._csrf, domain=".instagram.com")
             return
-        with httpx.Client(timeout=self.timeout_seconds, follow_redirects=True) as home:
-            self._apply_cookies(home)
-            response = home.get(f"{WEB_ROOT}/", headers=self._headers())
-            csrf = home.cookies.get("csrftoken")
-        if not csrf:
-            match = re.search(r"csrftoken=([^;]+)", response.headers.get("set-cookie", ""))
-            csrf = match.group(1) if match else None
+        response = client.get(f"{WEB_ROOT}/", headers=self._headers())
+        self._note_claim(response)
+        csrf = _csrf_from_home(response, client.cookies.get("csrftoken"))
         if not csrf:
             raise InstagramSessionExpired(SESSION_REJECTED)
         self._csrf = csrf
@@ -298,7 +313,7 @@ class InstagramHighlightClient:
             "Accept": "*/*",
             "X-IG-App-ID": IG_APP_ID,
             "X-ASBD-ID": "129477",
-            "X-IG-WWW-Claim": "0",
+            "X-IG-WWW-Claim": self._www_claim,
             "X-Requested-With": "XMLHttpRequest",
             "Referer": f"{WEB_ROOT}/",
             "Origin": WEB_ROOT,
@@ -313,7 +328,9 @@ class InstagramHighlightClient:
     def _parse(self, response: httpx.Response) -> dict[str, Any]:
         location = response.headers.get("location") or ""
         status_code = response.status_code if isinstance(response.status_code, int) else 0
-        if status_code in {301, 302, 303, 401, 403} or "accounts/login" in location:
+        # A homepage redirect or a generic 403 is not a logged-out session.
+        # Only a login wall or HTTP 401 means the cookie was rejected.
+        if status_code == 401 or "accounts/login" in location:
             raise InstagramSessionExpired(SESSION_REJECTED)
         try:
             data = response.json()
@@ -330,6 +347,40 @@ class InstagramHighlightClient:
         if data.get("status") == "fail":
             raise RuntimeError(f"Instagram highlights error: {data.get('message') or 'fail'}")
         return data
+
+
+_CSRF_IN_HTML = re.compile(r'"csrf_token"\s*:\s*"([A-Za-z0-9_-]{8,})"')
+
+
+def _csrf_from_home(response: httpx.Response, jar_csrf: str | None) -> str | None:
+    """Read the CSRF token from the cookie, Set-Cookie, or the homepage HTML.
+
+    From some networks Instagram returns the logged-in homepage without a
+    csrftoken cookie and puts the token only in the page JSON. A login
+    redirect is still a dead session, even when that page has its own token.
+    """
+    location = response.headers.get("location") or ""
+    final_url = str(getattr(response, "url", "") or "")
+    if "accounts/login" in location or "accounts/login" in final_url:
+        return None
+    if jar_csrf:
+        return jar_csrf
+    headers = response.headers
+    listed: list[str] = []
+    getter = getattr(headers, "get_list", None)
+    if callable(getter):
+        listed = [str(item) for item in getter("set-cookie")]
+    if not listed:
+        single = headers.get("set-cookie") if hasattr(headers, "get") else None
+        if isinstance(single, str) and single:
+            listed = [single]
+    for header in listed:
+        match = re.search(r"csrftoken=([^;]+)", header)
+        if match:
+            return match.group(1)
+    html = response.text if isinstance(response.text, str) else ""
+    found = _CSRF_IN_HTML.search(html)
+    return found.group(1) if found else None
 
 
 def _clip_title(title: str) -> str:

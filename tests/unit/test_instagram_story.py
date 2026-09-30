@@ -138,6 +138,43 @@ def test_web_story_sends_the_telegram_link_sticker() -> None:
     assert client.session_id == "27709919492:token"
 
 
+def test_homepage_html_csrf_is_accepted_when_cookie_is_missing() -> None:
+    """Datacenter responses omit the csrftoken cookie and embed it in the HTML."""
+    seen_headers: list[dict] = []
+
+    def factory(*_args, **_kwargs):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        cookies: dict[str, str] = {}
+        client.cookies.set.side_effect = lambda name, value, domain=None: cookies.__setitem__(name, value)
+        client.cookies.get.side_effect = cookies.get
+
+        def get(url, headers=None, **_kw):
+            response = MagicMock()
+            response.is_success = True
+            response.status_code = 200
+            response.headers = {}
+            response.url = url
+            if url.rstrip("/").endswith("instagram.com"):
+                response.text = '{"csrf_token":"htmlcsrftoken"}'
+                response.json.return_value = {}
+                return response
+            seen_headers.append(dict(headers or {}))
+            response.text = ""
+            response.json.return_value = {"status": "ok", "form_data": {"username": "shop"}}
+            return response
+
+        client.get.side_effect = get
+        return client
+
+    client = InstagramHighlightClient("27709919492:token", "27709919492")
+    with patch("httpx.Client", side_effect=factory):
+        client._ensure_session()
+    assert client._csrf == "htmlcsrftoken"
+    assert seen_headers
+    assert seen_headers[0].get("X-CSRFToken") == "htmlcsrftoken"
+
+
 def test_login_redirect_rejects_the_session_before_upload() -> None:
     client = InstagramHighlightClient("27709919492:token", "27709919492")
     with patch("httpx.Client", side_effect=_login_redirect_factory()):
