@@ -92,8 +92,10 @@ def _cover_rgb(image, width: int, height: int):
     if scale < 0.99:
         resized = _sharpen(resized)
     left = max(0, (resized.width - width) // 2)
-    top = max(0, (resized.height - height) // 2)
-    return resized.crop((left, top, left + width, top + height))
+    # A fashion photo frames the model from the head down, often with the face
+    # already against the top edge. A frame shorter than the photo therefore
+    # takes what it must off the hem, never off the face.
+    return resized.crop((left, 0, left + width, height))
 
 
 def _open_rgb(image):

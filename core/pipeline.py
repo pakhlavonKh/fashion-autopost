@@ -62,6 +62,21 @@ class SiteFactsUnavailable(Exception):
         self.product_url = product_url
 
 
+class AlreadyPublished(Exception):
+    """The channel has carried this product before.
+
+    Raised before anything is published. The slot is not lost: the caller
+    moves on to the next candidate in the queue and tells the admin which
+    product was skipped.
+    """
+
+    def __init__(self, external_id: str, title: str, product_url: str | None) -> None:
+        super().__init__(f"{external_id}: already published ({product_url or 'no product URL'})")
+        self.external_id = external_id
+        self.title = title
+        self.product_url = product_url
+
+
 def _carries_size_line(description: str) -> bool:
     """True when the copy already holds the «Размер…» line taken from the store page."""
     return any(line.strip().casefold().startswith("размер") for line in description.splitlines())
@@ -589,6 +604,8 @@ class PipelineRunner:
                             outfit_info=outfit_info,
                             publishers_filter=publishers_filter,
                         )
+                    except AlreadyPublished as exc:
+                        self._skip_already_published(exc)
                     except SiteFactsUnavailable as exc:
                         self._shelve_without_site_facts(exc)
                 return summary
@@ -755,6 +772,8 @@ class PipelineRunner:
                     publishers_filter=publishers_filter,
                 )
                 return
+            except AlreadyPublished as exc:
+                self._skip_already_published(exc)
             except SiteFactsUnavailable as exc:
                 self._shelve_without_site_facts(exc)
             except Exception as exc:
@@ -776,6 +795,15 @@ class PipelineRunner:
         logger.error(err_msg)
         summary.errors.append(err_msg)
         self._notify_error("site_facts", err_msg)
+
+    def _skip_already_published(self, exc: AlreadyPublished) -> None:
+        """Hand the slot to the next candidate and tell the admin which product was skipped."""
+        logger.info("Not publishing %s, the channel has carried it before", exc.external_id)
+        if self.notifier and hasattr(self.notifier, "notify_duplicate_skipped"):
+            try:
+                self.notifier.notify_duplicate_skipped(title=exc.title, product_url=exc.product_url)
+            except Exception as notify_exc:
+                logger.warning("Failed to send the duplicate-skipped notice: %s", notify_exc)
 
     def _shelve_without_site_facts(self, exc: SiteFactsUnavailable) -> None:
         """Take a product the store would not describe out of the publishing queue."""
@@ -938,30 +966,21 @@ class PipelineRunner:
                     approved = True
 
             if not approved:
-                logger.info("Product %s has already appeared in Telegram channel. Halting for Admin Approval.", external_id)
                 prev_record = self.repo.get_by_external_id(external_id) if hasattr(self.repo, "get_by_external_id") else None
                 prev_date = getattr(prev_record, "published_at", None) or getattr(prev_record, "telegram_published_at", None)
                 prev_url = getattr(prev_record, "telegram_message_url", None) or getattr(prev_record, "product_url", None)
 
-                appr_rec = None
                 if hasattr(self.repo, "create_duplicate_approval"):
-                    appr_rec = self.repo.create_duplicate_approval(
+                    self.repo.create_duplicate_approval(
                         external_id=external_id,
-                        title=product.title,
+                        title=product_title,
                         source=product.source,
                         price=f"{product.price} {product.currency}",
                         original_published_at=prev_date,
                         telegram_url=prev_url,
                     )
 
-                approval_id = getattr(appr_rec, "id", 0) if appr_rec else 0
-                self._notify_duplicate_warning(
-                    approval_id=approval_id,
-                    product=product,
-                    previous_published_at=prev_date,
-                    previous_telegram_url=prev_url,
-                )
-                return False
+                raise AlreadyPublished(external_id, product_title, product.product_url)
 
         # Filter to only currently enabled publishers, taking publishers_filter into account
         active_publishers = [
@@ -1209,7 +1228,7 @@ class PipelineRunner:
                     prev_date = getattr(prev_rec, "published_at", None) or getattr(prev_rec, "telegram_published_at", None)
                     prev_url = getattr(prev_rec, "telegram_message_url", None) or getattr(prev_rec, "product_url", None)
                     if hasattr(self.repo, "create_duplicate_approval"):
-                        appr_rec = self.repo.create_duplicate_approval(
+                        self.repo.create_duplicate_approval(
                             external_id=candidate.external_id,
                             title=candidate.title,
                             source=candidate.source,
@@ -1217,12 +1236,9 @@ class PipelineRunner:
                             original_published_at=prev_date,
                             telegram_url=prev_url,
                         )
-                        self._notify_duplicate_warning(
-                            approval_id=appr_rec.id,
-                            product=candidate,
-                            previous_published_at=prev_date,
-                            previous_telegram_url=prev_url,
-                        )
+                self._skip_already_published(
+                    AlreadyPublished(candidate.external_id, candidate.title, candidate.product_url)
+                )
                 continue
 
             # Eligible product found! Publish it
@@ -1236,6 +1252,9 @@ class PipelineRunner:
                 )
                 if summary.published:
                     return True, f"Опубликован следующий подходящий товар: {candidate.title}"
+            except AlreadyPublished as exc:
+                self._skip_already_published(exc)
+                continue
             except SiteFactsUnavailable as exc:
                 self._shelve_without_site_facts(exc)
                 continue

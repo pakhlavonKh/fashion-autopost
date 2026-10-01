@@ -33,6 +33,10 @@ class AdminNotifier(Protocol):
         """Send duplicate publication warning and approval buttons."""
         ...
 
+    def notify_duplicate_skipped(self, title: str, product_url: str | None = None) -> None:
+        """Tell the admin a product was skipped because the channel already carried it."""
+        ...
+
 
 class ConsoleAdminNotifier:
     """Logs critical alerts directly to console/logger."""
@@ -61,6 +65,13 @@ class ConsoleAdminNotifier:
             title,
             approval_id,
             previous_date,
+        )
+
+    def notify_duplicate_skipped(self, title: str, product_url: str | None = None) -> None:
+        logger.info(
+            "↷ [DUPLICATE SKIPPED] Product '%s' (%s) was published before, taking the next in the queue.",
+            title,
+            product_url or "no product URL",
         )
 
 
@@ -195,6 +206,54 @@ class TelegramAdminNotifier:
         except Exception as exc:
             logger.error("Failed to send Telegram duplicate warning: %s", exc)
 
+    def notify_duplicate_skipped(self, title: str, product_url: str | None = None) -> None:
+        target_chats = self._admin_chats()
+        if not target_chats:
+            return
+
+        link = f'\n🔗 <a href="{product_url}">{product_url}</a>' if product_url else ""
+        text = (
+            f"↷ <b>ПРОПУЩЕН ПОВТОР</b>\n\n"
+            f"Товар <b>{title}</b> уже публиковался в канале ранее, "
+            f"поэтому публикую следующий товар из очереди.{link}"
+        )
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                for chat_id in target_chats:
+                    try:
+                        client.post(
+                            url,
+                            json={
+                                "chat_id": chat_id,
+                                "text": text,
+                                "parse_mode": "HTML",
+                                "disable_web_page_preview": True,
+                            },
+                        )
+                    except Exception as chat_exc:
+                        logger.error("Failed to send the skipped-duplicate notice to %s: %s", chat_id, chat_exc)
+        except Exception as exc:
+            logger.error("Failed to send the Telegram skipped-duplicate notice: %s", exc)
+
+    def _admin_chats(self) -> list[str]:
+        """Chats that receive admin notices, empty when there is nowhere to send."""
+        if not self.bot_token or "mock" in self.bot_token.lower():
+            logger.info("TelegramAdminNotifier: skipping send in mock mode.")
+            return []
+
+        chats: list[str] = []
+        if self.repo is not None:
+            try:
+                chats = [chat.chat_id for chat in self.repo.get_active_admin_chats()]
+            except Exception as exc:
+                logger.warning("Failed to fetch admin chats from repository: %s", exc)
+
+        if not chats and self.admin_chat_id and "mock" not in self.admin_chat_id.lower():
+            chats = [self.admin_chat_id]
+        return chats
+
 
 class CompositeAdminNotifier:
     """Dispatches notifications to multiple notifiers in sequence."""
@@ -227,4 +286,12 @@ class CompositeAdminNotifier:
                     )
                 except Exception as exc:
                     logger.warning("Notifier %s failed duplicate warning: %s", type(notifier).__name__, exc)
+
+    def notify_duplicate_skipped(self, title: str, product_url: str | None = None) -> None:
+        for notifier in self.notifiers:
+            if hasattr(notifier, "notify_duplicate_skipped"):
+                try:
+                    notifier.notify_duplicate_skipped(title, product_url)
+                except Exception as exc:
+                    logger.warning("Notifier %s failed skipped notice: %s", type(notifier).__name__, exc)
 

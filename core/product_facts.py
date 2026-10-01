@@ -77,6 +77,12 @@ _DOM_COLOR = (
         re.IGNORECASE,
     ),
     re.compile(r"data-color-name=[\"']([^\"']{1,40})[\"']", re.IGNORECASE),
+    # Storefronts that hash their class names still keep the word in them,
+    # as in «ColorsSelector-module__F5Cauq__label».
+    re.compile(
+        r"class=[\"'][^\"']*colou?rs?[^\"']*(?:label|name|value)[^\"']*[\"'][^>]*>([^<]{1,40})<",
+        re.IGNORECASE,
+    ),
 )
 
 

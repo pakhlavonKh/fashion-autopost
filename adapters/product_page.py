@@ -223,23 +223,30 @@ def _detect_page_currency(html_text: str, default_currency: str) -> str:
         if curr in CURRENCY_SYMBOL_MAP.values():
             return curr
 
-    # 3. Check distinctive symbols in text (e.g. TL/₺ before $, €)
-    if "₺" in html_text or " TL" in html_text or "TL " in html_text:
-        return "TRY"
-    if "zł" in html_text or " PLN" in html_text:
-        return "PLN"
-    if "Kč" in html_text or " CZK" in html_text:
-        return "CZK"
-    if "£" in html_text or " GBP" in html_text:
-        return "GBP"
-    if "lei" in html_text or " RON" in html_text:
-        return "RON"
-    if "₸" in html_text or " KZT" in html_text:
-        return "KZT"
-    if "AED" in html_text or "د.إ" in html_text:
-        return "AED"
+    # 3. Fall back to the sign printed next to an amount. A bare word is not
+    # enough: a German page is full of «Bekleidung», and the «lei» inside it
+    # is not the Romanian leu.
+    for currency, sign in _PRICED_IN:
+        if sign.search(html_text):
+            return currency
 
     return default_currency
+
+
+def _priced_in(sign: str) -> re.Pattern[str]:
+    """Match a currency sign only where it sits against a price."""
+    return re.compile(rf"(?:\d[\d\s.,]*\s*{sign})|(?:{sign}\s*\d)", re.IGNORECASE)
+
+
+_PRICED_IN: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("TRY", _priced_in(r"(?:₺|\bTL\b)")),
+    ("PLN", _priced_in(r"(?:zł|\bPLN\b)")),
+    ("CZK", _priced_in(r"(?:Kč|\bCZK\b)")),
+    ("GBP", _priced_in(r"(?:£|\bGBP\b)")),
+    ("RON", _priced_in(r"(?:\blei\b|\bRON\b)")),
+    ("KZT", _priced_in(r"(?:₸|\bKZT\b)")),
+    ("AED", _priced_in(r"(?:\bAED\b|د\.إ)")),
+)
 
 
 def _unreadable_message(url: str) -> str:
