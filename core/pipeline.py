@@ -424,6 +424,8 @@ class PipelineRunner:
                 unseen_products,
                 self.repo,
                 max_price_usd=self.get_effective_max_source_price(),
+                channel=self.config.telegram.channel_id,
+                markup=self.config.markup,
             )
             ranked_candidates = [p for p, _ in ranked_scored] if ranked_scored else unseen_products
         except Exception as exc:

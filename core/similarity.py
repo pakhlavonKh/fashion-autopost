@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from decimal import Decimal
 import logging
 import re
 from typing import Any, TYPE_CHECKING
 
 from adapters.base import RawProduct
-from storage.models import ProductRecord
+from core.channel_history import fetch_channel_posts
 
 if TYPE_CHECKING:
     from storage.repository import ProductRepository
@@ -26,9 +27,13 @@ def extract_keywords(text: str) -> set[str]:
 
 
 class ChannelProfile:
-    """Statistical profile of products currently published in the Telegram channel."""
+    """Statistical profile of products currently published in the Telegram channel.
 
-    def __init__(self, recent_products: list[ProductRecord]) -> None:
+    Takes anything that carries a title, a description and a store price: posts
+    read from the channel itself, or product rows from the database.
+    """
+
+    def __init__(self, recent_products: Sequence[Any]) -> None:
         self.total_sample = len(recent_products)
         self.categories: Counter[str] = Counter()
         self.keywords: Counter[str] = Counter()
@@ -60,12 +65,33 @@ class ChannelProfile:
         }
 
 
-def analyze_channel_history(repo: ProductRepository, limit: int = 50) -> ChannelProfile:
-    """Analyze the products published to Telegram channel."""
+def analyze_channel_history(
+    repo: ProductRepository,
+    limit: int = 50,
+    channel: str | None = None,
+    markup: Decimal = Decimal("0"),
+) -> ChannelProfile:
+    """Profile what the channel publishes.
+
+    The posts standing in the channel come first: they also cover everything
+    published before this bot. The stored history is the fallback when the
+    channel cannot be read.
+    """
+    posts = fetch_channel_posts(channel, limit=limit, markup=markup) if channel else []
+    if posts:
+        profile = ChannelProfile(posts)
+        logger.info(
+            "Analyzed %d posts standing in the Telegram channel: top words=%s, median price=%.1f",
+            profile.total_sample,
+            [word for word, _ in profile.keywords.most_common(5)],
+            profile.median_price,
+        )
+        return profile
+
     records = repo.get_recent_published_products(limit=limit)
     profile = ChannelProfile(records)
     logger.info(
-        "Analyzed %d recently published channel products: top categories=%s, median_price=%.1f",
+        "Analyzed %d products this bot published before: top categories=%s, median_price=%.1f",
         profile.total_sample,
         [c for c, _ in profile.categories.most_common(3)],
         profile.median_price,
@@ -110,10 +136,12 @@ def rank_products_by_channel_similarity(
     candidates: list[RawProduct],
     repo: ProductRepository,
     max_price_usd: Decimal | None = None,
+    channel: str | None = None,
+    markup: Decimal = Decimal("0"),
 ) -> list[tuple[RawProduct, float]]:
     """Filter by brand pause and max price, then rank candidates by similarity to channel profile."""
     paused_brands = repo.get_paused_brands()
-    profile = analyze_channel_history(repo, limit=50)
+    profile = analyze_channel_history(repo, limit=50, channel=channel, markup=markup)
 
     scored: list[tuple[RawProduct, float]] = []
     for cand in candidates:
