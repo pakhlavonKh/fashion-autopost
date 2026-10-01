@@ -4,6 +4,7 @@ Per SDD §2.2, §5, §6 and §9.
 Validates per-product error isolation, moderation gates, daily caps, and admin notification.
 """
 
+from dataclasses import replace
 from decimal import Decimal
 import pytest
 
@@ -12,6 +13,7 @@ from config.app_config import AppConfig
 from core.moderation import ConfigurableModerationGate
 from core.pipeline import CycleSummary, PipelineRunner
 from core.pricing import FixedRateConverter
+from llm.base import SelectionResult
 from tests.conftest import (
     FakeLLMProvider,
     FakeProductRepository,
@@ -492,4 +494,54 @@ def test_instagram_reuses_the_facts_telegram_already_published() -> None:
 
     assert summary.published == 1
     assert "Размеры от XS до XL." in pub.published_posts[0].text
+
+
+class _TranslatingLLM(FakeLLMProvider):
+    """Stands in for the model that renames a foreign store title in Russian."""
+
+    def select_products(
+        self,
+        candidates: list[RawProduct],
+        prompt: str,
+        max_items: int,
+    ) -> list[SelectionResult]:
+        return [
+            SelectionResult(external_id=item.external_id, title="Куртка-бомбер", description="")
+            for item in candidates[:max_items]
+        ]
+
+
+def test_publishing_straight_from_the_queue_still_names_the_garment_in_russian(
+    sample_products: list[RawProduct],
+) -> None:
+    """«Опубликовать сейчас» skips the copy step, and the channel reads Russian."""
+    repo = FakeProductRepository()
+    pub = FakePublisher("telegram")
+    foreign = replace(sample_products[1], title="BLOUSON BOMBER À PATTES")
+    repo.upsert_new(foreign)
+
+    runner = _runner(repo, [foreign], pub)
+    runner.llm = _TranslatingLLM()
+    published, _message = runner.publish_next_eligible_product()
+
+    assert published
+    assert pub.published_posts[0].title == "Куртка-бомбер"
+    assert repo.products[foreign.external_id]["title"] == "Куртка-бомбер"
+
+
+def test_a_title_the_model_already_wrote_in_russian_is_left_alone(
+    sample_products: list[RawProduct],
+) -> None:
+    """A title that already reads in Russian must not cost a second model call."""
+    repo = FakeProductRepository()
+    pub = FakePublisher("telegram")
+    product = sample_products[1]
+    repo.upsert_new(product)
+
+    runner = _runner(repo, [product], pub)
+    runner.llm = _TranslatingLLM()
+    summary = CycleSummary()
+    runner._process_single_product(product, "", summary, title_override="Рубашка из поплина")
+
+    assert pub.published_posts[0].title == "Рубашка из поплина"
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 import logging
+import re
 import threading
 from typing import Any, Callable, Protocol, runtime_checkable, TYPE_CHECKING
 
@@ -64,6 +65,14 @@ class SiteFactsUnavailable(Exception):
 def _carries_size_line(description: str) -> bool:
     """True when the copy already holds the «Размер…» line taken from the store page."""
     return any(line.strip().casefold().startswith("размер") for line in description.splitlines())
+
+
+_CYRILLIC = re.compile(r"[\u0400-\u04ff]")
+
+
+def _reads_in_russian(title: str) -> bool:
+    """A store title has been translated once it carries Cyrillic."""
+    return bool(_CYRILLIC.search(title))
 
 
 def _telegram_link_for(record: Any) -> str | None:
@@ -777,6 +786,48 @@ class PipelineRunner:
         except Exception as mark_exc:
             logger.warning("Could not shelve %s: %s", exc.external_id, mark_exc)
 
+    def _russian_title(self, product: RawProduct, title_override: str | None) -> str:
+        """The caption names the garment in Russian, whichever store language the page used.
+
+        Most paths arrive with copy the model already wrote. The ones that
+        publish straight from the queue (admin «опубликовать сейчас», a repeat
+        post, a coordinated look) carry only the store title, and the channel
+        reads Russian, so that title is translated here rather than in each
+        caller.
+        """
+        chosen = (title_override or "").strip() or product.title
+        if _reads_in_russian(chosen):
+            return chosen
+
+        translated = self._translated_title(product)
+        if translated:
+            return translated
+
+        logger.warning(
+            "Posting %s under its store title '%s': no Russian name came back",
+            product.external_id,
+            chosen,
+        )
+        return chosen
+
+    def _translated_title(self, product: RawProduct) -> str:
+        """Ask the model for this one product's Russian name, or "" if it cannot."""
+        try:
+            selections = self.llm.select_products(
+                candidates=[product],
+                prompt=self.prompt_loader.load_prompt(),
+                max_items=1,
+            )
+        except Exception as exc:
+            logger.warning("Could not translate the title of %s: %s", product.external_id, exc)
+            return ""
+
+        for selection in selections:
+            candidate = (selection.title or "").strip()
+            if _reads_in_russian(candidate):
+                return candidate
+        return ""
+
     def _process_single_product(
         self,
         product: RawProduct,
@@ -791,6 +842,7 @@ class PipelineRunner:
         """Process price calculation, moderation, composition, and publishing for one item."""
         external_id = product.external_id
         product = attach_site_facts(product)
+        product_title = self._russian_title(product, title_override)
         # Size, color, and heel height are copied from the product page. The model must not fill them in.
         heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
         description = site_description(product.color, product.sizes, heel_height=heel)
@@ -812,7 +864,7 @@ class PipelineRunner:
         )
 
         # 7b. Update status to 'selected'
-        self.repo.mark_selected(external_id, description, final_price, title=title_override)
+        self.repo.mark_selected(external_id, description, final_price, title=product_title)
 
         # 7c. Moderation gate check (SRS §10.2)
         if not self.moderation_gate.should_publish(external_id):
@@ -850,7 +902,6 @@ class PipelineRunner:
         downloaded_strings = [str(p) for p in downloaded_paths] if downloaded_paths else photo_urls
 
         # 7d. Compose platform-agnostic post (FR-4)
-        product_title = title_override.strip() if title_override else product.title
         composed = compose_post(
             product=RawProduct(
                 external_id=product.external_id,
