@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from core.gallery import arrange_carousel, is_product_angle, ordered_photos
 from core.image_downloader import ImageDownloader, unique_images
@@ -137,3 +137,22 @@ def test_identical_files_are_not_posted_twice() -> None:
         Image.new("RGB", (40, 60), (200, 10, 10)).save(other)
         kept = unique_images([first, second, other])
         assert kept == [first, other]
+
+
+def test_the_same_shot_at_two_exposures_is_posted_once() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        shot = Image.new("RGB", (200, 300), (60, 60, 60))
+        ImageDraw.Draw(shot).rectangle((40, 60, 160, 240), fill=(190, 185, 180))
+        front = folder / "front.jpg"
+        relit = folder / "front-relit.jpg"
+        shot.save(front, quality=92)
+        shot.point(lambda level: min(255, level + 28)).save(relit, quality=80)
+
+        # Same two tones, different composition: a real second angle, not a copy.
+        back_shot = Image.new("RGB", (200, 300), (190, 185, 180))
+        ImageDraw.Draw(back_shot).rectangle((0, 120, 200, 300), fill=(60, 60, 60))
+        back = folder / "back.jpg"
+        back_shot.save(back, quality=92)
+
+        assert unique_images([front, relit, back]) == [front, back]

@@ -7,7 +7,7 @@ import tempfile
 from unittest.mock import MagicMock, patch
 
 import yaml
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from adapters.base import RawProduct
 from config.app_config import DEFAULT_INSTAGRAM_CAPTION_FOOTER
@@ -205,7 +205,13 @@ def test_full_carousel_keeps_the_product_angles_after_the_cover() -> None:
         photos = []
         for index in range(10):
             path = Path(tmp) / f"look-{index}.jpg"
-            Image.new("RGB", (700, 1400), (20 * index, 90, 200 - 15 * index)).save(path)
+            frame = Image.new("RGB", (700, 1400), (20 * index, 90, 200 - 15 * index))
+            # Every angle frames the garment differently; flat fills would read as repeats.
+            ImageDraw.Draw(frame).rectangle(
+                (60, 60 + 120 * index, 640, 520 + 70 * index),
+                fill=(240, 230 - 10 * index, 20 * index),
+            )
+            frame.save(path)
             photos.append(str(path))
         post = _with_photos(_sample_post(), photos)
         calls: list[tuple[str, str, dict]] = []

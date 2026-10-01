@@ -9,7 +9,7 @@ import hashlib
 import logging
 from pathlib import Path
 import re
-from typing import Optional
+from typing import NamedTuple, Optional
 from urllib.parse import parse_qsl, urlsplit, urlunsplit, urlencode
 import httpx
 
@@ -110,16 +110,29 @@ def _raise_query_int(url: str, name: str, minimum: int, extra: dict[str, str] | 
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(updated), parts.fragment))
 
 
-def unique_images(paths: list[Path], max_distance: int = 3) -> list[Path]:
+OUTLINE_SIZE = 32
+# Two shots of one garment disagree on tens of grey levels per pixel; the same shot
+# served twice disagrees by about two, which is exposure drift and JPEG noise.
+MAX_OUTLINE_DIFFERENCE = 10.0
+# The outline ignores brightness, so this keeps one pose in two colourways apart.
+MAX_COLOR_GAP = 120
+
+
+class _Fingerprint(NamedTuple):
+    color: tuple[int, int, int]
+    outline: bytes
+
+
+def unique_images(paths: list[Path], max_difference: float = MAX_OUTLINE_DIFFERENCE) -> list[Path]:
     """Drop a later photo when it is the same picture as one already kept."""
     kept: list[Path] = []
-    seen: list[tuple[int, int, int, int]] = []
+    seen: list[_Fingerprint] = []
     for path in paths:
         digest = _image_fingerprint(path)
         if digest is None:
             kept.append(path)
             continue
-        if any(_same_picture(digest, previous, max_distance) for previous in seen):
+        if any(_same_picture(digest, previous, max_difference) for previous in seen):
             logger.info("Dropping duplicate photo %s", path.name)
             continue
         seen.append(digest)
@@ -127,35 +140,30 @@ def unique_images(paths: list[Path], max_distance: int = 3) -> list[Path]:
     return kept
 
 
-def _image_fingerprint(path: Path) -> tuple[int, int, int, int] | None:
-    """Average color plus a spatial hash, so a resize matches and a new angle does not."""
+def _image_fingerprint(path: Path) -> _Fingerprint | None:
+    """Average color plus a brightness-normalised outline, so a re-encode matches and a new angle does not."""
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         with Image.open(path) as image:
-            small = image.convert("RGB").resize((8, 8), Image.Resampling.BOX)
+            small = image.convert("RGB").resize((OUTLINE_SIZE, OUTLINE_SIZE), Image.Resampling.BOX)
+            outline = ImageOps.autocontrast(small.convert("L")).tobytes()
             raw = small.tobytes()
-            pixels = list(zip(raw[0::3], raw[1::3], raw[2::3]))
     except Exception:
         return None
-    if not pixels:
+    if not raw or not outline:
         return None
-    mean = tuple(sum(pixel[channel] for pixel in pixels) // len(pixels) for channel in range(3))
-    gray = [int(0.299 * red + 0.587 * green + 0.114 * blue) for red, green, blue in pixels]
-    average = sum(gray) / len(gray)
-    bits = 0
-    for pixel in gray:
-        bits = (bits << 1) | (1 if pixel >= average else 0)
-    return mean[0], mean[1], mean[2], bits
+    count = len(raw) // 3
+    mean = [sum(raw[channel::3]) // count for channel in range(3)]
+    return _Fingerprint((mean[0], mean[1], mean[2]), outline)
 
 
-def _same_picture(left: tuple[int, int, int, int], right: tuple[int, int, int, int], max_distance: int) -> bool:
-    color_gap = abs(left[0] - right[0]) + abs(left[1] - right[1]) + abs(left[2] - right[2])
-    return color_gap <= 24 and _hamming(left[3], right[3]) <= max_distance
-
-
-def _hamming(left: int, right: int) -> int:
-    return bin(left ^ right).count("1")
+def _same_picture(left: _Fingerprint, right: _Fingerprint, max_difference: float) -> bool:
+    color_gap = sum(abs(one - other) for one, other in zip(left.color, right.color))
+    if color_gap > MAX_COLOR_GAP:
+        return False
+    drift = sum(abs(one - other) for one, other in zip(left.outline, right.outline))
+    return drift / len(left.outline) <= max_difference
 
 
 def is_material_or_color_swatch(image_path: Path) -> bool:
