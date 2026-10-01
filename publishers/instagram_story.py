@@ -18,6 +18,7 @@ from typing import Sequence
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from core.pricing import whole_price
+from core.product_facts import is_footwear
 from publishers.instagram_media import _cover_rgb, _open_rgb, save_publish_jpeg
 
 STORY_WIDTH = 1080
@@ -200,8 +201,9 @@ def render_story_collage(
     canvas = Image.new("RGB", (STORY_WIDTH, STORY_HEIGHT), (255, 255, 255))
     frames = _frames(len(photos), STORY_WIDTH, STORY_HEIGHT)
     ordered = photos if len(photos) == 1 else photos[1:] + photos[:1]
+    anchor = "bottom" if is_footwear(title, description) else "top"
     for frame, path in zip(frames, ordered):
-        tile = _cover(path, frame[2], frame[3])
+        tile = _cover(path, frame[2], frame[3], anchor=anchor)
         canvas.paste(tile, (frame[0], frame[1]))
 
     draw = ImageDraw.Draw(canvas)
@@ -249,9 +251,9 @@ def _frames(count: int, width: int, height: int) -> list[tuple[int, int, int, in
     ]
 
 
-def _cover(path: Path, width: int, height: int) -> Image.Image:
+def _cover(path: Path, width: int, height: int, anchor: str = "top") -> Image.Image:
     with Image.open(path) as image:
-        return _cover_rgb(_open_rgb(image), width, height)
+        return _cover_rgb(_open_rgb(image), width, height, anchor=anchor)
 
 
 class _Busyness:

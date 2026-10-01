@@ -14,6 +14,7 @@ import httpx
 from core.composer import ComposedPost
 from core.pricing import whole_price
 from core.image_downloader import ImageDownloader, unique_images
+from core.product_facts import is_footwear
 from publishers.instagram_media import prepare_feed_jpeg
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
@@ -115,7 +116,8 @@ class TelegramPublisher:
 
         if not downloaded_paths and post.photo_url:
             downloaded_paths = [post.photo_url]
-        downloaded_paths = self._uniform_slides(downloaded_paths)
+        anchor = "bottom" if is_footwear(post.title, post.product_url or "") else "top"
+        downloaded_paths = self._uniform_slides(downloaded_paths, anchor=anchor)
 
         for chat_id in target_ids:
             try:
@@ -240,7 +242,7 @@ class TelegramPublisher:
             return self._ids_by_username.get(canonical[1:].casefold())
         return None
 
-    def _uniform_slides(self, photos: list[str]) -> list[str]:
+    def _uniform_slides(self, photos: list[str], anchor: str = "top") -> list[str]:
         """Same 4:5 JPEG for every slide, with duplicate pictures removed."""
         local_paths = [Path(photo) for photo in photos if Path(photo).is_file()]
         kept = {str(path.resolve()) for path in unique_images(local_paths)} if local_paths else set()
@@ -255,7 +257,7 @@ class TelegramPublisher:
                 seen.add(resolved)
                 dest = path.with_name(f"{path.stem}_feed.jpg")
                 try:
-                    slides.append(str(prepare_feed_jpeg(path, dest)))
+                    slides.append(str(prepare_feed_jpeg(path, dest, anchor=anchor)))
                 except Exception as exc:
                     logger.debug("Sending the original file for Telegram, prepare failed: %s", exc)
                     slides.append(photo)

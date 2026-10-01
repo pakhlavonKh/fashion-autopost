@@ -22,6 +22,7 @@ from config.app_config import DEFAULT_INSTAGRAM_CAPTION_FOOTER
 from core.composer import ComposedPost
 from core.pricing import whole_price
 from core.image_downloader import ImageDownloader, unique_images
+from core.product_facts import is_footwear
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
 from publishers.image_hosting import ImageHostingService, LitterboxImageHost
@@ -335,10 +336,11 @@ class InstagramPublisher:
 
         originals: list[Path] = []
         prepared: list[Path] = []
+        anchor = "bottom" if is_footwear(post.title, post.product_url or "") else "top"
         for local in unique_images(locals_found):
             dest = local.with_name(f"{local.stem}_ig.jpg")
             try:
-                prepared.append(prepare_feed_jpeg(local, dest))
+                prepared.append(prepare_feed_jpeg(local, dest, anchor=anchor))
                 originals.append(local)
             except Exception as exc:
                 prepare_errors.append(str(exc))

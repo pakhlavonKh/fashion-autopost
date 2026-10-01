@@ -23,7 +23,7 @@ COLLAGE_GAP = 16
 COLLAGE_TOP_RATIO = 0.62
 
 
-def render_feed_collage(sources: list[Path], dest: Path) -> Path:
+def render_feed_collage(sources: list[Path], dest: Path, anchor: str = "top") -> Path:
     """Cover slide for a carousel: two stacked photos on the left, hero on the right.
 
     The first gallery photo is the on-model shot and fills the tall right tile.
@@ -38,19 +38,19 @@ def render_feed_collage(sources: list[Path], dest: Path) -> Path:
     canvas = Image.new("RGB", (FEED_WIDTH, FEED_HEIGHT), (255, 255, 255))
     ordered = photos[1:] + photos[:1]
     for (x, y, width, height), path in zip(_collage_frames(len(photos)), ordered):
-        canvas.paste(_cover_tile(path, width, height), (x, y))
+        canvas.paste(_cover_tile(path, width, height, anchor=anchor), (x, y))
     dest.parent.mkdir(parents=True, exist_ok=True)
     save_publish_jpeg(canvas, dest)
     return dest
 
 
-def prepare_feed_jpeg(source: Path, dest: Path) -> Path:
+def prepare_feed_jpeg(source: Path, dest: Path, anchor: str = "top") -> Path:
     """Write a 4:5 sRGB JPEG filled by the original photo, with no padding."""
     from PIL import Image
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(source) as image:
-        filled = _cover_rgb(_open_rgb(image), FEED_WIDTH, FEED_HEIGHT)
+        filled = _cover_rgb(_open_rgb(image), FEED_WIDTH, FEED_HEIGHT, anchor=anchor)
         save_publish_jpeg(filled, dest)
     return dest
 
@@ -73,15 +73,15 @@ def _collage_frames(count: int) -> list[tuple[int, int, int, int]]:
     ]
 
 
-def _cover_tile(path: Path, width: int, height: int):
+def _cover_tile(path: Path, width: int, height: int, anchor: str = "top"):
     from PIL import Image
 
     with Image.open(path) as image:
         image = _open_rgb(image)
-        return _cover_rgb(image, width, height)
+        return _cover_rgb(image, width, height, anchor=anchor)
 
 
-def _cover_rgb(image, width: int, height: int):
+def _cover_rgb(image, width: int, height: int, anchor: str = "top"):
     from PIL import Image
 
     scale = max(width / image.width, height / image.height)
@@ -92,10 +92,14 @@ def _cover_rgb(image, width: int, height: int):
     if scale < 0.99:
         resized = _sharpen(resized)
     left = max(0, (resized.width - width) // 2)
-    # A fashion photo frames the model from the head down, often with the face
-    # already against the top edge. A frame shorter than the photo therefore
-    # takes what it must off the hem, never off the face.
-    return resized.crop((left, 0, left + width, height))
+    if anchor == "bottom":
+        top = max(0, resized.height - height)
+    else:
+        # A fashion photo frames the model from the head down, often with the face
+        # already against the top edge. A frame shorter than the photo therefore
+        # takes what it must off the hem, never off the face.
+        top = 0
+    return resized.crop((left, top, left + width, top + height))
 
 
 def _open_rgb(image):

@@ -333,15 +333,17 @@ class PipelineRunner:
         self,
         product_url: str,
         on_platform: Callable[[str, bool, str], None] | None = None,
+        bypass_duplicate_gate: bool = False,
     ) -> tuple[bool, str]:
         """Publish one admin-submitted product with the same pricing, copy, and channels as scheduled posts."""
         with self._cycle_lock:
-            return self._publish_manual_url_locked(product_url, on_platform)
+            return self._publish_manual_url_locked(product_url, on_platform, bypass_duplicate_gate=bypass_duplicate_gate)
 
     def _publish_manual_url_locked(
         self,
         product_url: str,
         on_platform: Callable[[str, bool, str], None] | None = None,
+        bypass_duplicate_gate: bool = False,
     ) -> tuple[bool, str]:
         try:
             self.config.reload_hot_fields()
@@ -389,7 +391,7 @@ class PipelineRunner:
         already_published = product.external_id in self.repo.get_published_ids() or bool(
             signatures & self.repo.get_published_signatures()
         )
-        if already_published:
+        if already_published and not bypass_duplicate_gate:
             has_approval = False
             if hasattr(self.repo, "get_pending_duplicate_approval_by_external_id"):
                 appr = self.repo.get_pending_duplicate_approval_by_external_id(product.external_id)
@@ -397,7 +399,7 @@ class PipelineRunner:
                     has_approval = True
             if not has_approval:
                 if hasattr(self.repo, "create_duplicate_approval"):
-                    self.repo.create_duplicate_approval(
+                    appr_rec = self.repo.create_duplicate_approval(
                         external_id=product.external_id,
                         title=product.title,
                         source=product.source,
@@ -405,6 +407,13 @@ class PipelineRunner:
                         original_published_at=datetime.now(timezone.utc),
                         telegram_url=product.product_url,
                     )
+                    if appr_rec:
+                        self._notify_duplicate_warning(
+                            approval_id=appr_rec.id,
+                            product=product,
+                            previous_published_at=datetime.now(timezone.utc),
+                            previous_telegram_url=product.product_url,
+                        )
                 return False, "Этот товар уже публиковался. Запрос на подтверждение повторной публикации отправлен администратору."
 
         held = getattr(self.repo, "upsert_held", None)
@@ -441,6 +450,7 @@ class PipelineRunner:
                 summary,
                 title_override=selection.title,
                 on_platform=on_platform,
+                bypass_duplicate_gate=bypass_duplicate_gate,
             )
         except SiteFactsUnavailable as exc:
             logger.warning("Manual publish held back, %s", exc)
@@ -971,7 +981,7 @@ class PipelineRunner:
                 prev_url = getattr(prev_record, "telegram_message_url", None) or getattr(prev_record, "product_url", None)
 
                 if hasattr(self.repo, "create_duplicate_approval"):
-                    self.repo.create_duplicate_approval(
+                    appr_rec = self.repo.create_duplicate_approval(
                         external_id=external_id,
                         title=product_title,
                         source=product.source,
@@ -979,6 +989,13 @@ class PipelineRunner:
                         original_published_at=prev_date,
                         telegram_url=prev_url,
                     )
+                    if appr_rec:
+                        self._notify_duplicate_warning(
+                            approval_id=appr_rec.id,
+                            product=product,
+                            previous_published_at=prev_date,
+                            previous_telegram_url=prev_url,
+                        )
 
                 raise AlreadyPublished(external_id, product_title, product.product_url)
 
@@ -1007,9 +1024,11 @@ class PipelineRunner:
         except Exception as exc:
             logger.warning("Could not fetch existing record for %s: %s", external_id, exc)
 
+        is_instagram_followup = bool(publishers_filter and publishers_filter.lower() == "instagram")
+        ignore_existing_posts = bypass_duplicate_gate and not is_instagram_followup
         existing_post_ids = {
-            "telegram": getattr(existing_record, "telegram_post_id", None) if existing_record else None,
-            "instagram": getattr(existing_record, "instagram_post_id", None) if existing_record else None,
+            "telegram": getattr(existing_record, "telegram_post_id", None) if (existing_record and not ignore_existing_posts) else None,
+            "instagram": getattr(existing_record, "instagram_post_id", None) if (existing_record and not ignore_existing_posts) else None,
         }
 
         # Instagram Story links to the Telegram message of this same product.
@@ -1033,7 +1052,7 @@ class PipelineRunner:
             pub_name = publisher.platform_name.lower()
             already_id = existing_post_ids.get(pub_name)
 
-            if already_id:
+            if already_id and not ignore_existing_posts:
                 logger.info(
                     "Product %s was already published to %s (post_id=%s). Skipping duplicate publish.",
                     external_id,
@@ -1153,6 +1172,10 @@ class PipelineRunner:
 
     def publish_approved_duplicate(self, approval_id: int) -> tuple[bool, str]:
         """Admin approved a repeat publication: resolve approval and publish with duplicate bypass."""
+        with self._cycle_lock:
+            return self._publish_approved_duplicate_locked(approval_id)
+
+    def _publish_approved_duplicate_locked(self, approval_id: int) -> tuple[bool, str]:
         if hasattr(self.repo, "resolve_duplicate_approval"):
             self.repo.resolve_duplicate_approval(approval_id, "approved")
         rec = None
@@ -1175,7 +1198,12 @@ class PipelineRunner:
                 in_stock=True,
                 original_product_url=getattr(existing, "original_product_url", None),
                 heel_height=getattr(existing, "heel_height", None),
+                sizes=getattr(existing, "sizes", ()),
+                color=getattr(existing, "color", None),
             )
+        elif getattr(rec, "telegram_url", None):
+            return self._publish_manual_url_locked(rec.telegram_url, bypass_duplicate_gate=True)
+
         if not product:
             return False, f"Товар {rec.external_id} не найден в базе для повторной публикации"
 
@@ -1228,7 +1256,7 @@ class PipelineRunner:
                     prev_date = getattr(prev_rec, "published_at", None) or getattr(prev_rec, "telegram_published_at", None)
                     prev_url = getattr(prev_rec, "telegram_message_url", None) or getattr(prev_rec, "product_url", None)
                     if hasattr(self.repo, "create_duplicate_approval"):
-                        self.repo.create_duplicate_approval(
+                        appr_rec = self.repo.create_duplicate_approval(
                             external_id=candidate.external_id,
                             title=candidate.title,
                             source=candidate.source,
@@ -1236,6 +1264,13 @@ class PipelineRunner:
                             original_published_at=prev_date,
                             telegram_url=prev_url,
                         )
+                        if appr_rec:
+                            self._notify_duplicate_warning(
+                                approval_id=appr_rec.id,
+                                product=candidate,
+                                previous_published_at=prev_date,
+                                previous_telegram_url=prev_url,
+                            )
                 self._skip_already_published(
                     AlreadyPublished(candidate.external_id, candidate.title, candidate.product_url)
                 )

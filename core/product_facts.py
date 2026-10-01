@@ -197,6 +197,12 @@ _LABEL_FIELDS = ("name", "label", "type", "id", "key")
 _VALUE_FIELDS = ("value", "description", "text", "content")
 
 
+def is_footwear(*parts: str) -> bool:
+    """True when the title, URL or text matches footwear (shoes, boots, sandals, sneakers, etc.)."""
+    text = " ".join(str(part) for part in parts if part)
+    return bool(_FOOTWEAR.search(text))
+
+
 def is_heeled_footwear(*parts: str) -> bool:
     """True when the title or URL is footwear that is not a flat or a sneaker."""
     text = " ".join(part for part in parts if part)
