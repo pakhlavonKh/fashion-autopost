@@ -278,12 +278,21 @@ class SqlAlchemyProductRepository:
     def get_published_signatures(self) -> set[str]:
         from core.dedup import extract_duplicate_signatures
         with self._get_session() as session:
+            # A product that already has a channel message counts as published even when
+            # its status fell back to 'failed' on an Instagram error. Otherwise it would be
+            # picked again and spend a publishing slot without a new post in the channel.
             stmt = select(
                 ProductRecord.external_id,
                 ProductRecord.source,
                 ProductRecord.product_url,
                 ProductRecord.title,
-            ).where(ProductRecord.status == "published")
+            ).where(
+                (ProductRecord.status == "published")
+                | (
+                    ProductRecord.telegram_post_id.is_not(None)
+                    & (ProductRecord.telegram_post_id != "")
+                )
+            )
             rows = session.execute(stmt).all()
             signatures: set[str] = set()
             for ext_id, source, prod_url, title in rows:

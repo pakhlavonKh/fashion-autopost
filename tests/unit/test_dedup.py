@@ -38,6 +38,48 @@ def test_filter_unseen_retains_failed_or_selected(fake_repo: FakeProductReposito
     assert "p-1" in [p.external_id for p in result]
 
 
+def _shoe(external_id: str = "mango-37096012") -> RawProduct:
+    return RawProduct(
+        external_id=external_id,
+        source="mango",
+        title="Укороченные брюки с высокой посадкой",
+        price=Decimal("39.99"),
+        currency="EUR",
+        photo_url="https://media.mango.com/is/image/punto/37096012-99-001",
+        product_url="https://shop.mango.com/it/it/p/donna/pantaloni/casual/pantaloni-crop/37096012/99/01",
+        in_stock=True,
+    )
+
+
+def test_product_already_in_the_channel_is_never_offered_again(tmp_path) -> None:
+    """Instagram can fail after Telegram published. That must not cost a second channel post.
+
+    Such a product keeps status 'failed', and the Instagram backlog cycle retries it.
+    The publishing cycle must not pick it as the post of the hour.
+    """
+    from storage.repository import SqlAlchemyProductRepository
+
+    repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / 'channel.db'}")
+    product = _shoe()
+    repo.upsert_new(product)
+    repo.update_platform_post_id(product.external_id, "telegram", "-1001246015920:205778")
+    repo.mark_failed(product.external_id, "instagram publish failed: image host returned 412")
+
+    assert filter_unseen([product], repo) == []
+
+
+def test_failed_product_without_a_channel_post_stays_eligible(tmp_path) -> None:
+    """A product that never reached the channel must still get its chance."""
+    from storage.repository import SqlAlchemyProductRepository
+
+    repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / 'retry.db'}")
+    product = _shoe("mango-37096013")
+    repo.upsert_new(product)
+    repo.mark_failed(product.external_id, "telegram publish failed: network timeout")
+
+    assert [p.external_id for p in filter_unseen([product], repo)] == ["mango-37096013"]
+
+
 def test_filter_unseen_drops_by_canonical_url(fake_repo: FakeProductRepository) -> None:
     """When a product has a different external_id but matches a published product's canonical URL, it must be dropped."""
     published_item = RawProduct(
