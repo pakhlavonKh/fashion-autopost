@@ -36,6 +36,10 @@ BROWSER_HEADERS = {
 }
 
 _display_started = False
+# One product page is read twice in a row: once for sizes and colour, once for
+# the gallery. The last page stays available for that second read.
+PAGE_CACHE_SECONDS = 180.0
+_page_cache: tuple[str, str, str, float] | None = None
 
 
 class ProductPageError(Exception):
@@ -292,6 +296,55 @@ def _fetch_html_uncached(url: str, timeout_seconds: float) -> tuple[str, str]:
     except Exception as exc:
         logger.info("Product page HTTP fetch failed for %s: %s", url, exc)
     return url, ""
+
+
+def fetch_product_html(url: str, timeout_seconds: float = 20.0) -> tuple[str, str]:
+    """Return (final_url, HTML) for a product page.
+
+    A plain request is tried first. Stores that answer it with a bot wall or a
+    bare script shell are opened in real Chrome, the same way a pasted link is.
+    The result is held briefly: one post reads the same page for its size grid
+    and for its gallery, and opening Chrome twice for that is pure waste.
+    """
+    cached = _cached_page(url)
+    if cached is not None:
+        return cached
+
+    final_url, html_text = _fetch_html_fast(url, timeout_seconds)
+    if _carries_product_markup(html_text):
+        return _remember_page(url, final_url or url, html_text)
+
+    logger.info("Product page %s came back empty or blocked, opening it in Chrome", final_url or url)
+    try:
+        rendered, rendered_url = _fetch_html_browser(final_url or url, timeout_seconds)
+    except Exception as exc:
+        logger.info("Chrome could not open the product page %s: %s", final_url or url, exc)
+        return final_url or url, html_text
+    if rendered and not _is_blocked_page(rendered):
+        return _remember_page(url, rendered_url or final_url or url, rendered)
+    return final_url or url, html_text
+
+
+def _carries_product_markup(html_text: str) -> bool:
+    """A store that served the real card sends a long document, not a loader."""
+    if not html_text or _is_blocked_page(html_text):
+        return False
+    return len(html_text) > 20000
+
+
+def _cached_page(url: str) -> tuple[str, str] | None:
+    if _page_cache is None or _page_cache[0] != url:
+        return None
+    if time.monotonic() - _page_cache[3] > PAGE_CACHE_SECONDS:
+        return None
+    return _page_cache[1], _page_cache[2]
+
+
+def _remember_page(url: str, final_url: str, html_text: str) -> tuple[str, str]:
+    global _page_cache
+
+    _page_cache = (url, final_url, html_text, time.monotonic())
+    return final_url, html_text
 
 
 def _fetch_html_browser(url: str, timeout_seconds: float) -> tuple[str, str]:

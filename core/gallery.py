@@ -238,12 +238,13 @@ def extract_gallery_photos(
         return []
 
     html_text = ""
-    # Try browser-like fast fetch first to avoid WAF 403 blocks
+    # A plain request first; stores behind a bot wall are opened in real Chrome.
     try:
-        from adapters.product_page import _fetch_html_fast
-        _, html_text = _fetch_html_fast(product_url, timeout_seconds=timeout_seconds)
+        from adapters.product_page import fetch_product_html
+
+        _, html_text = fetch_product_html(product_url, timeout_seconds=timeout_seconds)
     except Exception as exc:
-        logger.debug("Fast fetch failed in extract_gallery_photos: %s", exc)
+        logger.debug("Could not read the product page in extract_gallery_photos: %s", exc)
 
     if not html_text:
         try:

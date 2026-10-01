@@ -232,8 +232,55 @@ def test_attach_copies_facts_from_the_product_page(monkeypatch) -> None:
     def fake(url: str, timeout_seconds: float) -> tuple[str, str]:
         return url, MANGO_HTML
 
-    monkeypatch.setattr("adapters.product_page._fetch_html_fast", fake)
+    monkeypatch.setattr("adapters.product_page.fetch_product_html", fake)
     product = attach_site_facts(_product("https://shop.mango.com/es/es/p/mujer/cardigan_87051234?c=70"))
     assert product.color == "Light beige"
     assert product.sizes[0] == "XSS"
     assert product.sizes[-1] == "7XL"
+
+
+def test_a_store_that_blocks_plain_requests_is_opened_in_chrome(monkeypatch) -> None:
+    """Zara answers a plain request with a script shell, so the size grid needs Chrome."""
+    import adapters.product_page as product_page
+
+    monkeypatch.setattr(product_page, "_page_cache", None)
+    monkeypatch.setattr(
+        product_page,
+        "_fetch_html_fast",
+        lambda url, timeout_seconds: (url, "<html><body><script>app()</script></body></html>"),
+    )
+    opened: list[str] = []
+
+    def chrome(url: str, timeout_seconds: float) -> tuple[str, str]:
+        opened.append(url)
+        return MANGO_HTML + " " * 20000, url
+
+    monkeypatch.setattr(product_page, "_fetch_html_browser", chrome)
+
+    url = "https://www.zara.com/fr/fr/veste-100-laine-extra-douce-p09598007.html"
+    product = attach_site_facts(_product(url))
+
+    assert opened == [url]
+    assert product.sizes[0] == "XSS"
+
+
+def test_the_page_is_read_once_for_sizes_and_for_the_gallery(monkeypatch) -> None:
+    """One post must not open the same product page in Chrome twice."""
+    import adapters.product_page as product_page
+
+    monkeypatch.setattr(product_page, "_page_cache", None)
+    monkeypatch.setattr(product_page, "_fetch_html_fast", lambda url, timeout_seconds: (url, ""))
+    calls: list[str] = []
+
+    def chrome(url: str, timeout_seconds: float) -> tuple[str, str]:
+        calls.append(url)
+        return MANGO_HTML + " " * 20000, url
+
+    monkeypatch.setattr(product_page, "_fetch_html_browser", chrome)
+
+    url = "https://www.zara.com/fr/fr/veste-p09598007.html"
+    first = product_page.fetch_product_html(url)
+    second = product_page.fetch_product_html(url)
+
+    assert calls == [url]
+    assert first == second

@@ -271,6 +271,9 @@ class AppConfig(BaseModel):
     dry_run: bool = False
     db_url: str = "sqlite:///./data/app.db"
     include_product_link: bool = True
+    # Public site that serves data/images, e.g. https://fashion-autopost.netlify.app.
+    # Instagram downloads the prepared photos from there instead of a paste host.
+    public_image_base_url: str | None = None
 
     # Component settings
     aggregator: AggregatorSettings = Field(default_factory=AggregatorSettings)
@@ -378,6 +381,9 @@ class AppConfig(BaseModel):
         if os.getenv("S3_PUBLIC_URL_PREFIX"):
             s3_data["public_url_prefix"] = os.environ["S3_PUBLIC_URL_PREFIX"]
         yaml_data["s3"] = s3_data
+
+        if os.getenv("PUBLIC_IMAGE_BASE_URL"):
+            yaml_data["public_image_base_url"] = os.environ["PUBLIC_IMAGE_BASE_URL"].strip()
 
         if os.getenv("DB_URL"):
             yaml_data["db_url"] = os.environ["DB_URL"]

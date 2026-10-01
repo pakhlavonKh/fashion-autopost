@@ -31,7 +31,7 @@ from logging_setup.admin_notifier import (
 from logging_setup.logger import setup_logging
 from publishers.base import Publisher
 from publishers.dry_run_publisher import DryRunPublisher
-from publishers.image_hosting import LitterboxImageHost, S3ImageHost
+from publishers.image_hosting import LitterboxImageHost, S3ImageHost, SelfHostedImageHost
 from publishers.instagram_publisher import InstagramPublisher
 from publishers.telegram_discovery import TelegramChatDiscoveryService
 from publishers.telegram_publisher import TelegramPublisher
@@ -112,8 +112,8 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
         fx = FixedRateConverter(fixed_rate=config.fx.fixed_rate, rates=config.fx.rates)
 
     # 5. Image Hosting for Instagram
-    image_host = (
-        S3ImageHost(
+    if config.s3.bucket_name:
+        image_host = S3ImageHost(
             endpoint_url=config.s3.endpoint_url,
             bucket_name=config.s3.bucket_name,
             access_key=config.s3.access_key,
@@ -121,9 +121,17 @@ def build_pipeline_runner(config: AppConfig) -> PipelineRunner:
             region=config.s3.region,
             public_url_prefix=config.s3.public_url_prefix,
         )
-        if config.s3.bucket_name
-        else LitterboxImageHost()
-    )
+    elif config.public_image_base_url:
+        logger.info(
+            "Instagram will download photos from %s, with an upload host as fallback.",
+            config.public_image_base_url,
+        )
+        image_host = SelfHostedImageHost(
+            base_url=config.public_image_base_url,
+            fallback=LitterboxImageHost(),
+        )
+    else:
+        image_host = LitterboxImageHost()
 
     # 6. Real Publishers (with dynamic Telegram channel resolution)
     publishers: list[Publisher] = []

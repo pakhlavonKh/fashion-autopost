@@ -25,6 +25,78 @@ class ImageHostingService(Protocol):
 _FACEBOOK_CRAWLER = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
 
 
+def serves_public_jpeg(url: str, timeout_seconds: float = 30.0) -> bool:
+    """True when Facebook's crawler would receive a JPEG from url, not an error page."""
+    try:
+        with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
+            resp = client.get(url, headers={"User-Agent": _FACEBOOK_CRAWLER})
+    except Exception as exc:
+        logger.warning("Could not verify Instagram image %s: %s", url, exc)
+        return False
+    return resp.status_code == 200 and len(resp.content) > 200 and resp.content[:3] == b"\xff\xd8\xff"
+
+
+class SelfHostedImageHost:
+    """Lets Instagram download the photos from this project's own site.
+
+    The dashboard already publishes ``data/images`` under ``/images``, so a
+    prepared JPEG needs no upload anywhere: it is reachable at
+    ``<base_url>/images/<file>``. Paste hosts answer Meta with 403 or rate
+    limits, which is why they are only the fallback.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        images_dir: Path = Path("data/images"),
+        fallback: "ImageHostingService | None" = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.images_dir = images_dir
+        self.fallback = fallback
+        self.timeout_seconds = timeout_seconds
+
+    def ensure_public_url(self, photo_url_or_path: str) -> str:
+        local_path = Path(photo_url_or_path)
+        if local_path.is_file():
+            served = self._served_url(local_path)
+            if served and serves_public_jpeg(served, self.timeout_seconds):
+                logger.info("Instagram will read %s from this site", served)
+                return served
+            if served:
+                logger.warning("This site did not serve %s as a JPEG, falling back to an upload host", served)
+        return self._fallback_url(photo_url_or_path)
+
+    def replace_unfetchable(self, public_url: str) -> str:
+        """Instagram could not download public_url, so hand the file to another host."""
+        if public_url.startswith(f"{self.base_url}/images/"):
+            name = public_url.rsplit("/", 1)[-1]
+            candidate = self.images_dir / name
+            if candidate.is_file():
+                return self._fallback_url(str(candidate))
+        return self._fallback_url(public_url)
+
+    def _served_url(self, local_path: Path) -> str | None:
+        """Public URL of a file that already sits in the served images folder."""
+        try:
+            resolved = local_path.resolve()
+            served_root = self.images_dir.resolve()
+        except OSError:
+            return None
+        if served_root not in resolved.parents:
+            return None
+        return f"{self.base_url}/images/{resolved.name}"
+
+    def _fallback_url(self, photo_url_or_path: str) -> str:
+        if self.fallback is not None:
+            return self.fallback.ensure_public_url(photo_url_or_path)
+        url = photo_url_or_path.strip()
+        if url.startswith("https://"):
+            return url
+        raise RuntimeError(f"No public URL available for the Instagram image {photo_url_or_path}")
+
+
 class LitterboxImageHost:
     """Uploads a local JPEG to a public HTTPS URL that Instagram's crawler can download.
 
@@ -127,14 +199,7 @@ class LitterboxImageHost:
         return public_url
 
     def _is_public_jpeg(self, url: str) -> bool:
-        """True when Facebook's crawler would receive a JPEG, not an error page."""
-        try:
-            with httpx.Client(timeout=min(self.timeout_seconds, 30.0), follow_redirects=True) as client:
-                resp = client.get(url, headers={"User-Agent": _FACEBOOK_CRAWLER})
-        except Exception as exc:
-            logger.warning("Could not verify Instagram image %s: %s", url, exc)
-            return False
-        return resp.status_code == 200 and len(resp.content) > 200 and resp.content[:3] == b"\xff\xd8\xff"
+        return serves_public_jpeg(url, min(self.timeout_seconds, 30.0))
 
 
 

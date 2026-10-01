@@ -439,9 +439,9 @@ def attach_site_facts(product: RawProduct, *, timeout_seconds: float = 12.0) -> 
     if not _looks_like_product_page(product.product_url):
         return product
     try:
-        from adapters.product_page import _fetch_html_fast
+        from adapters.product_page import fetch_product_html
 
-        final_url, html_text = _fetch_html_fast(product.product_url, timeout_seconds)
+        final_url, html_text = fetch_product_html(product.product_url, timeout_seconds)
     except Exception as exc:
         logger.info("Could not open product page for size and color %s: %s", product.product_url, exc)
         return product
