@@ -49,7 +49,7 @@ GRAPH_INSTAGRAM_BASE = "https://graph.instagram.com"
 MAX_INSTAGRAM_CAPTION_LEN = 2200
 MAX_CAROUSEL_ITEMS = 10
 PRODUCT_ANGLE_SLIDES = 3
-CONTAINER_READY_TIMEOUT_SECONDS = 45.0
+CONTAINER_READY_TIMEOUT_SECONDS = 90.0
 
 _T = TypeVar("_T")
 
@@ -70,7 +70,7 @@ class InstagramPublisher:
         access_token: str,
         account_id: str,
         image_host: ImageHostingService | None = None,
-        timeout_seconds: float = 45.0,
+        timeout_seconds: float = 120.0,
         caption_footer: str | None = None,
         username: str | None = None,
         use_instagram_login: bool | None = None,
@@ -232,15 +232,23 @@ class InstagramPublisher:
 
         if self.story_worker and self.repo:
             try:
-                product = self.repo.get_by_external_id(post.product_id)
+                external_id = getattr(post, "product_id", "") or ""
+                product = self.repo.get_by_external_id(external_id) if external_id else None
                 if product:
-                    ok, msg, story_id = self.story_worker.process_story_job(
+                    ok, msg, _story_id = self.story_worker.process_story_job(
                         product.id,
                         prepared,
                         price_label=format_story_price(post.price, post.currency),
                         quality_line=quality_line_from_footer(self.caption_footer),
                     )
-                    return
+                    if ok:
+                        return
+                    logger.warning(
+                        "Story with the Telegram link did not finish for %s (%s). "
+                        "Publishing a plain story instead.",
+                        post.title,
+                        msg,
+                    )
             except Exception as exc:
                 logger.warning("PlaywrightStoryWorker failed: %s, falling back to direct story publish", exc)
 

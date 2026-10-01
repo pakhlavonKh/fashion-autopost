@@ -136,6 +136,10 @@ class PlaywrightStoryWorker:
         # If Telegram publication failed or URL is missing: STOP!
         telegram_url = product.telegramMessageUrl or getattr(product, "telegram_message_url", None)
         if not telegram_url or not str(telegram_url).strip():
+            from core.pipeline import _telegram_link_for
+
+            telegram_url = _telegram_link_for(product)
+        if not telegram_url or not str(telegram_url).strip():
             err = (
                 f"STOP: Product {product.external_id} has no Telegram message URL. "
                 "Telegram publication must succeed and produce a valid message URL before creating Instagram Story."

@@ -69,21 +69,26 @@ def register_schedule_jobs(
 
     repo = getattr(runner, "repo", None)
 
+    def _setting(key: str, default: str) -> str:
+        if not repo or not hasattr(repo, "get_system_setting"):
+            return default
+        try:
+            value = repo.get_system_setting(key, default)
+        except Exception as exc:
+            logger.warning("Could not read schedule setting %s, using %s: %s", key, default, exc)
+            return default
+        text = str(value).strip() if value is not None else ""
+        return text or default
+
     # 1. Independent Telegram Schedule (Feature 5)
     # Default: Hourly 06:00-23:00
-    tg_enabled = True
-    tg_start = "06:00"
-    tg_end = "23:00"
-    tg_interval = 60
-
-    if repo and hasattr(repo, "get_system_setting"):
-        tg_enabled = (repo.get_system_setting("telegram_schedule_enabled", "true") or "true").lower() == "true"
-        tg_start = repo.get_system_setting("telegram_schedule_start_time", "06:00") or "06:00"
-        tg_end = repo.get_system_setting("telegram_schedule_end_time", "23:00") or "23:00"
-        try:
-            tg_interval = int(repo.get_system_setting("telegram_schedule_interval_minutes", "60") or "60")
-        except ValueError:
-            tg_interval = 60
+    tg_enabled = _setting("telegram_schedule_enabled", "true").lower() == "true"
+    tg_start = _setting("telegram_schedule_start_time", "06:00")
+    tg_end = _setting("telegram_schedule_end_time", "23:00")
+    try:
+        tg_interval = int(_setting("telegram_schedule_interval_minutes", "60"))
+    except ValueError:
+        tg_interval = 60
 
     if tg_enabled and getattr(runner.config.telegram, "enabled", True):
         tg_times = generate_schedule_times(tg_start, tg_end, tg_interval)
@@ -110,24 +115,17 @@ def register_schedule_jobs(
 
     # 2. Independent Instagram Schedule & Randomization Window (Feature 5 & 6)
     # Default: 06:00-21:00 every 3 hours (180 mins), with 0-10 min randomization
-    ig_enabled = True
-    ig_start = "06:00"
-    ig_end = "21:00"
-    ig_interval = 180
-    ig_window = 10
-
-    if repo and hasattr(repo, "get_system_setting"):
-        ig_enabled = (repo.get_system_setting("instagram_schedule_enabled", "true") or "true").lower() == "true"
-        ig_start = repo.get_system_setting("instagram_schedule_start_time", "06:00") or "06:00"
-        ig_end = repo.get_system_setting("instagram_schedule_end_time", "21:00") or "21:00"
-        try:
-            ig_interval = int(repo.get_system_setting("instagram_schedule_interval_minutes", "180") or "180")
-        except ValueError:
-            ig_interval = 180
-        try:
-            ig_window = int(repo.get_system_setting("instagram_schedule_random_window_minutes", "10") or "10")
-        except ValueError:
-            ig_window = 10
+    ig_enabled = _setting("instagram_schedule_enabled", "true").lower() == "true"
+    ig_start = _setting("instagram_schedule_start_time", "06:00")
+    ig_end = _setting("instagram_schedule_end_time", "21:00")
+    try:
+        ig_interval = int(_setting("instagram_schedule_interval_minutes", "180"))
+    except ValueError:
+        ig_interval = 180
+    try:
+        ig_window = int(_setting("instagram_schedule_random_window_minutes", "10"))
+    except ValueError:
+        ig_window = 10
 
     def _make_instagram_job(p_runner: PipelineRunner, max_jitter_mins: int):
         def _job():
@@ -185,8 +183,9 @@ def register_schedule_jobs(
             schedule_cfg.timezone,
         )
 
-    # 4. Legacy daily cron times if any explicitly set in YAML and no independent schedules configured
-    if schedule_cfg.times and not (tg_enabled or ig_enabled):
+    # YAML clock times are a Telegram-only fallback. They must not also publish
+    # Instagram: that channel has its own window (default 06:00-21:00 every 3 hours).
+    if schedule_cfg.times and not tg_enabled:
         for idx, time_str in enumerate(schedule_cfg.times):
             hour_str, minute_str = time_str.split(":")
             hour, minute = int(hour_str), int(minute_str)
@@ -195,15 +194,15 @@ def register_schedule_jobs(
             trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
 
             scheduler.add_job(
-                func=runner.run_cycle,
+                func=runner.run_telegram_cycle,
                 trigger=trigger,
                 id=job_id,
-                name=f"Fashion Autopost Run at {time_str} {schedule_cfg.timezone}",
+                name=f"Telegram fallback publication at {time_str} {schedule_cfg.timezone}",
                 replace_existing=True,
                 misfire_grace_time=300,
             )
             logger.info(
-                "Registered scheduled job '%s' at %02d:%02d (%s)",
+                "Registered Telegram fallback job '%s' at %02d:%02d (%s)",
                 job_id,
                 hour,
                 minute,

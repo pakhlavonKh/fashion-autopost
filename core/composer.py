@@ -22,6 +22,8 @@ class ComposedPost:
     product_url: str | None
     title: str
     source: str
+    # external_id, so the story worker can load the Telegram link for this product.
+    product_id: str = ""
     photo_urls: list[str] = field(default_factory=list)
     # Public t.me links of this post once Telegram has published it.
     telegram_links: tuple[str, ...] = ()
@@ -77,5 +79,6 @@ def compose_post(
         product_url=link_to_include,
         title=clean_title,
         source=product.source,
+        product_id=product.external_id,
         photo_urls=photos,
     )

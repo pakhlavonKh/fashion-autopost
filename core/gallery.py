@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 _WIDTH_SEGMENT = re.compile(r"/w/\d+(?=/|$)")
 _MANGO_NAME = re.compile(r"^(\d+)-([0-9a-z]+)-(\d+)$", re.IGNORECASE)
+_MANGO_IMAGE = re.compile(r"/punto/(\d{6,})-([0-9A-Za-z]+)-([0-9A-Za-z]+)", re.IGNORECASE)
+_MANGO_PAGE = re.compile(r"/(\d{7,8})(?:/([0-9A-Za-z]{2,3}))?(?:/|$)")
 _ZARA_SHOT = re.compile(r"_(\d+)_(\d+)_\d+$")
 _ZARA_KIND = re.compile(r'"kind"\s*:\s*"(full|plain|other|colorcut)"', re.IGNORECASE)
 _TAIL_ROLES = ("front", "back", "close")
@@ -45,6 +47,56 @@ def canonical_photo_key(url: str) -> str:
     if mango:
         return f"{mango.group(1)}-{mango.group(2).lower()}-{int(mango.group(3))}"
     return name
+
+
+def mango_page_identity(page_url: str) -> tuple[str, str] | None:
+    """(product id, colour code) from a Mango product URL. Colour may be empty."""
+    match = _MANGO_PAGE.search(urlsplit(page_url or "").path)
+    if not match:
+        return None
+    return match.group(1), match.group(2) or ""
+
+
+def mango_image_identity(url: str) -> tuple[str, str] | None:
+    """(product id, colour code) from a Mango CDN photo."""
+    match = _MANGO_IMAGE.search(url or "")
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def keep_single_product(urls: list[str], page_url: str = "") -> list[str]:
+    """Drop photos of other products that a store page embeds next to the garment.
+
+    Mango product pages include colourways, "complete the look" and recommendations.
+    Those files share the CDN but a different product id. One post keeps one id,
+    and the colour named in the page URL when that colour has its own frames.
+    """
+    mango = [(url, mango_image_identity(url)) for url in urls if url]
+    identified = [(url, ident) for url, ident in mango if ident]
+    if not identified:
+        return [url for url in urls if url]
+
+    page = mango_page_identity(page_url)
+    if page:
+        product_id, color = page
+        same_product = [(url, ident) for url, ident in identified if ident[0] == product_id]
+        if color:
+            same_color = [url for url, ident in same_product if ident[1].lower() == color.lower()]
+            if same_color:
+                return same_color
+        if same_product:
+            return [url for url, _ident in same_product]
+
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for _url, ident in identified:
+        if ident[0] not in counts:
+            order.append(ident[0])
+            counts[ident[0]] = 0
+        counts[ident[0]] += 1
+    chosen_id = max(order, key=lambda item: (counts[item], -order.index(item)))
+    return [url for url, ident in identified if ident[0] == chosen_id]
 
 
 def arrange_carousel(
@@ -118,13 +170,10 @@ def ordered_photos(
     roles: dict[str, str] = {}
     urls: list[str] = []
 
-    if fallback and len(fallback) >= 2:
-        urls = list(fallback)
-
     if not urls:
         if "mango" in brand_lower or "mango.com" in page:
             found = re.findall(r"https://media\.mango\.com/is/image/punto/[0-9]+-[0-9A-Z]+-[0-9A-Z]+", html_text)
-            variant = _mango_variant(found)
+            variant = keep_single_product(found, page)
             if variant:
                 urls.extend(variant)
         elif "zara" in brand_lower or "zara.com" in page or "static.zara.net" in html_text:
@@ -162,6 +211,10 @@ def ordered_photos(
             for u in fallback:
                 if u and u not in urls:
                     urls.append(u)
+
+    urls = keep_single_product(urls, page)
+    if len(urls) < 2 and fallback:
+        urls = keep_single_product([*urls, *fallback], page)
 
     if not urls:
         og_images = re.findall(
@@ -210,18 +263,6 @@ def extract_gallery_photos(
     if photos:
         logger.info("Extracted %d gallery photos from %s", len(photos), product_url)
     return photos
-
-
-def _mango_variant(urls: list[str]) -> list[str]:
-    """Keep the colour that has the most frames and drop the other colourways."""
-    variants: dict[str, list[str]] = {}
-    for url in urls:
-        parts = url.split("/")[-1].split("-")
-        if len(parts) >= 3:
-            variants.setdefault(parts[1], []).append(url)
-    if not variants:
-        return list(dict.fromkeys(urls))
-    return max(variants.values(), key=len)
 
 
 def _shot_role(url: str) -> str | None:

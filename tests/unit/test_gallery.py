@@ -107,6 +107,25 @@ def test_zara_plain_shots_are_front_back_and_close() -> None:
     ]
 
 
+def test_one_post_does_not_mix_other_mango_products() -> None:
+    page = "https://shop.mango.com/it/it/p/donna/scarpe/stivaletti/botin-tacco/27011111/70/01"
+    own = [
+        "https://media.mango.com/is/image/punto/27011111-70-001",
+        "https://media.mango.com/is/image/punto/27011111-70-002",
+        "https://media.mango.com/is/image/punto/27011111-70-900",
+    ]
+    others = [
+        "https://media.mango.com/is/image/punto/27022222-30-001",
+        "https://media.mango.com/is/image/punto/27033333-99-001",
+        "https://media.mango.com/is/image/punto/27011111-05-001",
+    ]
+    html = " ".join(own + others)
+    ordered = ordered_photos(html, "mango", page, own[:1] + others)
+    assert ordered
+    assert all("27011111-70-" in url for url in ordered)
+    assert not any(token in " ".join(ordered) for token in ("27022222", "27033333", "27011111-05"))
+
+
 def test_identical_files_are_not_posted_twice() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp)

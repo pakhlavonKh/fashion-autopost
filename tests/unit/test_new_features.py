@@ -311,6 +311,96 @@ def test_independent_schedules_registration(tmp_path: Path) -> None:
 
     assert len(tg_jobs) == 18  # 06:00 to 23:00 hourly
     assert len(ig_jobs) == 6   # 06:00 to 21:00 every 3 hours
+    assert not any(job.id.startswith("pipeline_cycle_cron_") for job in jobs)
+
+
+def test_yaml_clock_does_not_publish_instagram_every_hour(tmp_path: Path) -> None:
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from config.app_config import AppConfig, ScheduleSettings
+    from scheduler.build_scheduler import register_schedule_jobs
+    from tests.conftest import FakeLLMProvider
+
+    class _MockPromptLoader:
+        def load_prompt(self) -> str:
+            return "Curate fashion."
+
+    repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / 'sched.db'}")
+    runner = PipelineRunner(
+        source=FakeSourceAdapter([]),
+        repo=repo,
+        llm=FakeLLMProvider(select_count=1),
+        fx=FixedRateConverter(),
+        publishers=[FakePublisher("telegram"), FakePublisher("instagram")],
+        config=AppConfig(),
+        prompt_loader=_MockPromptLoader(),
+    )
+    scheduler = BackgroundScheduler()
+    register_schedule_jobs(
+        scheduler,
+        runner,
+        ScheduleSettings(
+            timezone="Asia/Tashkent",
+            times=["06:00", "07:00", "08:00", "09:00"],
+            interval_minutes=None,
+        ),
+    )
+    jobs = scheduler.get_jobs()
+    assert any(job.id.startswith("ig_sched_") for job in jobs)
+    assert not any(job.id.startswith("pipeline_cycle_cron_") for job in jobs)
+    ig_jobs = [job for job in jobs if job.id.startswith("ig_sched_")]
+    assert [job.id for job in ig_jobs] == [
+        "ig_sched_0600",
+        "ig_sched_0900",
+        "ig_sched_1200",
+        "ig_sched_1500",
+        "ig_sched_1800",
+        "ig_sched_2100",
+    ]
+
+
+def test_instagram_cycle_posts_the_telegram_product(tmp_path: Path) -> None:
+    from config.app_config import AppConfig
+    from tests.conftest import FakeLLMProvider
+
+    class _MockPromptLoader:
+        def load_prompt(self) -> str:
+            return "Curate fashion."
+
+    repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / 'ig.db'}")
+    product = _make_raw_product(
+        "mango-boot",
+        title="Ботильоны",
+        source="mango",
+        original_url="https://example.com/ankle-boot",
+    )
+    repo.upsert_new(product)
+    repo.mark_published(product.external_id, "@fashionalleyb:88", None)
+    repo.save_telegram_publication(
+        product.external_id,
+        "@fashionalleyb:88",
+        "https://t.me/fashionalleyb/88",
+    )
+    instagram = FakePublisher("instagram")
+    telegram = FakePublisher("telegram")
+    runner = PipelineRunner(
+        source=FakeSourceAdapter([_make_raw_product("other-shoe", original_url="https://example.com/other")]),
+        repo=repo,
+        llm=FakeLLMProvider(select_count=1),
+        fx=FixedRateConverter(),
+        publishers=[telegram, instagram],
+        config=AppConfig(),
+        prompt_loader=_MockPromptLoader(),
+    )
+    runner.image_downloader.download_all = lambda *_args, **_kwargs: []  # type: ignore[method-assign]
+    summary = runner.run_instagram_cycle()
+    assert summary.published == 1
+    assert len(instagram.published_posts) == 1
+    assert instagram.published_posts[0].telegram_links == ("https://t.me/fashionalleyb/88",)
+    assert telegram.published_posts == []
+    saved = repo.get_by_external_id("mango-boot")
+    assert saved is not None
+    assert saved.instagram_post_id
+    assert saved.telegram_post_id == "@fashionalleyb:88"
 
 
 # --- 7. Mobile-Responsive Admin Panel ---

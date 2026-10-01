@@ -35,6 +35,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _telegram_link_for(record: Any) -> str | None:
+    """Public t.me link saved for the product, or one rebuilt from the channel post id."""
+    if record is None:
+        return None
+    saved = getattr(record, "telegram_message_url", None) or getattr(record, "telegramMessageUrl", None)
+    if saved and str(saved).strip():
+        return str(saved).strip()
+    post_id = getattr(record, "telegram_post_id", None) or getattr(record, "telegram_message_id", None) or ""
+    for part in str(post_id).split(","):
+        part = part.strip()
+        if part.startswith("@") and ":" in part:
+            name, mid = part[1:].split(":", 1)
+            if name and mid.isdigit():
+                return f"https://t.me/{name}/{mid}"
+    return None
+
+
 @runtime_checkable
 class AdminNotifierProtocol(Protocol):
     """Protocol for sending critical alert notifications."""
@@ -96,9 +113,64 @@ class PipelineRunner:
             return self._run_cycle_locked(publishers_filter="telegram")
 
     def run_instagram_cycle(self) -> CycleSummary:
-        """Execute one complete publishing cycle for Instagram Stories schedule."""
+        """Publish the next Telegram post that does not yet have an Instagram post."""
         with self._cycle_lock:
-            return self._run_cycle_locked(publishers_filter="instagram")
+            return self._run_instagram_backlog_locked()
+
+    def _run_instagram_backlog_locked(self) -> CycleSummary:
+        """Instagram follows Telegram: same product, story link, then the carousel."""
+        summary = CycleSummary()
+        logger.info("=== Starting Instagram Cycle ===")
+        try:
+            self.config.reload_hot_fields()
+        except Exception as exc:
+            logger.warning("Failed to reload hot config fields: %s", exc)
+
+        pending: list[RawProduct] = []
+        getter = getattr(self.repo, "get_products_pending_instagram", None)
+        if callable(getter):
+            try:
+                pending = list(getter(limit=1))
+            except Exception as exc:
+                logger.warning("Could not load products waiting for Instagram: %s", exc)
+        if not pending:
+            logger.info("No Telegram posts are waiting for Instagram. Instagram cycle complete.")
+            return summary
+
+        product = pending[0]
+        description = ""
+        record = None
+        if hasattr(self.repo, "get_by_external_id"):
+            try:
+                record = self.repo.get_by_external_id(product.external_id)
+            except Exception as exc:
+                logger.warning("Could not load %s for Instagram: %s", product.external_id, exc)
+        if record is not None:
+            description = getattr(record, "description_gpt", None) or ""
+        link = _telegram_link_for(record)
+        logger.info(
+            "Instagram cycle posting %s already in Telegram (%s)",
+            product.external_id,
+            link or "no public link yet",
+        )
+        summary.fetched = 1
+        summary.unseen = 1
+        summary.selected = 1
+        try:
+            self._process_single_product(
+                product,
+                description,
+                summary,
+                publishers_filter="instagram",
+                bypass_duplicate_gate=True,
+            )
+        except Exception as exc:
+            summary.failed += 1
+            err_msg = f"Unhandled error posting {product.external_id} to Instagram: {exc}"
+            logger.error(err_msg, exc_info=True)
+            summary.errors.append(err_msg)
+            self._notify_error("publish_instagram", err_msg, product.external_id)
+        return summary
 
     def publish_next_eligible_product(self, publishers_filter: str | None = None) -> tuple[bool, str]:
         """Publish next eligible product when previous was rejected or skipped."""
@@ -549,8 +621,9 @@ class PipelineRunner:
             logger.info("Product %s held in 'pending_review' per ModerationGate.", external_id)
             return False
 
-        # Collect all gallery photos for the product card
-        from core.gallery import arrange_carousel, extract_gallery_photos
+        # Collect all gallery photos for the product card. Related products on the
+        # same page (complete the look, other colourways) are not part of this post.
+        from core.gallery import arrange_carousel, extract_gallery_photos, keep_single_product
 
         photo_urls = list(product.photo_urls) if getattr(product, "photo_urls", None) else []
         if len(photo_urls) <= 1 and product.product_url:
@@ -563,6 +636,7 @@ class PipelineRunner:
 
         if not photo_urls and product.photo_url:
             photo_urls = [product.photo_url]
+        photo_urls = keep_single_product(photo_urls, product.product_url or "")
         photo_urls = arrange_carousel(photo_urls, max_photos=10)
 
         # Download all photos locally for binary posting & multi-photo albums
@@ -668,9 +742,10 @@ class PipelineRunner:
             "instagram": getattr(existing_record, "instagram_post_id", None) if existing_record else None,
         }
 
-        # If publishing to Instagram alone, attach existing Telegram link from previous publication
-        if existing_record and getattr(existing_record, "telegram_message_url", None):
-            composed = replace(composed, telegram_links=(existing_record.telegram_message_url,))
+        # Instagram Story links to the Telegram message of this same product.
+        telegram_url = _telegram_link_for(existing_record)
+        if telegram_url:
+            composed = replace(composed, telegram_links=(telegram_url,))
 
         # 7e. Publish to each active configured channel (FR-5)
         telegram_post_id: str | None = existing_post_ids.get("telegram")
@@ -688,8 +763,7 @@ class PipelineRunner:
             pub_name = publisher.platform_name.lower()
             already_id = existing_post_ids.get(pub_name)
 
-            # Telegram always gets a fresh post unless it was already published in this exact session
-            if already_id and pub_name != "telegram":
+            if already_id:
                 logger.info(
                     "Product %s was already published to %s (post_id=%s). Skipping duplicate publish.",
                     external_id,

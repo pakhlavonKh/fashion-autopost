@@ -325,6 +325,39 @@ class SqlAlchemyProductRepository:
                 )
             return products
 
+    def get_products_pending_instagram(self, limit: int = 5) -> list[RawProduct]:
+        """Products already in Telegram that still need the Instagram carousel and story."""
+        with self._get_session() as session:
+            stmt = (
+                select(ProductRecord)
+                .where(
+                    ProductRecord.telegram_post_id.is_not(None),
+                    ProductRecord.telegram_post_id != "",
+                    (ProductRecord.instagram_post_id.is_(None)) | (ProductRecord.instagram_post_id == ""),
+                    ProductRecord.status.in_(("published", "failed", "selected")),
+                )
+                .order_by(ProductRecord.id.asc())
+                .limit(limit)
+            )
+            records = session.scalars(stmt).all()
+            products: list[RawProduct] = []
+            for record in records:
+                products.append(
+                    RawProduct(
+                        external_id=record.external_id,
+                        source=record.source,
+                        title=record.title,
+                        price=record.price_original,
+                        currency=record.currency_original,
+                        photo_url=record.photo_url,
+                        product_url=record.product_url or "",
+                        in_stock=True,
+                        original_product_url=getattr(record, "original_product_url", None),
+                        heel_height=getattr(record, "heel_height", None),
+                    )
+                )
+            return products
+
     def get_published_count_today(self, timezone_str: str = "UTC") -> int:
         try:
             tz = zoneinfo.ZoneInfo(timezone_str)
@@ -383,17 +416,18 @@ class SqlAlchemyProductRepository:
 
     def mark_published(self, external_id: str, telegram_id: str | None, instagram_id: str | None) -> None:
         with self._get_session() as session:
-            stmt = (
-                update(ProductRecord)
-                .where(ProductRecord.external_id == external_id)
-                .values(
-                    telegram_post_id=telegram_id,
-                    instagram_post_id=instagram_id,
-                    status="published",
-                    published_at=datetime.now(timezone.utc),
-                )
+            record = session.scalar(
+                select(ProductRecord).where(ProductRecord.external_id == external_id)
             )
-            session.execute(stmt)
+            if record is None:
+                return
+            if telegram_id:
+                record.telegram_post_id = telegram_id
+            if instagram_id:
+                record.instagram_post_id = instagram_id
+            record.status = "published"
+            if record.published_at is None:
+                record.published_at = datetime.now(timezone.utc)
             session.commit()
 
     def update_platform_post_id(self, external_id: str, platform: str, post_id: str) -> None:
