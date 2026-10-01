@@ -95,7 +95,9 @@ class OpenAIProvider:
         system_instruction = (
             f"{prompt}\n\n"
             f"You may select at most {max_items} products.\n"
-            "Both product name (title) and description MUST be written in Russian.\n"
+            "The product name (title) MUST be written in Russian.\n"
+            "The description MUST be an empty string. Never invent a color, a size range, "
+            "fabric, or composition: those facts are copied from the store page.\n"
             "You MUST respond ONLY with a valid JSON object matching this structure:\n"
             "{\n"
             '  "selected_products": [\n'

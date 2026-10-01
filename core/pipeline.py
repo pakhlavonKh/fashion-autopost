@@ -24,6 +24,7 @@ from core.image_downloader import ImageDownloader
 from core.moderation import ConfigurableModerationGate, ModerationGate
 from core.outfits import OutfitCoordinator
 from core.pricing import FxConverter, calculate_final_price, source_price_usd
+from core.product_facts import attach_site_facts, site_description
 from core.similarity import rank_products_by_channel_similarity
 from llm.base import LLMProvider, PromptLoader, SelectionResult
 from publishers.base import Publisher
@@ -214,7 +215,7 @@ class PipelineRunner:
                 SelectionResult(
                     external_id=product.external_id,
                     title=product.title,
-                    description="Размеры от XS до XL.\nЦвет: классический.",
+                    description="",
                 )
             ]
 
@@ -420,7 +421,7 @@ class PipelineRunner:
                     SelectionResult(
                         external_id=first.external_id,
                         title=first.title,
-                        description="Размеры от XS до XL.\nЦвет: классический.",
+                        description="",
                     )
                 ]
                 summary.selected = 1
@@ -525,6 +526,9 @@ class PipelineRunner:
     ) -> bool:
         """Process price calculation, moderation, composition, and publishing for one item."""
         external_id = product.external_id
+        product = attach_site_facts(product)
+        # Size range and color are copied from the product page. The model must not fill them in.
+        description = site_description(product.color, product.sizes)
 
         # 7a. Calculate final price (FR-3.1, FR-3.2, FR-3.3)
         final_price = calculate_final_price(
@@ -586,6 +590,8 @@ class PipelineRunner:
                 photo_urls=downloaded_strings,
                 original_product_url=getattr(product, "original_product_url", None),
                 heel_height=getattr(product, "heel_height", None),
+                color=product.color,
+                sizes=product.sizes,
             ),
             description=description,
             price=final_price,
@@ -899,7 +905,7 @@ class PipelineRunner:
             try:
                 self._process_single_product(
                     candidate,
-                    description="Размеры от XS до XL.\nЦвет: классический.",
+                    description="",
                     summary=summary,
                     publishers_filter=publishers_filter,
                 )

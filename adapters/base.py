@@ -22,6 +22,9 @@ class RawProduct:
     photo_urls: list[str] = field(default_factory=list)
     original_product_url: str | None = None
     heel_height: str | None = None
+    # Color name and the full size grid, copied from the product page.
+    color: str | None = None
+    sizes: tuple[str, ...] = ()
 
 
 @runtime_checkable

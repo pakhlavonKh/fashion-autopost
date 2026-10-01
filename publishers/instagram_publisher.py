@@ -40,6 +40,7 @@ from publishers.instagram_story import (
 logger = logging.getLogger(__name__)
 
 GRAPH_API_VERSION = "v23.0"
+_FETCH_URL = re.compile(r"https://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+")
 # Instagram API with Facebook Login  (requires Page + Business account linkage)
 GRAPH_FACEBOOK_BASE = "https://graph.facebook.com"
 # Instagram API with Instagram Login (works with any Professional account directly)
@@ -48,12 +49,17 @@ GRAPH_INSTAGRAM_BASE = "https://graph.instagram.com"
 MAX_INSTAGRAM_CAPTION_LEN = 2200
 MAX_CAROUSEL_ITEMS = 10
 PRODUCT_ANGLE_SLIDES = 3
-MAX_HASHTAGS = 30
 CONTAINER_READY_TIMEOUT_SECONDS = 45.0
 
-BASE_HASHTAGS = ("fashion", "style", "outfit", "одежда", "стиль", "lookoftheday")
-
 _T = TypeVar("_T")
+
+
+class InstagramMediaFetchError(RuntimeError):
+    """Instagram error 9004: its crawler could not download the image URL."""
+
+    def __init__(self, message: str, image_url: str | None = None) -> None:
+        super().__init__(message)
+        self.image_url = image_url
 
 
 class InstagramPublisher:
@@ -121,7 +127,7 @@ class InstagramPublisher:
         return "instagram"
 
     def format_caption(self, post: ComposedPost, *, carousel: bool = False) -> str:
-        """Build the feed caption: name and price, description, contacts, hashtags."""
+        """Build the feed caption: name and price, description, contacts."""
         footer = self.caption_footer
         if carousel:
             footer = footer_for_carousel(footer)
@@ -137,6 +143,7 @@ class InstagramPublisher:
             post_id = self._publish_feed(
                 public_urls,
                 self.format_caption(post, carousel=len(public_urls) > 1),
+                slides,
             )
             logger.info("Instagram post %s published to %s", post_id, target)
         except Exception as exc:
@@ -146,14 +153,62 @@ class InstagramPublisher:
         self._publish_story_and_highlight(post, originals)
         return PublishResult(success=True, platform_post_id=str(post_id))
 
-    def _publish_feed(self, public_urls: list[str], caption: str) -> str:
-        if len(public_urls) == 1:
-            container_id = self._create_image_container(public_urls[0], caption)
+    def _publish_feed(self, public_urls: list[str], caption: str, sources: list[Path] | None = None) -> str:
+        """Create the feed container, re-uploading any photo Instagram cannot download."""
+        urls = list(public_urls)
+        paths = list(sources or [])
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                return self._publish_ready(urls, caption, paths)
+            except InstagramMediaFetchError as exc:
+                last_error = exc
+                if attempt == 2:
+                    break
+                logger.warning("Instagram could not fetch a photo (attempt %s): %s", attempt + 1, exc)
+                urls = self._rehost_failed_set(urls, paths, exc.image_url)
+        raise last_error or RuntimeError("Instagram could not fetch the photos")
+
+    def _publish_ready(self, urls: list[str], caption: str, paths: list[Path]) -> str:
+        if len(urls) == 1:
+            container_id = self._create_image_container(urls[0], caption)
         else:
-            child_ids = [self._create_carousel_child(url) for url in public_urls]
+            child_ids: list[str] = []
+            for index, url in enumerate(urls):
+                try:
+                    child_ids.append(self._create_carousel_child(url))
+                except InstagramMediaFetchError as exc:
+                    urls[index] = self._rehost(paths[index] if index < len(paths) else None, exc.image_url or url)
+                    child_ids.append(self._create_carousel_child(urls[index]))
             container_id = self._create_carousel_container(child_ids, caption)
         self._wait_until_ready(container_id)
         return self._publish_container(container_id)
+
+    def _rehost_failed_set(self, urls: list[str], paths: list[Path], failed_url: str | None) -> list[str]:
+        if failed_url and failed_url in urls:
+            index = urls.index(failed_url)
+            path = paths[index] if index < len(paths) else None
+            urls[index] = self._rehost(path, failed_url)
+            return urls
+        refreshed: list[str] = []
+        for index, url in enumerate(urls):
+            path = paths[index] if index < len(paths) else None
+            refreshed.append(self._rehost(path, url))
+        return refreshed
+
+    def _rehost(self, path: Path | None, failed_url: str) -> str:
+        replace = getattr(self.image_host, "replace_unfetchable", None)
+        if callable(replace):
+            try:
+                return str(replace(failed_url))
+            except Exception as exc:
+                logger.warning("Could not re-upload %s: %s", failed_url, exc)
+        if path is not None:
+            return self.image_host.ensure_public_url(str(path))
+        raise InstagramMediaFetchError(
+            f"Instagram could not fetch {failed_url}",
+            image_url=failed_url,
+        )
 
     def _with_cover_collage(self, originals: list[Path], prepared: list[Path]) -> list[Path]:
         """Carousel opens on a collage; the photos follow in the Telegram order."""
@@ -230,7 +285,11 @@ class InstagramPublisher:
 
         try:
             story_url = self.image_host.ensure_public_url(str(collage))
-            container_id = self._create_story_container(story_url)
+            try:
+                container_id = self._create_story_container(story_url)
+            except InstagramMediaFetchError as exc:
+                story_url = self._rehost(collage, exc.image_url or story_url)
+                container_id = self._create_story_container(story_url)
             self._wait_until_ready(container_id)
             story_id = self._publish_container(container_id)
             logger.info("Instagram story %s published for %s", story_id, post.title)
@@ -314,7 +373,7 @@ class InstagramPublisher:
             "image_url": image_url,
             "is_carousel_item": "true",
         })
-        self._wait_until_ready(container_id)
+        self._wait_until_ready(container_id, image_url=image_url)
         return container_id
 
     def _create_carousel_container(self, child_ids: list[str], caption: str) -> str:
@@ -336,7 +395,7 @@ class InstagramPublisher:
         data = self._graph_response("POST", url, {"creation_id": container_id})
         return str(data["id"])
 
-    def _wait_until_ready(self, container_id: str) -> None:
+    def _wait_until_ready(self, container_id: str, image_url: str | None = None) -> None:
         deadline = time.monotonic() + CONTAINER_READY_TIMEOUT_SECONDS
         status = "IN_PROGRESS"
         detail = ""
@@ -345,9 +404,13 @@ class InstagramPublisher:
             if status == "FINISHED":
                 return
             if status in {"ERROR", "EXPIRED"}:
-                raise RuntimeError(
-                    f"Instagram container {container_id} is {status}: {detail or 'no detail'}"
+                message = f"Instagram container {container_id} is {status}: {detail or 'no detail'}"
+                fetch_failed, found_url = _media_fetch_failure(
+                    {"message": detail, "error_user_msg": detail}
                 )
+                if image_url or fetch_failed:
+                    raise InstagramMediaFetchError(message, image_url=found_url or image_url)
+                raise RuntimeError(message)
             time.sleep(2)
         raise TimeoutError(
             f"Instagram container {container_id} was not ready (last status {status})"
@@ -382,12 +445,46 @@ class InstagramPublisher:
             error = data.get("error") if isinstance(data.get("error"), dict) else {}
             message = error.get("message") or resp.text
             code = error.get("code")
+            user_message = str(error.get("error_user_msg") or "").strip()
+            detail = f"Instagram API error {code}: {message}"
+            if user_message and user_message not in str(message):
+                detail = f"{detail}. {user_message}"
+            fetch_failed, image_url = _media_fetch_failure(error)
+            if fetch_failed:
+                raise InstagramMediaFetchError(detail, image_url=image_url)
             raise httpx.HTTPStatusError(
-                f"Instagram API error {code}: {message}",
+                detail,
                 request=resp.request,
                 response=resp,
             )
         return data
+
+
+def _media_fetch_failure(error: dict) -> tuple[bool, str | None]:
+    """Error 9004 means Meta could not download image_url. The URI is in the user message."""
+    code = _as_int(error.get("code"))
+    subcode = _as_int(error.get("error_subcode"))
+    message = str(error.get("message") or "")
+    user = str(error.get("error_user_msg") or "")
+    combined = f"{message} {user}".lower()
+    fetch_failed = (
+        code == 9004
+        or subcode == 2207052
+        or "could not be fetched" in combined
+        or "media download" in combined
+    )
+    if not fetch_failed:
+        return False, None
+    match = _FETCH_URL.search(user) or _FETCH_URL.search(message)
+    image_url = match.group(0).rstrip(".,)") if match else None
+    return True, image_url
+
+
+def _as_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _keep_product_angles(photos: list[_T], limit: int) -> list[_T]:
@@ -422,9 +519,8 @@ def format_instagram_caption(post: ComposedPost, footer: str | None = None) -> s
     header = f"{post.title.strip()}-{price_display}"
     description = _extract_description(post)
     contact = (footer if footer is not None else DEFAULT_INSTAGRAM_CAPTION_FOOTER).strip()
-    tags = _hashtags(post.source)
 
-    caption = _assemble_caption(header, description, contact, tags)
+    caption = _assemble_caption(header, description, contact)
     if len(caption) <= MAX_INSTAGRAM_CAPTION_LEN:
         return caption
 
@@ -432,16 +528,14 @@ def format_instagram_caption(post: ComposedPost, footer: str | None = None) -> s
     trimmed = description[: max(0, len(description) - overflow)].rstrip()
     if trimmed:
         trimmed += "..."
-    return _assemble_caption(header, trimmed, contact, tags)[:MAX_INSTAGRAM_CAPTION_LEN]
+    return _assemble_caption(header, trimmed, contact)[:MAX_INSTAGRAM_CAPTION_LEN]
 
 
-def _assemble_caption(header: str, description: str, contact: str, tags: str) -> str:
+def _assemble_caption(header: str, description: str, contact: str) -> str:
     body = f"{header}\n{description}" if description else header
     chunks = [body]
     if contact:
         chunks.append(contact)
-    if tags:
-        chunks.append(tags)
     return "\n\n".join(chunks)
 
 
@@ -454,12 +548,3 @@ def _extract_description(post: ComposedPost) -> str:
         body.append(chunk)
     return "\n\n".join(body).strip()
 
-
-def _hashtags(source: str) -> str:
-    tags: list[str] = []
-    brand = re.sub(r"[^0-9A-Za-zА-Яа-яЁё_]", "", source.lower())
-    if brand:
-        tags.append(f"#{brand}")
-    tags.extend(f"#{tag}" for tag in BASE_HASHTAGS)
-    unique = list(dict.fromkeys(tags))[:MAX_HASHTAGS]
-    return " ".join(unique)

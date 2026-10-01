@@ -22,21 +22,27 @@ class ImageHostingService(Protocol):
         ...
 
 
-class LitterboxImageHost:
-    """Uploads a local JPEG to litterbox.catbox.moe so Instagram can fetch it.
+_FACEBOOK_CRAWLER = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
 
-    Meta's content publishing API downloads images from a public HTTPS URL.
-    Local files and store CDNs that block datacenter IPs are rejected.
-    The upload expires after 24 hours, which is enough for Instagram to fetch it.
-    Falls back to catbox.moe (permanent) when litterbox is unavailable.
+
+class LitterboxImageHost:
+    """Uploads a local JPEG to a public HTTPS URL that Instagram's crawler can download.
+
+    Meta rejects a post with error 9004 when it cannot fetch image_url. litterbox
+    often answers the crawler with 403, so the permanent catbox host is first.
+    A host that fails upload or does not serve a real JPEG is skipped for the
+    rest of the process. 0x0.st and litterbox remain as backups.
     """
 
     UPLOAD_URL = "https://litterbox.catbox.moe/resources/internals/api.php"
     FALLBACK_URL = "https://catbox.moe/user/api.php"
+    ZEROX_URL = "https://0x0.st"
 
     def __init__(self, timeout_seconds: float = 60.0) -> None:
         self.timeout_seconds = timeout_seconds
-        self._use_catbox_primary = False
+        self._disabled: set[str] = set()
+        self._by_url: dict[str, Path] = {}
+        self._host_for_url: dict[str, str] = {}
 
     def ensure_public_url(self, photo_url_or_path: str) -> str:
         local_path = Path(photo_url_or_path)
@@ -45,28 +51,90 @@ class LitterboxImageHost:
             if url.startswith("https://"):
                 return url
             raise ValueError(f"Instagram image is not a local file or public HTTPS URL: {url}")
+        return self._upload_first_working(local_path)
 
-        if self._use_catbox_primary:
-            return self._upload(local_path, self.FALLBACK_URL, {"reqtype": "fileupload"})
+    def replace_unfetchable(self, public_url: str) -> str:
+        """Upload the same file again after Instagram failed to download public_url."""
+        local_path = self._by_url.get(public_url)
+        if local_path is None or not local_path.is_file():
+            raise RuntimeError(f"No local file left for unfetchable Instagram image {public_url}")
+        failed_host = self._host_for_url.get(public_url)
+        if failed_host:
+            self._disabled.add(failed_host)
+            logger.warning(
+                "Instagram could not fetch %s from %s. Trying another image host.",
+                public_url,
+                failed_host,
+            )
+        return self._upload_first_working(local_path)
 
-        try:
-            return self._upload(local_path, self.UPLOAD_URL, {"reqtype": "fileupload", "time": "24h"})
-        except Exception as exc:
-            logger.warning("Litterbox upload failed (%s), switching to catbox.moe primary ...", exc)
-            self._use_catbox_primary = True
-            return self._upload(local_path, self.FALLBACK_URL, {"reqtype": "fileupload"})
+    def _upload_first_working(self, local_path: Path) -> str:
+        errors: list[str] = []
+        for name, upload in self._hosts():
+            if name in self._disabled:
+                continue
+            try:
+                public_url = upload(local_path)
+                if not self._is_public_jpeg(public_url):
+                    raise RuntimeError(f"URL is not a public JPEG: {public_url}")
+            except Exception as exc:
+                self._disabled.add(name)
+                errors.append(f"{name}: {exc}")
+                logger.warning("Image host %s failed: %s", name, exc)
+                continue
+            self._by_url[public_url] = local_path
+            self._host_for_url[public_url] = name
+            logger.info("Uploaded Instagram image via %s to %s", name, public_url)
+            return public_url
+        detail = "; ".join(errors) or "no image hosts left"
+        raise RuntimeError(f"Could not publish a public JPEG for Instagram: {detail}")
 
-    def _upload(self, local_path: Path, upload_url: str, data: dict) -> str:
+    def _hosts(self):
+        return (
+            ("catbox", self._upload_catbox),
+            ("0x0", self._upload_0x0),
+            ("litterbox", self._upload_litterbox),
+        )
+
+    def _upload_catbox(self, local_path: Path) -> str:
+        return self._upload_multipart(
+            local_path,
+            self.FALLBACK_URL,
+            {"reqtype": "fileupload"},
+            "fileToUpload",
+        )
+
+    def _upload_litterbox(self, local_path: Path) -> str:
+        return self._upload_multipart(
+            local_path,
+            self.UPLOAD_URL,
+            {"reqtype": "fileupload", "time": "24h"},
+            "fileToUpload",
+        )
+
+    def _upload_0x0(self, local_path: Path) -> str:
+        return self._upload_multipart(local_path, self.ZEROX_URL, {}, "file")
+
+    def _upload_multipart(self, local_path: Path, upload_url: str, data: dict, field: str) -> str:
         with local_path.open("rb") as handle:
-            files = {"fileToUpload": (local_path.name, handle, "image/jpeg")}
-            with httpx.Client(timeout=self.timeout_seconds) as client:
+            files = {field: (local_path.name, handle, "image/jpeg")}
+            with httpx.Client(timeout=self.timeout_seconds, follow_redirects=True) as client:
                 resp = client.post(upload_url, data=data, files=files)
                 resp.raise_for_status()
         public_url = resp.text.strip()
         if not public_url.startswith("https://"):
             raise RuntimeError(f"Image host did not return a public URL: {public_url[:180]}")
-        logger.info("Uploaded Instagram image to %s", public_url)
         return public_url
+
+    def _is_public_jpeg(self, url: str) -> bool:
+        """True when Facebook's crawler would receive a JPEG, not an error page."""
+        try:
+            with httpx.Client(timeout=min(self.timeout_seconds, 30.0), follow_redirects=True) as client:
+                resp = client.get(url, headers={"User-Agent": _FACEBOOK_CRAWLER})
+        except Exception as exc:
+            logger.warning("Could not verify Instagram image %s: %s", url, exc)
+            return False
+        return resp.status_code == 200 and len(resp.content) > 200 and resp.content[:3] == b"\xff\xd8\xff"
 
 
 

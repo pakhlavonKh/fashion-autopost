@@ -374,7 +374,10 @@ class TelegramPublisher:
 
         footer = (self.bio_footer or DEFAULT_BIO_FOOTER).strip()
 
-        caption = f"{header}\n{desc_clean}\n\n{footer}"
+        if desc_clean:
+            caption = f"{header}\n{desc_clean}\n\n{footer}"
+        else:
+            caption = f"{header}\n\n{footer}"
         if len(caption) > MAX_TELEGRAM_CAPTION_LEN:
             caption = caption[: MAX_TELEGRAM_CAPTION_LEN - 3] + "..."
 

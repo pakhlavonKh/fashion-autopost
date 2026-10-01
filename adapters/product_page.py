@@ -22,6 +22,7 @@ import httpx
 from adapters.base import RawProduct
 from adapters.scrapers.base import generate_deterministic_id, parse_price
 from core.gallery import ordered_photos
+from core.product_facts import extract_site_facts
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
     images = ordered_photos(html_text, brand, url, images, max_photos=10)
     external_id = generate_deterministic_id(brand, raw_id=chosen.raw_id or None, url=url)
     title = chosen.title.split("|")[0].strip()
+    color, sizes = extract_site_facts(html_text, url)
     return RawProduct(
         external_id=external_id,
         source=brand,
@@ -129,6 +131,8 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
         product_url=url,
         in_stock=chosen.in_stock,
         photo_urls=images[:10],
+        color=color,
+        sizes=sizes,
     )
 
 
@@ -242,7 +246,23 @@ def _is_blocked_page(html_text: str) -> bool:
     return False
 
 
+_HTML_CACHE: dict[str, tuple[str, str]] = {}
+
+
 def _fetch_html_fast(url: str, timeout_seconds: float) -> tuple[str, str]:
+    cached = _HTML_CACHE.get(url)
+    if cached is not None:
+        return cached
+    final_url, html_text = _fetch_html_uncached(url, timeout_seconds)
+    if html_text:
+        _HTML_CACHE[url] = (final_url, html_text)
+        _HTML_CACHE[final_url] = (final_url, html_text)
+        if len(_HTML_CACHE) > 40:
+            _HTML_CACHE.pop(next(iter(_HTML_CACHE)))
+    return final_url, html_text
+
+
+def _fetch_html_uncached(url: str, timeout_seconds: float) -> tuple[str, str]:
     try:
         from curl_cffi import requests as curl_requests
 

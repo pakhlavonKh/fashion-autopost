@@ -21,10 +21,7 @@ AESTHETIC & CURATION CRITERIA:
 FORMAT & COPYWRITING INSTRUCTIONS (STRICTLY IN RUSSIAN):
 For each selected product, generate:
 - "title": Clean, concise product name in Russian (e.g. "Платье", "Двубортное пальто", "Шелковая блузка", "Брюки со стрелками", "Твидовый жакет"). Keep it concise and natural.
-- "description": Exact concise details with sizes and color:
-  Размеры от XS до XL. (or specific size range)
-  Цвет: <цвет товара на русском, например: черный, молочный, бежевый, шоколадный>.
-  (Optionally 1 short phrase about fabric or cut, e.g. Премиальный состав, идеальная посадка.)
+- "description": Always an empty string. Do not write sizes, colors, fabric, composition, or any other product fact. Those lines are copied later from the store page and must not be guessed.
 
 OUTPUT FORMAT:
 You MUST respond strictly with a valid JSON object matching this schema:
@@ -33,7 +30,7 @@ You MUST respond strictly with a valid JSON object matching this schema:
     {
       "external_id": "<exact candidate external_id>",
       "title": "<clean product title in Russian>",
-      "description": "Размеры от XS до XL.\nЦвет: черный."
+      "description": ""
     }
   ]
 }

@@ -22,6 +22,7 @@ from publishers.instagram_media import (
 )
 from publishers.instagram_publisher import (
     InstagramPublisher,
+    _media_fetch_failure,
     footer_for_carousel,
     format_instagram_caption,
 )
@@ -65,8 +66,7 @@ def test_caption_matches_boutique_card_and_instagram_limits() -> None:
     assert "https://www.zara.com/dress-100" not in caption
     assert "🏷" not in caption
     assert "Наш Instagram" not in caption
-    assert "#zara #fashion #style #outfit #одежда #стиль #lookoftheday" in caption
-    assert caption.count("#") <= 30
+    assert "#" not in caption
     assert len(caption) <= 2200
 
 
@@ -318,23 +318,82 @@ def test_account_login_enables_the_linked_story() -> None:
     assert InstagramPublisher("token", "1789", image_host=_Host()).private_story is None
 
 
-def test_litterbox_host_returns_public_url() -> None:
+def test_fetch_error_keeps_only_the_image_url() -> None:
+    failed, url = _media_fetch_failure({
+        "code": 9004,
+        "error_subcode": 2207052,
+        "message": "Only photo or video can be accepted as media type.",
+        "error_user_msg": "The media could not be fetched from this uri: https://files.catbox.moe/yl8135.jpg.Не удалось",
+    })
+    assert failed is True
+    assert url == "https://files.catbox.moe/yl8135.jpg"
+
+
+def test_catbox_host_returns_a_verified_jpeg_url() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         photo = Path(tmp) / "look.jpg"
         photo.write_bytes(b"jpeg-bytes")
         host = LitterboxImageHost()
 
         with patch("httpx.Client") as mock_client_cls:
-            client = MagicMock()
-            response = MagicMock()
-            response.text = "https://litter.catbox.moe/abc.jpg"
-            response.raise_for_status = MagicMock()
-            client.__enter__.return_value = client
-            client.post.return_value = response
+            client = _host_client("https://files.catbox.moe/abc.jpg")
             mock_client_cls.return_value = client
 
-            assert host.ensure_public_url(str(photo)) == "https://litter.catbox.moe/abc.jpg"
-            assert client.post.call_args.kwargs["data"]["time"] == "24h"
+            assert host.ensure_public_url(str(photo)) == "https://files.catbox.moe/abc.jpg"
+            assert client.post.call_args.kwargs["data"]["reqtype"] == "fileupload"
+            assert "time" not in client.post.call_args.kwargs["data"]
+
+
+def test_unfetchable_host_is_skipped_for_the_next_upload() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        photo = Path(tmp) / "look.jpg"
+        photo.write_bytes(b"jpeg-bytes")
+        host = LitterboxImageHost()
+        jpeg = b"\xff\xd8\xff" + b"jpeg-bytes" * 30
+
+        with patch("httpx.Client") as mock_client_cls:
+            client = MagicMock()
+            client.__enter__.return_value = client
+
+            def post(url, data=None, files=None):
+                response = MagicMock()
+                response.raise_for_status = MagicMock()
+                if "catbox.moe/user" in url:
+                    response.text = "https://files.catbox.moe/blocked.jpg"
+                else:
+                    response.text = "https://0x0.st/good.jpg"
+                return response
+
+            def get(url, headers=None):
+                fetched = MagicMock()
+                if "catbox" in url:
+                    fetched.status_code = 403
+                    fetched.content = b"denied"
+                else:
+                    fetched.status_code = 200
+                    fetched.content = jpeg
+                return fetched
+
+            client.post.side_effect = post
+            client.get.side_effect = get
+            mock_client_cls.return_value = client
+
+            assert host.ensure_public_url(str(photo)) == "https://0x0.st/good.jpg"
+            assert host.replace_unfetchable("https://0x0.st/good.jpg") == "https://0x0.st/good.jpg"
+
+
+def _host_client(public_url: str) -> MagicMock:
+    client = MagicMock()
+    response = MagicMock()
+    response.text = public_url
+    response.raise_for_status = MagicMock()
+    fetched = MagicMock()
+    fetched.status_code = 200
+    fetched.content = b"\xff\xd8\xff" + b"jpeg-bytes" * 30
+    client.__enter__.return_value = client
+    client.post.return_value = response
+    client.get.return_value = fetched
+    return client
 
 
 def test_dry_run_logs_instagram_caption() -> None:
