@@ -5,6 +5,9 @@ services:
       dockerfile: Dockerfile
     container_name: fashion-autopost-app
     restart: unless-stopped
+    # Chrome leaves its renderers behind as zombies when the browser is torn
+    # down; tini as PID 1 reaps them so they stop filling the process table.
+    init: true
     env_file:
       - .env
     volumes:
