@@ -26,6 +26,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+CHROME_BINARY = "/usr/bin/google-chrome"
+
 
 class PlaywrightScraperAdapter:
     """Production SourceAdapter implementation that scrapes e-commerce websites with Playwright."""
@@ -67,7 +69,11 @@ class PlaywrightScraperAdapter:
 
         all_raw_items: list[dict[str, Any]] = []
 
-        is_headless = active_config.headless
+        # Store bot walls answer bundled headless Chromium with HTTP 403. A real Chrome
+        # window on a virtual display gets the catalog, so it is preferred whenever the
+        # browser and the display are available.
+        use_real_chrome = self._prepare_real_chrome()
+        is_headless = False if use_real_chrome else active_config.headless
         # If headed on headless linux without X11, fallback to headless
         if not is_headless and sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
             logger.info("PlaywrightScraperAdapter: no DISPLAY detected on Linux, falling back to headless=True")
@@ -83,17 +89,15 @@ class PlaywrightScraperAdapter:
             launch_args.extend(["--window-position=-3000,-3000", "--window-size=1920,1080"])
 
         logger.info(
-            "PlaywrightScraperAdapter: starting scrape for stores: %s (headless=%s)",
+            "PlaywrightScraperAdapter: starting scrape for stores: %s (headless=%s, real_chrome=%s)",
             stores_to_scrape,
             is_headless,
+            use_real_chrome,
         )
 
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=is_headless,
-                    args=launch_args,
-                )
+                browser = self._launch_browser(p, use_real_chrome, is_headless, launch_args)
                 try:
                     context = browser.new_context(
                         viewport={"width": 1920, "height": 1080},
@@ -181,6 +185,37 @@ class PlaywrightScraperAdapter:
             price_limit,
         )
         return normalized
+
+    def _prepare_real_chrome(self) -> bool:
+        """True when the installed Chrome can open a window on a virtual display."""
+        if not os.path.exists(CHROME_BINARY):
+            return False
+        try:
+            from adapters.product_page import _ensure_virtual_display
+
+            _ensure_virtual_display()
+        except Exception as exc:
+            logger.warning("PlaywrightScraperAdapter: could not start a virtual display: %s", exc)
+            return False
+        return bool(os.environ.get("DISPLAY")) or not sys.platform.startswith("linux")
+
+    def _launch_browser(
+        self,
+        playwright: Any,
+        use_real_chrome: bool,
+        headless: bool,
+        launch_args: list[str],
+    ) -> Browser:
+        """Open the installed Chrome, falling back to the bundled Chromium."""
+        if use_real_chrome:
+            try:
+                return playwright.chromium.launch(channel="chrome", headless=False, args=launch_args)
+            except Exception as exc:
+                logger.warning(
+                    "PlaywrightScraperAdapter: Chrome did not start, using bundled Chromium: %s",
+                    exc,
+                )
+        return playwright.chromium.launch(headless=headless, args=launch_args)
 
     def _max_source_price_usd(self) -> Decimal:
         """Upper store-price limit in USD, applied before markup."""

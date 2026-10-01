@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from adapters.base import RawProduct, SourceAdapter
-from adapters.playwright_adapter import PlaywrightScraperAdapter
+from adapters.playwright_adapter import CHROME_BINARY, PlaywrightScraperAdapter
 from config.app_config import ScraperSettings, ScraperStoreConfig
 
 
@@ -110,6 +110,52 @@ def test_store_error_isolation() -> None:
     assert len(products) == 1
     assert products[0].external_id == "work-1"
     assert products[0].title == "Working Item"
+
+
+def _one_store_adapter() -> PlaywrightScraperAdapter:
+    config = ScraperSettings(
+        regions=[],
+        headless=True,
+        stores={
+            "mango": ScraperStoreConfig(
+                url="https://shop.mango.com/es/es/c/mujer/new-now/56b5c5ed",
+                currency="EUR",
+                enabled=True,
+            ),
+        },
+    )
+    return PlaywrightScraperAdapter(config=config, selected_stores=["mango"])
+
+
+def _launch_kwargs(adapter: PlaywrightScraperAdapter) -> dict:
+    with patch("adapters.playwright_adapter.sync_playwright") as mock_pw:
+        mock_p = MagicMock()
+        mock_pw.return_value.__enter__.return_value = mock_p
+        mock_p.chromium.launch.return_value = MagicMock()
+        with patch.object(adapter, "_scrape_single_store", return_value=[]):
+            adapter.fetch_products()
+    return mock_p.chromium.launch.call_args.kwargs
+
+
+def test_scraper_opens_the_installed_chrome_window(monkeypatch) -> None:
+    """Store bot walls answer headless Chromium with HTTP 403, so a real Chrome window is used."""
+    monkeypatch.setattr("adapters.playwright_adapter.os.path.exists", lambda path: path == CHROME_BINARY)
+    monkeypatch.setenv("DISPLAY", ":99")
+
+    kwargs = _launch_kwargs(_one_store_adapter())
+
+    assert kwargs["channel"] == "chrome"
+    assert kwargs["headless"] is False
+
+
+def test_scraper_keeps_bundled_chromium_when_chrome_is_not_installed(monkeypatch) -> None:
+    """Without the installed Chrome the adapter behaves exactly as configured."""
+    monkeypatch.setattr("adapters.playwright_adapter.os.path.exists", lambda path: False)
+
+    kwargs = _launch_kwargs(_one_store_adapter())
+
+    assert "channel" not in kwargs
+    assert kwargs["headless"] is True
 
 
 def test_fetch_products_drops_store_price_above_80_usd() -> None:
