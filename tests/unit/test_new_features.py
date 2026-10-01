@@ -375,6 +375,12 @@ def test_instagram_cycle_posts_the_telegram_product(tmp_path: Path) -> None:
         original_url="https://example.com/ankle-boot",
     )
     repo.upsert_new(product)
+    # Telegram already read the size grid off the store page and published it.
+    repo.mark_selected(
+        product.external_id,
+        "Размеры от 36 до 41.\nЦвет: темно-синий.",
+        Decimal("89.00"),
+    )
     repo.mark_published(product.external_id, "@fashionalleyb:88", None)
     repo.save_telegram_publication(
         product.external_id,

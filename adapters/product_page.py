@@ -41,6 +41,12 @@ _display_started = False
 PAGE_CACHE_SECONDS = 180.0
 _page_cache: tuple[str, str, str, float] | None = None
 
+# Chrome loses the race to nodriver's short connect window often enough that
+# one try is not enough, and a page read that gives up costs the post its
+# sizes and its gallery.
+BROWSER_ATTEMPTS = 3
+BROWSER_RETRY_PAUSE_SECONDS = 2.0
+
 
 class ProductPageError(Exception):
     """The page did not contain a usable product title, price, and photo."""
@@ -314,15 +320,31 @@ def fetch_product_html(url: str, timeout_seconds: float = 20.0) -> tuple[str, st
     if _carries_product_markup(html_text):
         return _remember_page(url, final_url or url, html_text)
 
-    logger.info("Product page %s came back empty or blocked, opening it in Chrome", final_url or url)
-    try:
-        rendered, rendered_url = _fetch_html_browser(final_url or url, timeout_seconds)
-    except Exception as exc:
-        logger.info("Chrome could not open the product page %s: %s", final_url or url, exc)
-        return final_url or url, html_text
-    if rendered and not _is_blocked_page(rendered):
-        return _remember_page(url, rendered_url or final_url or url, rendered)
-    return final_url or url, html_text
+    page_url = final_url or url
+    logger.info("Product page %s came back empty or blocked, opening it in Chrome", page_url)
+    for attempt in range(1, BROWSER_ATTEMPTS + 1):
+        if attempt > 1:
+            time.sleep(BROWSER_RETRY_PAUSE_SECONDS)
+        try:
+            rendered, rendered_url = _fetch_html_browser(page_url, timeout_seconds)
+        except Exception as exc:
+            # Chrome needs a few seconds to open its debug port and nodriver
+            # waits under three. On a loaded box that race is lost often
+            # enough that a single try costs the caption its size grid.
+            logger.warning(
+                "Chrome attempt %s of %s could not open the product page %s: %s",
+                attempt,
+                BROWSER_ATTEMPTS,
+                page_url,
+                exc,
+            )
+            continue
+        if rendered and not _is_blocked_page(rendered):
+            return _remember_page(url, rendered_url or page_url, rendered)
+        logger.warning(
+            "Chrome attempt %s of %s still saw a bot wall on %s", attempt, BROWSER_ATTEMPTS, page_url
+        )
+    return page_url, html_text
 
 
 def _carries_product_markup(html_text: str) -> bool:
@@ -364,8 +386,9 @@ async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
     }
     if chrome:
         kwargs["browser_executable_path"] = chrome
-    browser = await uc.start(**kwargs)
+    running_before = set(uc.util.get_registered_instances())
     try:
+        browser = await uc.start(**kwargs)
         page = await browser.get(url)
         deadline = time.monotonic() + max(12.0, min(timeout_seconds, 40.0))
         html = ""
@@ -380,7 +403,27 @@ async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
                 break
         return html, str(page_url)
     finally:
-        browser.stop()
+        _close_chrome(uc, running_before)
+
+
+def _close_chrome(uc, running_before: set) -> None:
+    """Shut down every Chrome this call started, a failed start included.
+
+    nodriver registers a browser the moment Chrome is spawned, before it has
+    connected to the debug port. When that connection times out the start
+    call raises and nothing but this registry still points at the live
+    process, so skipping the sweep leaks a Chrome — and the half-gigabyte it
+    holds is exactly what the next attempt then fails to find.
+    """
+    registry = uc.util.get_registered_instances()
+    for browser in list(registry):
+        if browser in running_before:
+            continue
+        try:
+            browser.stop()
+        except Exception as exc:
+            logger.warning("Could not stop the Chrome instance we started: %s", exc)
+        registry.discard(browser)
 
 
 def _ensure_virtual_display() -> None:

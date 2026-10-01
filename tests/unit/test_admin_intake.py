@@ -314,6 +314,8 @@ def test_publish_manual_url_uses_the_regular_publishers(tmp_path: Path, monkeypa
         product_url="https://www.zara.com/es/es/wool-coat-p12345678.html",
         in_stock=True,
         photo_urls=[str(photo), str(second)],
+        color="бежевый",
+        sizes=("S", "M", "L"),
     )
     monkeypatch.setattr("core.pipeline.fetch_product_page", lambda url, headless=True: product)
 
@@ -393,6 +395,8 @@ def test_publish_manual_url_dynamic_fx_and_multi_photo_album(tmp_path: Path, mon
         product_url="https://www.zara.com/tr/tr/linen-dress-p998877.html",
         in_stock=True,
         photo_urls=[str(p1), str(p2), str(p3)],
+        color="белый",
+        sizes=("XS", "S", "M", "L"),
     )
     monkeypatch.setattr("core.pipeline.fetch_product_page", lambda url, headless=True: product)
 

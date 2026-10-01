@@ -24,7 +24,12 @@ from core.image_downloader import ImageDownloader
 from core.moderation import ConfigurableModerationGate, ModerationGate
 from core.outfits import OutfitCoordinator
 from core.pricing import FxConverter, calculate_final_price, source_price_usd
-from core.product_facts import attach_site_facts, is_heeled_footwear, site_description
+from core.product_facts import (
+    attach_site_facts,
+    is_heeled_footwear,
+    order_sizes,
+    site_description,
+)
 from core.similarity import rank_products_by_channel_similarity
 from llm.base import LLMProvider, PromptLoader, SelectionResult
 from publishers.base import Publisher
@@ -33,6 +38,32 @@ if TYPE_CHECKING:
     from storage.repository import ProductRepository
 
 logger = logging.getLogger(__name__)
+
+# How many candidates a cycle may walk through looking for one whose store
+# page still answers with its size grid.
+SITE_FACTS_ATTEMPTS = 5
+
+
+class SiteFactsUnavailable(Exception):
+    """The store page did not give up the size grid the caption is built from.
+
+    Raised before anything is published. A post whose caption is only the
+    title and the price is worse than no post, so the cycle moves on to the
+    next candidate instead.
+    """
+
+    def __init__(self, external_id: str, product_url: str | None) -> None:
+        super().__init__(
+            f"{external_id}: the store page did not return a size grid "
+            f"({product_url or 'no product URL'})"
+        )
+        self.external_id = external_id
+        self.product_url = product_url
+
+
+def _carries_size_line(description: str) -> bool:
+    """True when the copy already holds the «Размер…» line taken from the store page."""
+    return any(line.strip().casefold().startswith("размер") for line in description.splitlines())
 
 
 def _telegram_link_for(record: Any) -> str | None:
@@ -175,6 +206,12 @@ class PipelineRunner:
                 publishers_filter="instagram",
                 bypass_duplicate_gate=True,
             )
+        except SiteFactsUnavailable as exc:
+            # The product keeps its place in the Instagram queue: the store
+            # page may well answer on the next run.
+            err_msg = f"Instagram post held back, {exc}"
+            logger.warning(err_msg)
+            summary.errors.append(err_msg)
         except Exception as exc:
             summary.failed += 1
             err_msg = f"Unhandled error posting {product.external_id} to Instagram: {exc}"
@@ -381,6 +418,12 @@ class PipelineRunner:
                 title_override=selection.title,
                 on_platform=on_platform,
             )
+        except SiteFactsUnavailable as exc:
+            logger.warning("Manual publish held back, %s", exc)
+            return False, (
+                "Магазин не отдал размерную сетку для этого товара, "
+                "поэтому пост не опубликован. Попробуйте ссылку ещё раз."
+            )
         except Exception as exc:
             err_msg = f"Не удалось опубликовать: {exc}"
             logger.error("Manual publish failed for %s: %s", product.external_id, exc, exc_info=True)
@@ -529,13 +572,16 @@ class PipelineRunner:
                 for idx, item in enumerate(outfit.items):
                     pos_name = outfit.positions[idx] if idx < len(outfit.positions) else f"Деталь {idx+1}"
                     outfit_info = f"«{outfit.theme}» — {pos_name} ({idx+1}/{len(outfit.items)})"
-                    self._process_single_product(
-                        item,
-                        f"Стильный образ: {item.title}",
-                        summary,
-                        outfit_info=outfit_info,
-                        publishers_filter=publishers_filter,
-                    )
+                    try:
+                        self._process_single_product(
+                            item,
+                            f"Стильный образ: {item.title}",
+                            summary,
+                            outfit_info=outfit_info,
+                            publishers_filter=publishers_filter,
+                        )
+                    except SiteFactsUnavailable as exc:
+                        self._shelve_without_site_facts(exc)
                 return summary
 
         # 5. Persist newly discovered products in status 'new'
@@ -591,24 +637,13 @@ class PipelineRunner:
                 logger.warning("Selected product %s not found in candidates, skipping.", external_id)
                 continue
 
-            try:
-                self._process_single_product(
-                    product,
-                    selection.description,
-                    summary,
-                    title_override=selection.title,
-                    publishers_filter=publishers_filter,
-                )
-            except Exception as exc:
-                summary.failed += 1
-                err_msg = f"Unhandled error processing product {external_id}: {exc}"
-                logger.error(err_msg, exc_info=True)
-                summary.errors.append(err_msg)
-                try:
-                    self.repo.mark_failed(external_id, err_msg)
-                except Exception:
-                    pass
-                self._notify_error("processing", err_msg, external_id)
+            self._publish_first_with_site_facts(
+                product,
+                selection.title,
+                ranked_candidates,
+                summary,
+                publishers_filter=publishers_filter,
+            )
 
         # 8. Log cycle metrics summary
         summary_msg = (
@@ -667,6 +702,81 @@ class PipelineRunner:
         except Exception as exc:
             logger.warning("Could not mark over-limit product %s as failed: %s", product.external_id, exc)
 
+    def _stored_site_description(self, external_id: str) -> str:
+        """Size and color lines kept from an earlier, working read of the store page."""
+        getter = getattr(self.repo, "get_by_external_id", None)
+        if not callable(getter):
+            return ""
+        try:
+            record = getter(external_id)
+        except Exception as exc:
+            logger.warning("Could not reload stored facts for %s: %s", external_id, exc)
+            return ""
+        stored = (getattr(record, "description_gpt", None) or "").strip()
+        return stored if _carries_size_line(stored) else ""
+
+    def _publish_first_with_site_facts(
+        self,
+        chosen: RawProduct,
+        chosen_title: str,
+        fallbacks: list[RawProduct],
+        summary: CycleSummary,
+        publishers_filter: str | None = None,
+    ) -> None:
+        """Publish the chosen product, or the next candidate whose page still answers.
+
+        When a store serves a bot wall the caption would carry nothing but the
+        title and the price, so that product is shelved and the slot goes to
+        the next candidate rather than to a half-empty post.
+        """
+        queue = [(chosen, chosen_title)]
+        queue.extend(
+            (item, item.title)
+            for item in fallbacks
+            if item.external_id != chosen.external_id
+        )
+
+        for product, title in queue[:SITE_FACTS_ATTEMPTS]:
+            try:
+                self._process_single_product(
+                    product,
+                    "",
+                    summary,
+                    title_override=title,
+                    publishers_filter=publishers_filter,
+                )
+                return
+            except SiteFactsUnavailable as exc:
+                self._shelve_without_site_facts(exc)
+            except Exception as exc:
+                summary.failed += 1
+                err_msg = f"Unhandled error processing product {product.external_id}: {exc}"
+                logger.error(err_msg, exc_info=True)
+                summary.errors.append(err_msg)
+                try:
+                    self.repo.mark_failed(product.external_id, err_msg)
+                except Exception:
+                    pass
+                self._notify_error("processing", err_msg, product.external_id)
+                return
+
+        err_msg = (
+            f"No candidate out of {len(queue[:SITE_FACTS_ATTEMPTS])} returned its size grid; "
+            "nothing was published rather than posting a caption without sizes."
+        )
+        logger.error(err_msg)
+        summary.errors.append(err_msg)
+        self._notify_error("site_facts", err_msg)
+
+    def _shelve_without_site_facts(self, exc: SiteFactsUnavailable) -> None:
+        """Take a product the store would not describe out of the publishing queue."""
+        logger.warning("Not publishing %s", exc)
+        summary_msg = f"Skipped, the store page gave no size grid: {exc.product_url or ''}".strip()
+        try:
+            self.repo.mark_failed(exc.external_id, summary_msg)
+        except Exception as mark_exc:
+            logger.warning("Could not shelve %s: %s", exc.external_id, mark_exc)
+
     def _process_single_product(
         self,
         product: RawProduct,
@@ -684,6 +794,13 @@ class PipelineRunner:
         # Size, color, and heel height are copied from the product page. The model must not fill them in.
         heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
         description = site_description(product.color, product.sizes, heel_height=heel)
+        if not order_sizes(product.sizes):
+            # A bot wall answers with a script shell that carries no size grid.
+            # Instagram reposts what Telegram already carries, so it can fall
+            # back to the lines read on that earlier, working visit.
+            description = self._stored_site_description(external_id)
+            if not description:
+                raise SiteFactsUnavailable(external_id, product.product_url)
 
         # 7a. Calculate final price (FR-3.1, FR-3.2, FR-3.3)
         final_price = calculate_final_price(
@@ -1068,6 +1185,9 @@ class PipelineRunner:
                 )
                 if summary.published:
                     return True, f"Опубликован следующий подходящий товар: {candidate.title}"
+            except SiteFactsUnavailable as exc:
+                self._shelve_without_site_facts(exc)
+                continue
             except Exception as exc:
                 logger.error("Failed to publish candidate %s: %s", candidate.external_id, exc)
                 continue

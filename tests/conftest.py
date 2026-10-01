@@ -65,6 +65,8 @@ class FakeProductRepository:
                         photo_url=data.get("photo_url", "https://example.com/photo.jpg"),
                         product_url=data.get("product_url", ""),
                         in_stock=True,
+                        color=data.get("color"),
+                        sizes=data.get("sizes", ()),
                     )
                 )
                 if len(candidates) >= limit:
@@ -87,6 +89,8 @@ class FakeProductRepository:
                 "status": "new",
                 "description": None,
                 "price_final": None,
+                "color": product.color,
+                "sizes": product.sizes,
             }
 
     def upsert_held(self, product: RawProduct, status: str = "manual") -> None:
@@ -104,6 +108,8 @@ class FakeProductRepository:
             "status": status,
             "description": existing.get("description") if existing else None,
             "price_final": existing.get("price_final") if existing else None,
+            "color": product.color,
+            "sizes": product.sizes,
             "telegram_post_id": existing.get("telegram_post_id") if existing else None,
             "instagram_post_id": existing.get("instagram_post_id") if existing else None,
         }
@@ -394,6 +400,8 @@ def fake_repo() -> FakeProductRepository:
 
 @pytest.fixture
 def sample_products() -> list[RawProduct]:
+    # Size grid and colour come from the store page; a product without them
+    # never reaches a post, so the fixtures carry them like real candidates.
     return [
         RawProduct(
             external_id="p-1",
@@ -404,6 +412,8 @@ def sample_products() -> list[RawProduct]:
             photo_url="https://images.example.com/p1.jpg",
             product_url="https://zara.com/p1",
             in_stock=True,
+            color="серый",
+            sizes=("XS", "S", "M", "L", "XL"),
         ),
         RawProduct(
             external_id="p-2",
@@ -414,6 +424,8 @@ def sample_products() -> list[RawProduct]:
             photo_url="https://images.example.com/p2.jpg",
             product_url="https://mango.com/p2",
             in_stock=True,
+            color="белый",
+            sizes=("S", "M", "L"),
         ),
         RawProduct(
             external_id="p-3",
@@ -424,5 +436,7 @@ def sample_products() -> list[RawProduct]:
             photo_url="https://images.example.com/p3.jpg",
             product_url="https://zara.com/p3",
             in_stock=True,
+            color="бежевый",
+            sizes=("M", "L", "XL"),
         ),
     ]

@@ -10,7 +10,7 @@ import pytest
 from adapters.base import RawProduct
 from config.app_config import AppConfig
 from core.moderation import ConfigurableModerationGate
-from core.pipeline import PipelineRunner
+from core.pipeline import CycleSummary, PipelineRunner
 from core.pricing import FixedRateConverter
 from tests.conftest import (
     FakeLLMProvider,
@@ -367,6 +367,8 @@ def test_pipeline_drops_products_above_80_usd_before_markup() -> None:
         photo_url="https://images.example.com/shirt.jpg",
         product_url="https://zara.com/shirt",
         in_stock=True,
+        color="белый",
+        sizes=("S", "M", "L"),
     )
     # 70 USD plus the default markup is 85 USD, which must still be parsed.
     under_with_markup = RawProduct(
@@ -378,6 +380,8 @@ def test_pipeline_drops_products_above_80_usd_before_markup() -> None:
         photo_url="https://images.example.com/trousers.jpg",
         product_url="https://zara.com/trousers",
         in_stock=True,
+        color="бежевый",
+        sizes=("XS", "S", "M"),
     )
     over_limit = RawProduct(
         external_id="over",
@@ -411,4 +415,81 @@ def test_pipeline_drops_products_above_80_usd_before_markup() -> None:
     assert summary.published == 2
     assert "over" not in repo.products
     assert repo.get_published_ids() == {"at-limit", "under"}
+
+
+def _blocked(external_id: str, title: str, product_url: str | None = None) -> RawProduct:
+    """A candidate whose store page answered with a bot wall: no sizes, no colour."""
+    return RawProduct(
+        external_id=external_id,
+        source="zara",
+        title=title,
+        price=Decimal("49.00"),
+        currency="USD",
+        photo_url=f"https://images.example.com/{external_id}.jpg",
+        product_url=f"https://zara.com/{external_id}" if product_url is None else product_url,
+        in_stock=True,
+    )
+
+
+def _runner(repo: FakeProductRepository, products: list[RawProduct], pub: FakePublisher) -> PipelineRunner:
+    return PipelineRunner(
+        source=FakeSourceAdapter(products),
+        repo=repo,
+        llm=FakeLLMProvider(select_count=1),
+        fx=FixedRateConverter(fixed_rate=Decimal("1.0")),
+        publishers=[pub],
+        config=AppConfig(max_products_per_run=1),
+        prompt_loader=MockPromptLoader(),
+    )
+
+
+def test_a_product_without_a_size_grid_is_never_posted() -> None:
+    """A caption of nothing but the title and the price must not reach the channel."""
+    repo = FakeProductRepository()
+    pub = FakePublisher("telegram")
+    blocked = _blocked("blocked-1", "Пиджак из шерсти")
+
+    summary = _runner(repo, [blocked], pub).run_cycle()
+
+    assert pub.published_posts == []
+    assert summary.published == 0
+    assert repo.products["blocked-1"]["status"] == "failed"
+    assert summary.errors
+
+
+def test_a_blocked_store_page_hands_the_slot_to_the_next_candidate(
+    sample_products: list[RawProduct],
+) -> None:
+    """One unreadable page must not cost the channel its scheduled post."""
+    repo = FakeProductRepository()
+    pub = FakePublisher("telegram")
+    blocked = _blocked("blocked-1", "Пиджак из шерсти")
+    readable = sample_products[1]
+
+    summary = _runner(repo, [blocked, readable], pub).run_cycle()
+
+    assert summary.published == 1
+    assert repo.get_published_ids() == {readable.external_id}
+    assert repo.products["blocked-1"]["status"] == "failed"
+    caption = pub.published_posts[0].text
+    assert "Размеры от S до L." in caption
+
+
+def test_instagram_reuses_the_facts_telegram_already_published() -> None:
+    """The second platform must not lose the lines when the store blocks it later."""
+    repo = FakeProductRepository()
+    blocked = _blocked("blocked-1", "Пиджак из шерсти", product_url="")
+    repo.upsert_new(blocked)
+    repo.mark_selected(
+        "blocked-1",
+        "Размеры от XS до XL.\nЦвет: черный.",
+        Decimal("89.00"),
+    )
+    pub = FakePublisher("telegram")
+
+    summary = CycleSummary()
+    _runner(repo, [blocked], pub)._process_single_product(blocked, "", summary)
+
+    assert summary.published == 1
+    assert "Размеры от XS до XL." in pub.published_posts[0].text
 
