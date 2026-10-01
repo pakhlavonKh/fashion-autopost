@@ -3,7 +3,8 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07090e">
   <title>Fashion Autopost — Admin Command Center</title>
   <meta name="description" content="Autonomous fashion publishing backend dashboard for Telegram and Instagram.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -13,7 +14,7 @@
     rel="stylesheet">
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
-  <link rel="stylesheet" href="./style.css?v=20260929_delete">
+  <link rel="stylesheet" href="./style.css?v=20261001_layout">
   <style>
     /* Mandatory 100% round pill buttons across all browsers and cached states */
     .btn,
@@ -22,13 +23,11 @@
     .btn-sm,
     button.btn,
     .tab-btn,
-    .filter-tabs,
     .lang-switcher,
     .lang-btn,
     .mode-badge,
     .status-pill,
     .brand-overlay,
-    .toast,
     .auth-alert,
     #btnRunCycle,
     #btnPublishNow,
@@ -143,28 +142,30 @@
     </section>
 
     <!-- Duplicate Approvals Warning & Approval Section (Feature 10) -->
-    <section class="duplicate-panel" id="duplicateApprovalsSection" style="display: none; margin-bottom: 32px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: var(--radius-lg); padding: 24px;">
-      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 8px;">
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <i data-lucide="alert-triangle" style="color: var(--warning); width: 22px; height: 22px;"></i>
-          <h2 style="font-size: 18px; margin: 0; color: #fbbf24; font-family: 'Outfit', sans-serif;">Запросы на повторную публикацию (Дубликаты)</h2>
+    <section class="duplicate-panel" id="duplicateApprovalsSection">
+      <div class="duplicate-head">
+        <div class="duplicate-head-title">
+          <i data-lucide="alert-triangle" style="color: var(--warning); width: 22px; height: 22px; flex-shrink: 0;"></i>
+          <h2>Запросы на повторную публикацию (Дубликаты)</h2>
         </div>
         <span class="status-pill status-pending_review" id="duplicateApprovalsBadge">0 на рассмотрении</span>
       </div>
-      <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; line-height: 1.5;">
+      <p class="duplicate-copy">
         Эти товары уже публиковались в Telegram-канале. Подтвердите повторную публикацию или отклоните её. При отклонении бот автоматически выберет следующий подходящий товар из базы.
       </p>
-      <div id="duplicateApprovalsList" class="duplicate-list" style="display: flex; flex-direction: column; gap: 12px;"></div>
+      <div id="duplicateApprovalsList" class="duplicate-list"></div>
     </section>
 
     <!-- Products & Moderation Section -->
     <section>
       <div class="section-header">
-        <h2 data-i18n="catalogTitle">Mahsulotlar katalogi va moderatsiya</h2>
-        <button id="btnClearBase" class="btn btn-danger">
-          <i id="btnClearBaseIcon" data-lucide="trash-2"></i>
-          <span id="btnClearBaseText" data-i18n="btnClearBase">Bazani tozalash</span>
-        </button>
+        <div class="section-heading">
+          <h2 data-i18n="catalogTitle">Mahsulotlar katalogi va moderatsiya</h2>
+          <button id="btnClearBase" class="btn btn-danger">
+            <i id="btnClearBaseIcon" data-lucide="trash-2"></i>
+            <span id="btnClearBaseText" data-i18n="btnClearBase">Bazani tozalash</span>
+          </button>
+        </div>
         <div class="filter-tabs">
           <button class="tab-btn active" data-filter="all" data-i18n="tabAll">Barchasi</button>
           <button class="tab-btn" data-filter="published" data-i18n="tabPublished">Chop etilgan</button>
@@ -457,7 +458,7 @@
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="./app.js?v=20260930_clean"></script>
+  <script src="./app.js?v=20261001_fullwidth"></script>
 </body>
 
 </html>

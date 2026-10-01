@@ -1259,19 +1259,19 @@ function renderBrands(stores) {
     const statusClass = isPaused ? 'status-failed' : 'status-published';
 
     return `
-      <div class="brand-row" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; background: rgba(15, 23, 42, 0.5); border: 1px solid var(--border-subtle); border-radius: 16px; margin-bottom: 8px;">
-        <div style="display: flex; align-items: center; gap: 10px; min-width: 140px;">
-          <span class="brand-row-name" style="font-weight: 600; font-size: 15px;">${escapeHtml(brandLabel(name))}</span>
-          <span class="status-pill ${statusClass}" style="font-size: 11px; padding: 2px 10px;">${escapeHtml(statusText)}</span>
+      <div class="brand-row">
+        <div class="brand-row-identity">
+          <span class="brand-row-name">${escapeHtml(brandLabel(name))}</span>
+          <span class="status-pill ${statusClass}">${escapeHtml(statusText)}</span>
         </div>
-        <span class="brand-market" style="font-size: 12px; color: var(--text-muted);">${escapeHtml(market || 'EU')} · ${escapeHtml(currency)}</span>
-        <a class="brand-row-url" href="${escapeHtml(url)}" target="_blank" rel="noopener" style="font-size: 12px; color: var(--accent-primary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 280px;">${escapeHtml(url)}</a>
-        <div style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
-          <button type="button" class="btn btn-sm ${isPaused ? 'btn-primary' : 'btn-secondary'}" data-toggle-brand-pause="${escapeHtml(name)}" data-is-paused="${isPaused ? 'true' : 'false'}" style="white-space: nowrap; font-size: 12px; padding: 6px 14px;">
+        <span class="brand-market">${escapeHtml(market || 'EU')} · ${escapeHtml(currency)}</span>
+        <a class="brand-row-url" href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(url)}</a>
+        <div class="brand-row-actions">
+          <button type="button" class="btn btn-sm ${isPaused ? 'btn-primary' : 'btn-secondary'}" data-toggle-brand-pause="${escapeHtml(name)}" data-is-paused="${isPaused ? 'true' : 'false'}">
             <i data-lucide="${isPaused ? 'play' : 'pause'}" style="width: 13px; height: 13px;"></i>
             <span>${escapeHtml(isPaused ? t('brandUnpause') : t('brandPause'))}</span>
           </button>
-          <button type="button" class="btn btn-secondary btn-sm" data-remove-brand="${escapeHtml(name)}" style="white-space: nowrap; font-size: 12px; padding: 6px 14px;">${t('brandRemove')}</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-remove-brand="${escapeHtml(name)}">${t('brandRemove')}</button>
         </div>
       </div>
     `;
@@ -1622,25 +1622,21 @@ async function loadDuplicateApprovals() {
     list.innerHTML = pending.map(item => {
       const prevUrl = item.telegram_url ? `<a href="${escapeHtml(item.telegram_url)}" target="_blank" style="color: var(--accent-primary); text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">Посмотреть пост <i data-lucide="external-link" style="width: 12px; height: 12px;"></i></a>` : '—';
       return `
-        <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 16px; padding: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
-          <div style="flex: 1; min-width: 260px;">
-            <div style="font-weight: 700; font-size: 15px; color: var(--text-primary); margin-bottom: 4px;">
-              ${escapeHtml(item.title)}
-            </div>
-            <div style="font-size: 13px; color: var(--text-secondary); display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 4px;">
+        <div class="dup-card">
+          <div class="dup-card-body">
+            <div class="dup-card-title">${escapeHtml(item.title)}</div>
+            <div class="dup-card-meta">
               <span><b>Бренд:</b> ${escapeHtml(item.source.toUpperCase())}</span>
               ${item.price ? `<span><b>Цена:</b> ${escapeHtml(item.price)}</span>` : ''}
               <span><b>Ранее опубликован:</b> ${item.original_published_at ? new Date(item.original_published_at).toLocaleString() : 'Ранее'}</span>
             </div>
-            <div style="font-size: 12px; color: var(--text-muted);">
-              ${prevUrl}
-            </div>
+            <div class="dup-card-link">${prevUrl}</div>
           </div>
-          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <button type="button" class="btn btn-primary btn-sm" data-resolve-dup="${item.id}" data-action="approved" style="background: linear-gradient(135deg, #10b981, #059669); white-space: nowrap;">
+          <div class="dup-card-actions">
+            <button type="button" class="btn btn-primary btn-sm" data-resolve-dup="${item.id}" data-action="approved" style="background: linear-gradient(135deg, #10b981, #059669);">
               <i data-lucide="check"></i> Одобрить повторную публикацию
             </button>
-            <button type="button" class="btn btn-secondary btn-sm" data-resolve-dup="${item.id}" data-action="rejected" style="white-space: nowrap;">
+            <button type="button" class="btn btn-secondary btn-sm" data-resolve-dup="${item.id}" data-action="rejected">
               <i data-lucide="x"></i> Отклонить (следующий товар)
             </button>
           </div>
