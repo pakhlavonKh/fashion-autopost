@@ -72,6 +72,17 @@ class CycleSummary:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass
+class CollectionSummary:
+    """Outcome of filling the queue from the brand sites, without publishing."""
+    fetched: int = 0
+    over_price: int = 0
+    duplicates: int = 0
+    stored: int = 0
+    by_brand: dict[str, int] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+
+
 class PipelineRunner:
     """Orchestrator for the autonomous clothing post publishing pipeline."""
 
@@ -176,6 +187,75 @@ class PipelineRunner:
         """Publish next eligible product when previous was rejected or skipped."""
         with self._cycle_lock:
             return self._publish_next_eligible_product_locked(publishers_filter=publishers_filter)
+
+    def collect_new_products(self) -> CollectionSummary:
+        """Read the brand sites and fill the queue. Nothing is published here."""
+        with self._cycle_lock:
+            return self._collect_new_products_locked()
+
+    def _collect_new_products_locked(self) -> CollectionSummary:
+        summary = CollectionSummary()
+        logger.info("=== Collecting new products from the brand sites ===")
+        try:
+            self.config.reload_hot_fields()
+        except Exception as exc:
+            logger.warning("Failed to reload hot config fields before collecting: %s", exc)
+
+        try:
+            scraped = self.source.fetch_products()
+        except Exception as exc:
+            err_msg = f"Failed to fetch products from source adapter: {exc}"
+            logger.error(err_msg, exc_info=True)
+            summary.errors.append(err_msg)
+            self._notify_error("ingestion", err_msg)
+            return summary
+        summary.fetched = len(scraped)
+
+        paused_brands = self.repo.get_paused_brands() if hasattr(self.repo, "get_paused_brands") else set()
+        if paused_brands:
+            scraped = [p for p in scraped if p.source.lower() not in paused_brands]
+
+        affordable, rejected = self._split_by_source_price(scraped)
+        summary.over_price = len(rejected)
+
+        unseen = filter_unseen(affordable, self.repo)
+        summary.duplicates = len(affordable) - len(unseen)
+
+        # Store in style order: the queue is served by insertion order, so the
+        # products closest to what the channel publishes are posted first.
+        ordered = unseen
+        try:
+            ranked = rank_products_by_channel_similarity(
+                unseen,
+                self.repo,
+                max_price_usd=self.get_effective_max_source_price(),
+                channel=self.config.telegram.channel_id,
+                markup=self.config.markup,
+            )
+            if ranked:
+                ordered = [product for product, _ in ranked]
+        except Exception as exc:
+            logger.warning("Channel similarity ranking skipped while collecting: %s", exc)
+
+        for product in ordered:
+            try:
+                self.repo.upsert_new(product)
+            except Exception as exc:
+                logger.warning("Failed to store collected product %s: %s", product.external_id, exc)
+                continue
+            summary.stored += 1
+            brand = product.source.lower()
+            summary.by_brand[brand] = summary.by_brand.get(brand, 0) + 1
+
+        logger.info(
+            "=== Collected %d new products into the queue (%d scraped, %d over the price limit, %d already seen): %s ===",
+            summary.stored,
+            summary.fetched,
+            summary.over_price,
+            summary.duplicates,
+            summary.by_brand or "nothing",
+        )
+        return summary
 
     def get_effective_max_source_price(self) -> Decimal:
         """Retrieve dynamic maximum source price from DB or fallback to config."""

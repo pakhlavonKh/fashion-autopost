@@ -379,6 +379,35 @@ def create_dashboard_app(
         finally:
             config.dry_run = original_dry_run
 
+    @app.post("/api/collect-products", dependencies=[Depends(verify_admin)])
+    def collect_products():
+        """Read the brand sites and fill the queue. Nothing is published."""
+        try:
+            summary = runner.collect_new_products()
+        except Exception as exc:
+            logger.error("Product collection failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        if summary.stored:
+            brands = ", ".join(f"{brand} {count}" for brand, count in sorted(summary.by_brand.items()))
+            message = f"Загружено новых товаров: {summary.stored} ({brands})."
+        elif summary.errors:
+            message = "; ".join(summary.errors)
+        else:
+            message = (
+                f"Новых товаров нет. Просмотрено {summary.fetched}, "
+                f"дороже лимита {summary.over_price}, уже публиковались {summary.duplicates}."
+            )
+        return {
+            "success": summary.stored > 0,
+            "stored": summary.stored,
+            "fetched": summary.fetched,
+            "over_price": summary.over_price,
+            "duplicates": summary.duplicates,
+            "by_brand": summary.by_brand,
+            "message": message,
+        }
+
     @app.post("/api/publish-now", dependencies=[Depends(verify_admin)])
     def publish_now():
         """Publish one post immediately, off schedule, through the regular pipeline."""

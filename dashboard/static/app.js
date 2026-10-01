@@ -15,6 +15,9 @@ const translations = {
     publishingNow: "Post joylanmoqda...",
     publishNowConfirm: "Hozir post joylansinmi? Post kanalga darhol chop etiladi.",
     toastPublishNow: "Post joylanmoqda...",
+    btnCollect: "Yangi mahsulotlarni yuklash",
+    collecting: "Mahsulotlar yuklanmoqda...",
+    toastCollect: "Brend saytlaridan mahsulotlar yuklanmoqda...",
 
     metricPublishedToday: "Bugun chop etilgan",
     metricPublishedTotal: "Jami chop etilgan",
@@ -142,6 +145,9 @@ const translations = {
     publishingNow: "Публикуется...",
     publishNowConfirm: "Выложить пост сейчас? Пост будет опубликован в канал немедленно.",
     toastPublishNow: "Публикую пост...",
+    btnCollect: "Загрузить новые товары",
+    collecting: "Загружаю товары...",
+    toastCollect: "Собираю товары с сайтов брендов, это занимает пару минут...",
 
     metricPublishedToday: "Опубликовано сегодня",
     metricPublishedTotal: "Всего опубликовано",
@@ -269,6 +275,9 @@ const translations = {
     publishingNow: "Publishing...",
     publishNowConfirm: "Publish a post now? It goes to the channel immediately.",
     toastPublishNow: "Publishing the post...",
+    btnCollect: "Load New Products",
+    collecting: "Loading products...",
+    toastCollect: "Collecting products from the brand sites, this takes a couple of minutes...",
 
     metricPublishedToday: "Published Today",
     metricPublishedTotal: "Total Published",
@@ -823,6 +832,46 @@ document.getElementById('btnRunCycle').addEventListener('click', async () => {
     btn.disabled = false;
     btnText.textContent = t('btnRunCycle');
     btnIcon.setAttribute('data-lucide', 'zap');
+    btnIcon.classList.remove('spin');
+    refreshLucide();
+  }
+});
+
+// Fill the queue from the brand sites without publishing anything
+document.getElementById('btnCollect').addEventListener('click', async () => {
+  const btn = document.getElementById('btnCollect');
+  const btnText = document.getElementById('btnCollectText');
+  const btnIcon = document.getElementById('btnCollectIcon');
+  btn.disabled = true;
+  btnText.textContent = t('collecting');
+  btnIcon.setAttribute('data-lucide', 'loader-2');
+  btnIcon.classList.add('spin');
+  refreshLucide();
+
+  try {
+    showToast(t('toastCollect'));
+    const res = await apiFetch('/api/collect-products', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      showToast(data.message, !data.success);
+      await fetchStats();
+      await fetchProducts();
+    } else {
+      showToast(`Error: ${data.detail}`, true);
+    }
+  } catch (err) {
+    if (err.message !== 'Unauthorized') {
+      showToast(`Network error: ${err.message}`, true);
+    }
+  } finally {
+    btn.disabled = false;
+    btnText.textContent = t('btnCollect');
+    btnIcon.setAttribute('data-lucide', 'download');
     btnIcon.classList.remove('spin');
     refreshLucide();
   }

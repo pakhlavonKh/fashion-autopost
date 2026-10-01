@@ -179,6 +179,63 @@ class _LinkingTelegram(FakePublisher):
         )
 
 
+def test_collecting_products_fills_the_queue_without_publishing(sample_products: list[RawProduct]) -> None:
+    """The collect button must only stock the queue. Posting stays a separate action."""
+    from unittest.mock import patch
+
+    repo = FakeProductRepository()
+    telegram = FakePublisher("telegram")
+    instagram = FakePublisher("instagram")
+    runner = PipelineRunner(
+        source=FakeSourceAdapter(sample_products),
+        repo=repo,
+        llm=FakeLLMProvider(select_count=1),
+        fx=FixedRateConverter(),
+        publishers=[telegram, instagram],
+        config=AppConfig(),
+        prompt_loader=MockPromptLoader(),
+    )
+
+    with patch("core.similarity.fetch_channel_posts", return_value=[]):
+        summary = runner.collect_new_products()
+
+    # p-3 costs 89.90 EUR, which is over the 80 USD store-price limit.
+    assert summary.fetched == 3
+    assert summary.over_price == 1
+    assert summary.stored == 2
+    assert summary.by_brand == {"zara": 1, "mango": 1}
+    assert set(repo.products) == {"p-1", "p-2"}
+    assert repo.products["p-1"]["status"] == "new"
+    assert telegram.published_posts == []
+    assert instagram.published_posts == []
+
+
+def test_collecting_skips_products_already_in_the_channel(sample_products: list[RawProduct]) -> None:
+    """A second collection must not queue what was already posted."""
+    from unittest.mock import patch
+
+    repo = FakeProductRepository()
+    repo.upsert_new(sample_products[0])
+    repo.mark_published("p-1", "telegram_1", None)
+
+    runner = PipelineRunner(
+        source=FakeSourceAdapter(sample_products),
+        repo=repo,
+        llm=FakeLLMProvider(select_count=1),
+        fx=FixedRateConverter(),
+        publishers=[FakePublisher("telegram")],
+        config=AppConfig(),
+        prompt_loader=MockPromptLoader(),
+    )
+
+    with patch("core.similarity.fetch_channel_posts", return_value=[]):
+        summary = runner.collect_new_products()
+
+    assert summary.duplicates == 1
+    assert summary.stored == 1
+    assert summary.by_brand == {"mango": 1}
+
+
 def test_retry_keeps_the_telegram_post_and_links_the_story_to_it(sample_products: list[RawProduct]) -> None:
     """Telegram succeeds and Instagram fails in cycle 1. Cycle 2 retries Instagram only.
 

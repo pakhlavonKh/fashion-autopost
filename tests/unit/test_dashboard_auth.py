@@ -246,6 +246,52 @@ def test_publish_now_falls_back_to_a_cycle_when_the_queue_is_empty(tmp_path: Pat
     runner.run_cycle.assert_called_once_with()
 
 
+def test_collect_products_needs_admin_credentials(tmp_path: Path):
+    """Collecting hits ten brand sites, so it must not be reachable without the admin key."""
+    client, runner, _key = _publish_now_client(tmp_path, "collect_auth")
+
+    assert client.post("/api/collect-products").status_code == 401
+    runner.collect_new_products.assert_not_called()
+
+
+def test_collect_products_reports_what_landed_in_the_queue(tmp_path: Path):
+    from core.pipeline import CollectionSummary
+
+    client, runner, key = _publish_now_client(tmp_path, "collect_ok")
+    runner.collect_new_products.return_value = CollectionSummary(
+        fetched=48,
+        over_price=11,
+        duplicates=5,
+        stored=32,
+        by_brand={"mango": 18, "zara": 9, "bershka": 5},
+    )
+
+    res = client.post("/api/collect-products", headers={"X-Admin-Key": key})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["success"] is True
+    assert body["stored"] == 32
+    assert body["by_brand"] == {"mango": 18, "zara": 9, "bershka": 5}
+    assert "32" in body["message"]
+    assert "mango 18" in body["message"]
+
+
+def test_collect_products_explains_an_empty_result(tmp_path: Path):
+    from core.pipeline import CollectionSummary
+
+    client, runner, key = _publish_now_client(tmp_path, "collect_empty")
+    runner.collect_new_products.return_value = CollectionSummary(fetched=6, over_price=2, duplicates=4)
+
+    res = client.post("/api/collect-products", headers={"X-Admin-Key": key})
+
+    body = res.json()
+    assert body["success"] is False
+    assert body["stored"] == 0
+    assert "Просмотрено 6" in body["message"]
+    assert "уже публиковались 4" in body["message"]
+
+
 def test_publish_now_reports_why_nothing_was_published(tmp_path: Path):
     """When no post could go out, the admin sees the reason instead of a silent success."""
     from core.pipeline import CycleSummary
