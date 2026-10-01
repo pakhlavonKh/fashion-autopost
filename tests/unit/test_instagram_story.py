@@ -12,6 +12,8 @@ from publishers.instagram_private_story import InstagramPrivateStory
 from publishers.instagram_highlights import InstagramHighlightClient, InstagramSessionExpired
 from publishers.instagram_story import (
     LINK_LABEL,
+    SAFE_BOTTOM,
+    SAFE_TOP,
     STORY_HEIGHT,
     STORY_WIDTH,
     detect_highlight,
@@ -76,13 +78,51 @@ def test_collage_is_a_story_frame() -> None:
         with Image.open(dest) as image:
             assert image.size == (STORY_WIDTH, STORY_HEIGHT)
             assert image.format == "JPEG"
-            assert image.getpixel((STORY_WIDTH // 2, 340)) == (255, 255, 255)
             # The link sticker's tap area sits on the painted pill.
             x, y, width, _height = link_sticker_area()
             pill_right = int((x + width / 2) * STORY_WIDTH)
             assert image.getpixel((pill_right - 20, int(y * STORY_HEIGHT))) == (255, 255, 255)
             assert image.getpixel((pill_right + 20, int(y * STORY_HEIGHT))) != (255, 255, 255)
         assert LINK_LABEL
+
+
+def test_cards_are_white_on_black_and_stay_off_the_garment() -> None:
+    """The copy goes over the calm backdrop, never over the detailed photo."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        flat = folder / "flat.jpg"
+        Image.new("RGB", (800, 1200), (238, 236, 232)).save(flat)
+        # A mid-grey checkerboard stands in for a garment: lots of detail,
+        # but no pixel dark enough to be mistaken for a card.
+        busy = folder / "busy.jpg"
+        checker = Image.new("RGB", (800, 1200))
+        checker.putdata([
+            (80, 80, 80) if (x // 6 + y // 6) % 2 else (190, 190, 190)
+            for y in range(1200)
+            for x in range(800)
+        ])
+        checker.save(busy, quality=100)
+
+        dest = render_story_collage(
+            [flat, busy],
+            folder / "story.jpg",
+            title="Платье",
+            price_label="78$",
+            description="Размеры от XS до XL.\nЦвет: темно-синий.",
+            quality_line="Европейское качество",
+        )
+        with Image.open(dest) as image:
+            cards = image.convert("L").point(lambda value: 255 if value < 24 else 0)
+            bounds = cards.getbbox()
+            assert bounds is not None
+            left, top, right, bottom = bounds
+            # render_story_collage moves the first photo to the back, so the
+            # checkerboard fills the left half and the backdrop the right.
+            assert (left + right) / 2 > STORY_WIDTH // 2
+            assert top >= SAFE_TOP and bottom <= SAFE_BOTTOM
+            # White lettering inside the black cards.
+            card_pixels = image.crop(bounds).convert("L").tobytes()
+            assert any(value > 200 for value in card_pixels)
 
 
 def test_story_links_to_the_product_post_in_the_channel() -> None:
