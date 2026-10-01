@@ -54,6 +54,8 @@ class TelegramPublisher:
         self.downloader = ImageDownloader(timeout_seconds=self.timeout_seconds)
         self.bio_footer = bio_footer or DEFAULT_BIO_FOOTER
         self._public_usernames: dict[str, str] = {}
+        self._ids_by_username: dict[str, str] = {}
+        self._canonical_ids: dict[str, str] = {}
 
     @property
     def platform_name(self) -> str:
@@ -177,23 +179,36 @@ class TelegramPublisher:
         return PublishResult(success=False, error="; ".join(errors))
 
     def _unique_chat_ids(self, chat_ids: list[str]) -> list[str]:
-        """Collapse @username and the numeric id of the same chat into one send."""
+        """One send per chat. @username and the numeric id of a channel are the same chat."""
         unique: list[str] = []
         seen: set[str] = set()
         for chat_id in chat_ids:
             canonical = self._canonical_chat_id(chat_id)
-            if canonical in seen:
+            alias = self._alias_chat_id(canonical)
+            if canonical in seen or (alias is not None and alias in seen):
                 logger.info(
-                    "Skipping Telegram destination %s because it is the same chat as %s",
+                    "Skipping Telegram destination %s: the post already goes to this chat as %s",
                     chat_id,
                     canonical,
                 )
                 continue
             seen.add(canonical)
+            if alias is not None:
+                seen.add(alias)
             unique.append(canonical)
         return unique
 
     def _canonical_chat_id(self, chat_id: str) -> str:
+        """Numeric chat id for a destination. Resolved once, then reused."""
+        key = chat_id.strip()
+        cached = self._canonical_ids.get(key)
+        if cached is not None:
+            return cached
+        resolved = self._resolve_chat_id(key)
+        self._canonical_ids[key] = resolved
+        return resolved
+
+    def _resolve_chat_id(self, chat_id: str) -> str:
         try:
             with httpx.Client(timeout=10.0) as client:
                 response = client.get(
@@ -204,14 +219,26 @@ class TelegramPublisher:
             result = data.get("result") if isinstance(data, dict) else None
             if data.get("ok") and isinstance(result, dict) and result.get("id") is not None:
                 canonical = str(result["id"])
-                if result.get("username"):
-                    self._public_usernames[canonical] = str(result["username"])
+                username = str(result.get("username") or "")
+                if username:
+                    self._public_usernames[canonical] = username
+                    self._ids_by_username[username.casefold()] = canonical
                 return canonical
         except Exception as exc:
             logger.warning("Could not resolve Telegram chat %s: %s", chat_id, exc)
+        # Telegram did not answer. A handle already seen on a resolved chat is that same chat.
         if chat_id.startswith("@"):
-            return chat_id.casefold()
+            return self._ids_by_username.get(chat_id[1:].casefold()) or chat_id.casefold()
         return chat_id
+
+    def _alias_chat_id(self, canonical: str) -> str | None:
+        """The other way this chat can be written: @handle for an id, or the id for a @handle."""
+        username = self._public_usernames.get(canonical)
+        if username:
+            return f"@{username.casefold()}"
+        if canonical.startswith("@"):
+            return self._ids_by_username.get(canonical[1:].casefold())
+        return None
 
     def _uniform_slides(self, photos: list[str]) -> list[str]:
         """Same 4:5 JPEG for every slide, with duplicate pictures removed."""

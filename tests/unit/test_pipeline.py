@@ -179,9 +179,12 @@ class _LinkingTelegram(FakePublisher):
         )
 
 
-def test_retry_posts_telegram_again_and_links_the_story_to_the_new_post(sample_products: list[RawProduct]) -> None:
-    """Telegram succeeds and Instagram fails in cycle 1. Cycle 2 posts to Telegram again,
-    because the price may have changed, and Instagram gets the link to that new post."""
+def test_retry_keeps_the_telegram_post_and_links_the_story_to_it(sample_products: list[RawProduct]) -> None:
+    """Telegram succeeds and Instagram fails in cycle 1. Cycle 2 retries Instagram only.
+
+    A product that is already in the channel must never be posted there a second
+    time. The story links to the message the first cycle published.
+    """
     from publishers.base import PublishResult
 
     repo = FakeProductRepository()
@@ -232,11 +235,11 @@ def test_retry_posts_telegram_again_and_links_the_story_to_the_new_post(sample_p
     assert summary2.selected == 1
     assert summary2.published == 1
     assert summary2.failed == 0
-    assert len(pub_telegram.published_posts) == 2
+    assert len(pub_telegram.published_posts) == 1
     assert len(pub_instagram.published_posts) == 1
-    assert pub_instagram.published_posts[0].telegram_links == ("https://t.me/fashionalleyb/2",)
+    assert pub_instagram.published_posts[0].telegram_links == ("https://t.me/fashionalleyb/1",)
     assert repo.products["p-1"]["status"] == "published"
-    assert repo.products["p-1"]["telegram_post_id"] == "telegram_2"
+    assert repo.products["p-1"]["telegram_post_id"] == "telegram_1"
     assert repo.products["p-1"]["instagram_post_id"] is not None
 
 

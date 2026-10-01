@@ -220,6 +220,106 @@ def test_telegram_publisher_sends_once_when_username_matches_numeric_id(tmp_path
     assert sent_to == ["-1001246015920", "-1004363309099"]
 
 
+def _chat_lookup_client(chats: dict[str, dict | None]):
+    """httpx.Client stub for getChat. A None entry means Telegram did not answer."""
+
+    def fake_client(*_args, **_kwargs):
+        client = MagicMock()
+        client.__enter__.return_value = client
+
+        def get(_url, params=None, **_kwargs):
+            response = MagicMock()
+            if params is None:
+                response.content = b""
+                return response
+            chat = chats.get(params["chat_id"], {})
+            if chat is None:
+                raise RuntimeError("Telegram did not answer getChat")
+            response.json.return_value = {"ok": True, "result": chat}
+            return response
+
+        client.get.side_effect = get
+        return client
+
+    return fake_client
+
+
+def test_channel_listed_by_id_and_by_handle_receives_one_post(tmp_path: Path) -> None:
+    """The database holds the channel id and the config repeats it as @handle: one post, not two."""
+    repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / 'tg_pub.db'}")
+    repo.upsert_telegram_chat(
+        chat_id="-1001246015920",
+        title="Fashion Nest Boutique",
+        chat_type="channel",
+        role="publish_target",
+    )
+    pub = TelegramPublisher(
+        bot_token="test_token",
+        channel_id="-1004363309099, @fashionalleyb",
+        repo=repo,
+    )
+    post = ComposedPost(
+        title="Floral Blouse",
+        text="Stylish floral blouse.",
+        price=Decimal("45.00"),
+        currency="USD",
+        photo_url="https://example.com/blouse.jpg",
+        product_url="https://example.com/p/2",
+        source="mango",
+    )
+    chats = {
+        "-1001246015920": {"id": -1001246015920, "type": "channel", "username": "fashionalleyb"},
+        "-1004363309099": {"id": -1004363309099, "type": "supergroup", "title": "dev"},
+        "@fashionalleyb": {"id": -1001246015920, "type": "channel", "username": "fashionalleyb"},
+    }
+    sent_to: list[str] = []
+
+    with patch("publishers.telegram_publisher.httpx.Client", side_effect=_chat_lookup_client(chats)):
+        with patch.object(
+            pub,
+            "_send_photo_with_retry",
+            side_effect=lambda photo, caption, chat_id=None: sent_to.append(chat_id) or "7",
+        ):
+            res = pub.publish(post)
+
+    assert res.success is True
+    assert sent_to == ["-1001246015920", "-1004363309099"]
+
+
+def test_handle_telegram_cannot_resolve_is_still_recognised_as_the_same_channel() -> None:
+    """A getChat failure must not turn one channel into two posts, whichever form comes first."""
+    post = ComposedPost(
+        title="Floral Blouse",
+        text="Stylish floral blouse.",
+        price=Decimal("45.00"),
+        currency="USD",
+        photo_url="https://example.com/blouse.jpg",
+        product_url="https://example.com/p/2",
+        source="mango",
+    )
+    chats: dict[str, dict | None] = {
+        "-1001246015920": {"id": -1001246015920, "type": "channel", "username": "fashionalleyb"},
+        "@fashionalleyb": None,
+    }
+
+    for channel_id in ("-1001246015920, @fashionalleyb", "@fashionalleyb, -1001246015920"):
+        pub = TelegramPublisher(bot_token="test_token", channel_id=channel_id)
+        sent_to: list[str] = []
+        with patch(
+            "publishers.telegram_publisher.httpx.Client",
+            side_effect=_chat_lookup_client(chats),
+        ):
+            with patch.object(
+                pub,
+                "_send_photo_with_retry",
+                side_effect=lambda photo, caption, chat_id=None: sent_to.append(chat_id) or "7",
+            ):
+                res = pub.publish(post)
+
+        assert res.success is True
+        assert len(sent_to) == 1, f"{channel_id} sent to {sent_to}"
+
+
 def test_telegram_publisher_returns_public_post_link() -> None:
     """The public channel post link is returned so the Instagram story can open it."""
     pub = TelegramPublisher(bot_token="test_token", channel_id="-1004363309099, @fashionalleyb")
