@@ -1,12 +1,14 @@
-"""Color and size grid taken from the store page.
+"""Color, size grid, and heel height taken from the store page.
 
-Captions must repeat the color name and the full size range printed on the
-product page. Nothing here invents a shade or a default XS–XL span.
+Captions must repeat the color name, the full size range, and — for heeled
+shoes — the heel height printed on the product page. Nothing here invents a
+shade, a default XS–XL span, or a heel measurement.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
+import html as html_lib
 import json
 import logging
 import re
@@ -101,8 +103,12 @@ def extract_site_facts(html_text: str, url: str = "") -> tuple[str | None, tuple
     return color, tuple(sizes)
 
 
-def site_description(color: str | None, sizes: Sequence[str]) -> str:
-    """Caption lines for the size grid and color. Empty when the page did not say."""
+def site_description(
+    color: str | None,
+    sizes: Sequence[str],
+    heel_height: str | None = None,
+) -> str:
+    """Caption lines for the size grid, color, and heel height. Empty when the page did not say."""
     lines: list[str] = []
     ordered = order_sizes(sizes)
     if len(ordered) == 1:
@@ -112,7 +118,264 @@ def site_description(color: str | None, sizes: Sequence[str]) -> str:
     cleaned = " ".join((color or "").split()).strip(" .")
     if cleaned:
         lines.append(f"Цвет: {cleaned}.")
+    heel_line = heel_caption_line(heel_height)
+    if heel_line:
+        lines.append(heel_line)
     return "\n".join(lines)
+
+
+# A measurement counts only when the page itself labels it as heel height.
+_HEEL_LABEL = re.compile(
+    r"(?:"
+    r"heel\s*height"
+    r"|altura\s+del\s+tac[oó]n"
+    r"|hauteur\s+du\s+talon"
+    r"|absatzh[oö]he"
+    r"|altezza\s+(?:del\s+)?tacco"
+    r"|altura\s+do\s+salto"
+    r"|wysoko(?:ść|sc)\s+obcasa"
+    r"|topuk\s*(?:boyu|y[uü]ksekli[gğ]i)"
+    r"|высота\s+каблука"
+    r"|tac[oó]n\s+de"
+    r"|de\s+tac[oó]n"
+    r"|talon\s+de"
+    r"|heel\s+of"
+    r"|tac[oó]n\s*:"
+    r")"
+    r"(?:\s|&nbsp;|[:\-]){0,20}"
+    r"(\d{1,3}(?:[.,]\d{1,2})?)\s*(cm|см|mm|мм)\b",
+    re.IGNORECASE,
+)
+_HEEL_AFTER = re.compile(
+    r"(\d{1,3}(?:[.,]\d{1,2})?)\s*(cm|см|mm|мм)\s*(?:high\s*)?(?:heels?|каблук\w*|tac[oó]n|topuk)\b",
+    re.IGNORECASE,
+)
+_HEEL_NAME = re.compile(
+    r"^(?:heel[\s_-]*height(?:cm|mm)?|altura\s+del\s+tac[oó]n|hauteur\s+du\s+talon|"
+    r"absatzh[oö]he|altezza\s+(?:del\s+)?tacco|altura\s+do\s+salto|"
+    r"wysoko(?:ść|sc)\s+obcasa|topuk\s*(?:boyu|y[uü]ksekli[gğ]i)|высота\s+каблука)$",
+    re.IGNORECASE,
+)
+_MEASUREMENT = re.compile(
+    r"(\d{1,3}(?:[.,]\d{1,2})?)\s*(cm|см|mm|мм)\b",
+    re.IGNORECASE,
+)
+_FOOTWEAR = re.compile(
+    r"(?:"
+    r"\b(?:shoes?|boots?|sandals?|heels?|pumps?|mules?|loafers?|sneakers?|"
+    r"slingbacks?|stilettos?|zapatos?|botas?|sandalias?|tacones?|"
+    r"ayakkab\w*|çizme|topuklu|sandalet)\b|"
+    r"туфл|ботил|сапог|босонож|ботин|обув|каблук|мюл|лодоч|сандал|кроссов|кед|сабо|шпильк"
+    r")",
+    re.IGNORECASE,
+)
+_HEEL_WORD = re.compile(
+    r"(?:"
+    r"\b(?:heels?|stilettos?|pumps?|topuklu|tacones?|tac[oó]n|talon|absatz|obcas)\b|"
+    r"каблук|шпильк|ботильон"
+    r")",
+    re.IGNORECASE,
+)
+_NOT_HEEL = re.compile(
+    r"(?:"
+    r"\b(?:sneakers?|trainers?|running|flats?|ballet|loafers?|espadrilles?|"
+    r"slippers?|slides?|flip[-\s]?flops?)\b|"
+    r"кроссов|кед|балетк|лофер|эспадриль|слипон|шлепан|шлёпан|тапоч|мокасин"
+    r")",
+    re.IGNORECASE,
+)
+_DETAIL_LISTS = ("extraInfo", "attributes", "features", "details", "properties", "specifications")
+_LABEL_FIELDS = ("name", "label", "type", "id", "key")
+_VALUE_FIELDS = ("value", "description", "text", "content")
+
+
+def is_heeled_footwear(*parts: str) -> bool:
+    """True when the title or URL is footwear that is not a flat or a sneaker."""
+    text = " ".join(part for part in parts if part)
+    if not text or not _FOOTWEAR.search(text):
+        return False
+    if _HEEL_WORD.search(text):
+        return True
+    if _NOT_HEEL.search(text):
+        return False
+    return True
+
+
+def format_heel_height(raw: str | None) -> str | None:
+    """Keep a measurement the page printed. A bare number is not a height."""
+    if not raw:
+        return None
+    match = _MEASUREMENT.search(str(raw))
+    if not match:
+        return None
+    number, unit = match.group(1), match.group(2)
+    try:
+        value = float(number.replace(",", "."))
+    except ValueError:
+        return None
+    if unit.lower() in {"mm", "мм"}:
+        if not 10 <= value <= 200:
+            return None
+        shown_unit = "мм"
+    else:
+        if not 1 <= value <= 20:
+            return None
+        shown_unit = "см"
+    if abs(value - round(value)) < 1e-9:
+        shown_number = str(int(round(value)))
+    else:
+        shown_number = number
+    return f"{shown_number} {shown_unit}"
+
+
+def heel_caption_line(raw: str | None) -> str | None:
+    """Russian caption line, or None when the page did not print a height."""
+    shown = format_heel_height(raw)
+    if not shown:
+        return None
+    return f"Высота каблука: {shown}."
+
+
+def extract_heel_height(html_text: str, title: str = "") -> str | None:
+    """Return the one heel height printed for this product, or None.
+
+    Two different heights on the same page are left blank: the caption must
+    not choose between them.
+    """
+    if not html_text:
+        return None
+    named: list[tuple[str, str]] = []
+    for document in _iter_json_documents(html_text):
+        _named_heights(document, named)
+    if title:
+        matched = _unique_heights([height for name, height in named if _same_product(name, title)])
+        if len(matched) == 1:
+            return matched[0]
+        if len(matched) > 1:
+            return None
+    visible = _unique_heights(_heights_in_text(_plain_text(html_text)))
+    if len(visible) == 1:
+        return visible[0]
+    if len(visible) > 1:
+        return None
+    scripted = _unique_heights([*_heights_in_text(html_text), *(height for _, height in named)])
+    if len(scripted) == 1:
+        return scripted[0]
+    return None
+
+
+def _plain_text(html_text: str) -> str:
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", html_text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", html_lib.unescape(text))
+
+
+def _heights_in_text(text: str) -> list[str]:
+    found: list[str] = []
+    for pattern in (_HEEL_LABEL, _HEEL_AFTER):
+        for match in pattern.finditer(text):
+            shown = format_heel_height(f"{match.group(1)} {match.group(2)}")
+            if shown:
+                found.append(shown)
+    return found
+
+
+def _named_heights(node: object, found: list[tuple[str, str]], ancestor_name: str = "") -> None:
+    if isinstance(node, list):
+        for item in node:
+            _named_heights(item, found, ancestor_name)
+        return
+    if not isinstance(node, dict):
+        return
+    name = _product_name(node) or ancestor_name
+    for height in _direct_heel_values(node):
+        found.append((name, height))
+    for value in node.values():
+        _named_heights(value, found, name)
+
+
+def _product_name(node: dict) -> str:
+    for key in ("name", "title", "productName"):
+        value = node.get(key)
+        if not isinstance(value, str):
+            continue
+        text = " ".join(value.split())
+        if len(text) < 3 or _HEEL_NAME.search(text) or format_heel_height(text):
+            continue
+        return text
+    return ""
+
+
+def _direct_heel_values(node: dict) -> list[str]:
+    found: list[str] = []
+    for key, value in node.items():
+        if isinstance(key, str) and isinstance(value, str) and _HEEL_NAME.search(key.strip()):
+            shown = format_heel_height(value)
+            if shown:
+                found.append(shown)
+    for key in _DETAIL_LISTS:
+        items = node.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            label = ""
+            for label_key in _LABEL_FIELDS:
+                raw = item.get(label_key)
+                if isinstance(raw, str) and raw.strip():
+                    label = raw.strip()
+                    break
+            if not label or not _HEEL_NAME.search(label):
+                continue
+            for value_key in _VALUE_FIELDS:
+                raw = item.get(value_key)
+                if not isinstance(raw, str):
+                    continue
+                shown = format_heel_height(raw)
+                if shown:
+                    found.append(shown)
+                    break
+    return found
+
+
+def _same_product(name: str, title: str) -> bool:
+    left = " ".join(name.casefold().split())
+    right = " ".join(title.casefold().split())
+    if len(left) < 3 or len(right) < 3:
+        return False
+    if left == right:
+        return True
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    # A short shared word like "shoes" must not glue two different products together.
+    if len(shorter) < 12:
+        return False
+    return shorter in longer
+
+
+def _unique_heights(items: Sequence[str]) -> list[str]:
+    unique: list[str] = []
+    seen: list[float] = []
+    for item in items:
+        mm = _as_mm(item)
+        if mm is None:
+            continue
+        if any(abs(mm - previous) < 0.6 for previous in seen):
+            continue
+        seen.append(mm)
+        unique.append(item)
+    return unique
+
+
+def _as_mm(shown: str) -> float | None:
+    match = _MEASUREMENT.search(shown)
+    if not match:
+        return None
+    value = float(match.group(1).replace(",", "."))
+    if match.group(2).lower() in {"mm", "мм"}:
+        return value
+    return value * 10
 
 
 def _prefer_sizes(primary: tuple[str, ...], extra: tuple[str, ...]) -> tuple[str, ...]:
@@ -168,8 +431,10 @@ def clean_size(raw: str) -> str | None:
 
 
 def attach_site_facts(product: RawProduct, *, timeout_seconds: float = 12.0) -> RawProduct:
-    """Fill color and sizes from the product page when the listing did not include them."""
-    if product.color and product.sizes:
+    """Fill color, sizes, and heel height from the product page when they are missing."""
+    needs_variant = not product.color or not product.sizes
+    needs_heel = not product.heel_height and is_heeled_footwear(product.title, product.product_url)
+    if not needs_variant and not needs_heel:
         return product
     if not _looks_like_product_page(product.product_url):
         return product
@@ -182,18 +447,24 @@ def attach_site_facts(product: RawProduct, *, timeout_seconds: float = 12.0) -> 
         return product
     if not html_text:
         return product
-    color, sizes = extract_site_facts(html_text, final_url or product.product_url)
+    page_url = final_url or product.product_url
+    color, sizes = extract_site_facts(html_text, page_url)
     color = product.color or color
     sizes = product.sizes or sizes
-    if color == product.color and sizes == product.sizes:
+    if is_heeled_footwear(product.title, product.product_url):
+        heel = extract_heel_height(html_text, product.title) or product.heel_height
+    else:
+        heel = None
+    if color == product.color and sizes == product.sizes and heel == product.heel_height:
         return product
     logger.info(
-        "Product page facts for %s: color=%s sizes=%s",
+        "Product page facts for %s: color=%s sizes=%s heel=%s",
         product.external_id,
         color or "—",
         " ".join(sizes) if sizes else "—",
+        heel or "—",
     )
-    return replace(product, color=color, sizes=sizes)
+    return replace(product, color=color, sizes=sizes, heel_height=heel)
 
 
 def _looks_like_product_page(url: str) -> bool:

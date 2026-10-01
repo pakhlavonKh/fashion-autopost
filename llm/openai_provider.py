@@ -97,7 +97,7 @@ class OpenAIProvider:
             f"You may select at most {max_items} products.\n"
             "The product name (title) MUST be written in Russian.\n"
             "The description MUST be an empty string. Never invent a color, a size range, "
-            "fabric, or composition: those facts are copied from the store page.\n"
+            "fabric, composition, or heel height: those facts are copied from the store page.\n"
             "You MUST respond ONLY with a valid JSON object matching this structure:\n"
             "{\n"
             '  "selected_products": [\n'

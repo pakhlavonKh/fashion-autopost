@@ -98,15 +98,16 @@ def test_high_heel_description_rule_extraction() -> None:
     rule = HighHeelDescriptionRule()
     p1 = _make_raw_product("h1", title="Leather High-Heel Sandals", heel_height="8.5 cm")
     res1 = rule.apply(p1, "Beautiful sandals\nPrice: $60")
-    assert "Heel height: 8.5 cm" in res1
+    assert "Высота каблука: 8.5 см." in res1
 
-    # Rule without heel height should not invent a value
+    # A heeled shoe with no measurement on the product stays without one.
     p2 = _make_raw_product("h2", title="High Heel Pumps", heel_height=None)
     res2 = rule.apply(p2, "Pumps\nPrice: $70")
+    assert "Высота каблука" not in res2
     assert "Heel height" not in res2
 
 
-def test_high_heel_rule_parses_description_text() -> None:
+def test_high_heel_rule_ignores_caption_text() -> None:
     rule = HighHeelDescriptionRule()
     p = RawProduct(
         external_id="h3",
@@ -120,11 +121,11 @@ def test_high_heel_rule_parses_description_text() -> None:
     )
     desc = "Fabulous evening stiletto shoes. Features a 10 cm heel for an elegant silhouette."
     res = rule.apply(p, desc)
-    assert "Heel height: 10 cm" in res
+    assert "Высота каблука" not in res
+    assert "10 cm" in res
 
-    # apply_description_rules pipeline function
     full_res = apply_description_rules(p, desc)
-    assert "Heel height: 10 cm" in full_res
+    assert "Высота каблука" not in full_res
 
 
 # --- 4. Maximum Product Price Setting ---

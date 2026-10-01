@@ -24,7 +24,7 @@ from core.image_downloader import ImageDownloader
 from core.moderation import ConfigurableModerationGate, ModerationGate
 from core.outfits import OutfitCoordinator
 from core.pricing import FxConverter, calculate_final_price, source_price_usd
-from core.product_facts import attach_site_facts, site_description
+from core.product_facts import attach_site_facts, is_heeled_footwear, site_description
 from core.similarity import rank_products_by_channel_similarity
 from llm.base import LLMProvider, PromptLoader, SelectionResult
 from publishers.base import Publisher
@@ -599,8 +599,9 @@ class PipelineRunner:
         """Process price calculation, moderation, composition, and publishing for one item."""
         external_id = product.external_id
         product = attach_site_facts(product)
-        # Size range and color are copied from the product page. The model must not fill them in.
-        description = site_description(product.color, product.sizes)
+        # Size, color, and heel height are copied from the product page. The model must not fill them in.
+        heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
+        description = site_description(product.color, product.sizes, heel_height=heel)
 
         # 7a. Calculate final price (FR-3.1, FR-3.2, FR-3.3)
         final_price = calculate_final_price(

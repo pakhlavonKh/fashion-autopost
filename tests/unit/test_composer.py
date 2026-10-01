@@ -61,3 +61,34 @@ def test_compose_post_without_link() -> None:
 
     assert "Product Link:" not in post.text
     assert post.product_url is None
+
+
+def test_compose_post_copies_heel_height_from_the_product_page() -> None:
+    product = RawProduct(
+        external_id="sku-heel",
+        source="zara",
+        title="Leather high-heel shoes",
+        price=Decimal("69.95"),
+        currency="EUR",
+        photo_url="https://images.example.com/shoe.jpg",
+        product_url="https://www.zara.com/es/es/leather-high-heel-shoes-p12345678.html",
+        in_stock=True,
+        heel_height="9 cm",
+    )
+    post = compose_post(
+        product=product,
+        description="Размеры от 36 до 41.\nЦвет: Black.",
+        price=Decimal("89"),
+        target_currency="USD",
+        include_link=True,
+    )
+    assert post.text.count("Высота каблука") == 1
+    assert "Высота каблука: 9 см." in post.text
+
+    again = compose_post(
+        product=product,
+        description="Размеры от 36 до 41.\nЦвет: Black.\nВысота каблука: 9 см.",
+        price=Decimal("89"),
+        target_currency="USD",
+    )
+    assert again.text.count("Высота каблука") == 1

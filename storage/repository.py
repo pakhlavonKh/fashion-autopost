@@ -321,6 +321,7 @@ class SqlAlchemyProductRepository:
                         photo_url=r.photo_url,
                         product_url=r.product_url or "",
                         in_stock=True,
+                        heel_height=getattr(r, "heel_height", None),
                     )
                 )
             return products
