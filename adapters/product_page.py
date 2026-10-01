@@ -562,25 +562,65 @@ def _from_embedded_article(html_text: str, url: str, default_currency: str) -> _
 def _from_open_graph(html_text: str, url: str, default_currency: str) -> _ParsedProduct | None:
     title = _meta(html_text, "og:title") or _meta(html_text, "twitter:title")
     title = title.split("|")[0].strip()
+    images = [_absolute_url(item, url) for item in _meta_all(html_text, "og:image")]
+    images = [item for item in images if item]
+    if not title or not images:
+        return None
+    priced = _meta_price(html_text, default_currency) or _shelf_price(html_text, default_currency)
+    if priced is None:
+        return None
+    price, currency = priced
+    return _ParsedProduct(title=title, price=price, currency=currency, images=images, match_url=url)
+
+
+def _meta_price(html_text: str, default_currency: str) -> tuple[Decimal, str] | None:
+    """The amount a store states in its meta tags."""
     amount = (
         _meta(html_text, "product:price:amount")
         or _meta(html_text, "og:price:amount")
         or _itemprop(html_text, "price")
     )
+    if not amount:
+        return None
     meta_currency = (
         _meta(html_text, "product:price:currency")
         or _meta(html_text, "og:price:currency")
         or default_currency
     )
-    images = [_absolute_url(item, url) for item in _meta_all(html_text, "og:image")]
-    images = [item for item in images if item]
-    if not title or not amount or not images:
-        return None
     try:
-        price, currency = parse_price(f"{amount} {meta_currency}", default_currency=default_currency)
+        return parse_price(f"{amount} {meta_currency}", default_currency=default_currency)
     except ValueError:
         return None
-    return _ParsedProduct(title=title, price=price, currency=currency, images=images, match_url=url)
+
+
+# Some storefronts ship no JSON-LD and leave the price out of their meta tags.
+# The amount is then only where the shopper reads it, in the price block of the
+# product card, tagged as the current price so a sale keeps the two apart.
+_CURRENT_PRICE_ANCHORS = ('data-qa-id="price-container-current"', "product-detail-info__price")
+_PRICE_DATA_NODE = re.compile(
+    r'<data[^>]*\bdata-currency="(?P<currency>[A-Za-z]{3})"[^>]*\bvalue="(?P<amount>[\d.,]+)"',
+    re.IGNORECASE,
+)
+_PRICE_BLOCK_WINDOW = 2000
+
+
+def _shelf_price(html_text: str, default_currency: str) -> tuple[Decimal, str] | None:
+    """The amount printed on the product card itself."""
+    for anchor in _CURRENT_PRICE_ANCHORS:
+        start = html_text.find(anchor)
+        if start < 0:
+            continue
+        match = _PRICE_DATA_NODE.search(html_text, start, start + _PRICE_BLOCK_WINDOW)
+        if match is None:
+            continue
+        try:
+            return parse_price(
+                f"{match.group('amount')} {match.group('currency')}",
+                default_currency=default_currency,
+            )
+        except ValueError:
+            continue
+    return None
 
 
 def _merge_parsed(primary: _ParsedProduct | None, extra: _ParsedProduct | None) -> _ParsedProduct | None:

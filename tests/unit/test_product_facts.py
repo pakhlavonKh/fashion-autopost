@@ -301,3 +301,47 @@ def test_the_page_is_read_once_for_sizes_and_for_the_gallery(monkeypatch) -> Non
 
     assert calls == [url]
     assert first == second
+
+
+# Zara's newer locales ship no JSON-LD and leave the amount out of their meta
+# tags: the price is only in the block the shopper reads.
+SHELF_PRICE_HTML = """
+<html><head>
+  <meta property="og:title" content="BASIC KNIT JUMPER">
+  <meta property="og:image" content="https://static.zara.net/photos/08851172704-p.jpg">
+</head><body>
+  <div class="product-detail-info__price">
+    <span class="price-current price__amount" data-qa-id="price-container-current">
+      <data data-currency="EUR" value="25.95"><span>25.95 EUR</span></data>
+    </span>
+  </div>
+  <p class="product-color-extended-name">
+    <span class="product-color-extended-name__name">camel</span>
+  </p>
+</body></html>
+"""
+
+
+def test_a_page_without_structured_data_still_gives_up_its_price() -> None:
+    product = parse_product_html(
+        SHELF_PRICE_HTML,
+        "https://www.zara.com/de/en/basic-knit-jumper-p08851172.html",
+    )
+
+    assert product is not None
+    assert product.title == "BASIC KNIT JUMPER"
+    assert product.price == Decimal("25.95")
+    assert product.currency == "EUR"
+
+
+def test_the_caption_says_the_shade_the_shopper_reads_not_the_swatch_hex() -> None:
+    """A storefront names the shade twice: as a word and as the hex it paints."""
+    html = SHELF_PRICE_HTML.replace(
+        "<body>",
+        '<body><script type="application/json">'
+        '{"color":{"name":"ffffff"},"sizes":[{"label":"S"},{"label":"M"}]}</script>',
+    )
+
+    color, _sizes = extract_site_facts(html, "https://www.zara.com/de/en/jumper-p08851172.html")
+
+    assert color == "camel"

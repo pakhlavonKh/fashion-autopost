@@ -708,10 +708,17 @@ def _color_text(value: object) -> str | None:
     return text
 
 
+# Stores carry the shade twice: the name the shopper reads and the hex the
+# swatch is painted with. «Цвет: ffffff» is nothing anyone shops for.
+_HEX_COLOR = re.compile(r"^#?(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$", re.IGNORECASE)
+
+
 def _plausible_color(text: str) -> bool:
     if not text or len(text) > 40:
         return False
     if not re.search(r"[A-Za-zА-Яа-яЁё]", text):
+        return False
+    if _HEX_COLOR.match(text):
         return False
     if len(text.split()) > 4:
         return False
@@ -818,10 +825,10 @@ def _sizes_from_dom(html_text: str) -> tuple[str, ...]:
 
 def _color_from_dom(html_text: str) -> str | None:
     for pattern in _DOM_COLOR:
-        match = pattern.search(html_text)
-        if not match:
-            continue
-        text = _color_text(match.group(1))
-        if text:
-            return text
+        # The wrapper around the name often matches first and holds nothing but
+        # whitespace, so an empty hit must not end the search.
+        for match in pattern.finditer(html_text):
+            text = _color_text(match.group(1))
+            if text:
+                return text
     return None
