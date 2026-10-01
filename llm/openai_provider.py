@@ -164,7 +164,22 @@ class OpenAIProvider:
         """Parse and validate JSON string against Pydantic schema and known candidate IDs."""
         data = json.loads(raw_json)
         validated = _SelectionResponseSchema.model_validate(data)
-        
+
+        # Single-candidate shortcut: when there is only one product to translate,
+        # the LLM can only have meant that one product regardless of whether it
+        # echoed the external_id back verbatim. Using the real ID from the
+        # candidate avoids silently discarding the Russian title when GPT
+        # returns a slightly malformed ID (e.g. for manually-submitted links).
+        if len(candidates) == 1 and len(validated.selected_products) == 1:
+            item = validated.selected_products[0]
+            return [
+                SelectionResult(
+                    external_id=candidates[0].external_id,
+                    description=item.description.strip(),
+                    title=item.title.strip() if item.title else None,
+                )
+            ]
+
         valid_ids = {c.external_id for c in candidates}
         results: list[SelectionResult] = []
 
