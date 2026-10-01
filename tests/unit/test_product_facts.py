@@ -76,8 +76,7 @@ def test_mango_color_and_full_size_grid_come_from_the_page() -> None:
     assert "S" in sizes
     text = site_description(color, sizes)
     assert text.startswith("Размеры от XSS до 7XL.")
-    assert "Цвет: Light beige." in text
-    assert "молочный" not in text
+    assert "Цвет: светло-бежевый." in text
     assert "XS до XL" not in text
 
 
@@ -86,7 +85,25 @@ def test_zara_uses_the_color_id_from_the_url_and_keeps_sold_out_sizes() -> None:
     color, sizes = extract_site_facts(ZARA_HTML, url)
     assert color == "Ecru"
     assert sizes == ("XS", "S", "M", "L", "XL")
-    assert site_description(color, sizes) == "Размеры от XS до XL.\nЦвет: Ecru."
+    assert site_description(color, sizes) == "Размеры от XS до XL.\nЦвет: экрю."
+
+
+def test_the_shade_the_store_prints_is_said_in_russian() -> None:
+    """Stores name colours in their own language; the caption is Russian."""
+    from core.color_names import russian_color
+
+    assert russian_color("Marron") == "коричневый"
+    assert russian_color("Marrón") == "коричневый"
+    assert russian_color("Bleu marine") == "темно-синий"
+    assert russian_color("Siyah") == "черный"
+    assert russian_color("OFF WHITE") == "молочный"
+    # «Light» and «dark» are read off a known base shade.
+    assert russian_color("Gris clair") == "светло-серый"
+    assert russian_color("Dark Green") == "темно-зеленый"
+    # Already Russian, and unknown wording, are both left as the page said.
+    assert russian_color("Темно-синий") == "темно-синий"
+    assert russian_color("Atlantic Haze") == "Atlantic Haze"
+    assert russian_color("") == ""
 
 
 def test_missing_facts_are_left_blank() -> None:
@@ -123,7 +140,7 @@ def test_size_buttons_are_read_when_json_has_no_grid() -> None:
     color, sizes = extract_site_facts(html, "https://shop.mango.com/es/p/shirt")
     assert color == "Crudo"
     assert sizes == ("XSS", "M", "7XL")
-    assert site_description(color, sizes) == "Размеры от XSS до 7XL.\nЦвет: Crudo."
+    assert site_description(color, sizes) == "Размеры от XSS до 7XL.\nЦвет: молочный."
 
 
 def _product(url: str) -> RawProduct:
@@ -189,7 +206,7 @@ def test_heel_height_without_a_unit_or_with_two_values_is_left_blank() -> None:
     assert extract_heel_height(bare, "Leather shoes") is None
     mixed = _shoe_page("Leather shoes", "<p>Heel height: 9 cm</p><p>Heel height: 5 cm</p>")
     assert extract_heel_height(mixed, "Leather shoes") is None
-    assert site_description("Black", ("36", "41"), None) == "Размеры от 36 до 41.\nЦвет: Black."
+    assert site_description("Black", ("36", "41"), None) == "Размеры от 36 до 41.\nЦвет: черный."
 
 
 def test_heel_height_is_not_taken_from_a_dress_or_from_sneakers() -> None:

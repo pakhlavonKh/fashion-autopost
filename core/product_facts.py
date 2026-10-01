@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from urllib.parse import parse_qs, urlparse
 
 from adapters.base import RawProduct
+from core.color_names import russian_color
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,8 @@ def site_description(
         lines.append(f"Размер: {ordered[0]}.")
     elif len(ordered) >= 2:
         lines.append(f"Размеры от {ordered[0]} до {ordered[-1]}.")
-    cleaned = " ".join((color or "").split()).strip(" .")
+    # Stores name the shade in their own language; the caption says it in Russian.
+    cleaned = russian_color(color or "")
     if cleaned:
         lines.append(f"Цвет: {cleaned}.")
     heel_line = heel_caption_line(heel_height)
