@@ -196,3 +196,70 @@ def test_dashboard_auth_configurable_username_and_password(tmp_path: Path, monke
     assert env_config.dashboard.admin_password == "EnvDirectorPass999!"
 
 
+def _publish_now_client(tmp_path: Path, name: str) -> tuple[TestClient, MagicMock, str]:
+    cfg_file = tmp_path / f"{name}.yaml"
+    cfg_file.write_text(yaml.dump({"schedule": {"times": ["10:00"]}}), encoding="utf-8")
+    config = AppConfig.load(config_path=cfg_file, env_path="non_existent.env")
+    repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / f'{name}.db'}")
+    runner = MagicMock()
+    app = create_dashboard_app(config=config, runner=runner, repo=repo)
+    return TestClient(app), runner, config.dashboard.admin_key
+
+
+def test_publish_now_needs_admin_credentials(tmp_path: Path):
+    """The on-demand publish button must not be reachable without the admin key."""
+    client, runner, _key = _publish_now_client(tmp_path, "publish_now_auth")
+
+    assert client.post("/api/publish-now").status_code == 401
+    assert client.post("/api/publish-now", headers={"X-Admin-Key": "wrong"}).status_code == 401
+    runner.publish_next_eligible_product.assert_not_called()
+
+
+def test_publish_now_publishes_the_next_queued_product(tmp_path: Path):
+    """One post goes out immediately and the catalog is not re-scraped for it."""
+    client, runner, key = _publish_now_client(tmp_path, "publish_now_queue")
+    runner.publish_next_eligible_product.return_value = (True, "Опубликован следующий подходящий товар: Жакет")
+
+    res = client.post("/api/publish-now", headers={"X-Admin-Key": key})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["success"] is True
+    assert body["published"] == 1
+    assert "Жакет" in body["message"]
+    runner.run_cycle.assert_not_called()
+
+
+def test_publish_now_falls_back_to_a_cycle_when_the_queue_is_empty(tmp_path: Path):
+    """An empty queue must still produce a post, the same way the schedule does."""
+    from core.pipeline import CycleSummary
+
+    client, runner, key = _publish_now_client(tmp_path, "publish_now_cycle")
+    runner.publish_next_eligible_product.return_value = (False, "В базе нет подходящих товаров для публикации.")
+    runner.run_cycle.return_value = CycleSummary(fetched=5, unseen=1, selected=1, published=1)
+
+    res = client.post("/api/publish-now", headers={"X-Admin-Key": key})
+
+    assert res.status_code == 200
+    assert res.json()["success"] is True
+    assert res.json()["published"] == 1
+    runner.run_cycle.assert_called_once_with()
+
+
+def test_publish_now_reports_why_nothing_was_published(tmp_path: Path):
+    """When no post could go out, the admin sees the reason instead of a silent success."""
+    from core.pipeline import CycleSummary
+
+    client, runner, key = _publish_now_client(tmp_path, "publish_now_empty")
+    runner.publish_next_eligible_product.return_value = (False, "В базе нет подходящих товаров для публикации.")
+    runner.run_cycle.return_value = CycleSummary(skipped_daily_cap=True)
+
+    res = client.post("/api/publish-now", headers={"X-Admin-Key": key})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["success"] is False
+    assert body["published"] == 0
+    assert "лимит" in body["message"]
+
+

@@ -11,6 +11,10 @@ const translations = {
     btnConfig: "Sozlamalar",
     btnRunCycle: "Tsiklni ishga tushirish",
     runningCycle: "Tsikl bajarilmoqda...",
+    btnPublishNow: "Hozir post joylash",
+    publishingNow: "Post joylanmoqda...",
+    publishNowConfirm: "Hozir post joylansinmi? Post kanalga darhol chop etiladi.",
+    toastPublishNow: "Post joylanmoqda...",
 
     metricPublishedToday: "Bugun chop etilgan",
     metricPublishedTotal: "Jami chop etilgan",
@@ -134,6 +138,10 @@ const translations = {
     btnConfig: "Настройки",
     btnRunCycle: "Запустить цикл",
     runningCycle: "Выполняется цикл...",
+    btnPublishNow: "Выложить пост сейчас",
+    publishingNow: "Публикуется...",
+    publishNowConfirm: "Выложить пост сейчас? Пост будет опубликован в канал немедленно.",
+    toastPublishNow: "Публикую пост...",
 
     metricPublishedToday: "Опубликовано сегодня",
     metricPublishedTotal: "Всего опубликовано",
@@ -257,6 +265,10 @@ const translations = {
     btnConfig: "Settings",
     btnRunCycle: "Run Cycle Now",
     runningCycle: "Running Cycle...",
+    btnPublishNow: "Publish Post Now",
+    publishingNow: "Publishing...",
+    publishNowConfirm: "Publish a post now? It goes to the channel immediately.",
+    toastPublishNow: "Publishing the post...",
 
     metricPublishedToday: "Published Today",
     metricPublishedTotal: "Total Published",
@@ -811,6 +823,48 @@ document.getElementById('btnRunCycle').addEventListener('click', async () => {
     btn.disabled = false;
     btnText.textContent = t('btnRunCycle');
     btnIcon.setAttribute('data-lucide', 'zap');
+    btnIcon.classList.remove('spin');
+    refreshLucide();
+  }
+});
+
+// Publish one post right now, outside the schedule
+document.getElementById('btnPublishNow').addEventListener('click', async () => {
+  if (!window.confirm(t('publishNowConfirm'))) return;
+
+  const btn = document.getElementById('btnPublishNow');
+  const btnText = document.getElementById('btnPublishNowText');
+  const btnIcon = document.getElementById('btnPublishNowIcon');
+  btn.disabled = true;
+  btnText.textContent = t('publishingNow');
+  btnIcon.setAttribute('data-lucide', 'loader-2');
+  btnIcon.classList.add('spin');
+  refreshLucide();
+
+  try {
+    showToast(t('toastPublishNow'));
+    const res = await apiFetch('/api/publish-now', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      showToast(data.message, !data.success);
+      await fetchStats();
+      await fetchProducts();
+    } else {
+      showToast(`Error: ${data.detail}`, true);
+    }
+  } catch (err) {
+    if (err.message !== 'Unauthorized') {
+      showToast(`Network error: ${err.message}`, true);
+    }
+  } finally {
+    btn.disabled = false;
+    btnText.textContent = t('btnPublishNow');
+    btnIcon.setAttribute('data-lucide', 'send');
     btnIcon.classList.remove('spin');
     refreshLucide();
   }

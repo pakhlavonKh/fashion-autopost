@@ -379,6 +379,30 @@ def create_dashboard_app(
         finally:
             config.dry_run = original_dry_run
 
+    @app.post("/api/publish-now", dependencies=[Depends(verify_admin)])
+    def publish_now():
+        """Publish one post immediately, off schedule, through the regular pipeline."""
+        try:
+            ok, message = runner.publish_next_eligible_product()
+            if ok:
+                return {"success": True, "published": 1, "message": message}
+
+            # The queue held nothing suitable, so collect products the way the schedule does.
+            summary = runner.run_cycle()
+            if summary.published:
+                return {
+                    "success": True,
+                    "published": summary.published,
+                    "message": f"Опубликовано постов: {summary.published}.",
+                }
+            if summary.skipped_daily_cap:
+                return {"success": False, "published": 0, "message": "Достигнут дневной лимит публикаций."}
+            reason = "; ".join(summary.errors) if summary.errors else message
+            return {"success": False, "published": 0, "message": reason}
+        except Exception as exc:
+            logger.error("On-demand publish failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(exc))
+
     @app.get("/api/config", dependencies=[Depends(verify_admin)])
     def get_config():
         """Retrieve current config and prompt content."""
