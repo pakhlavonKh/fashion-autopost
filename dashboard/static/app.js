@@ -806,45 +806,52 @@ async function approveProduct(externalId) {
 }
 
 // Trigger Cycle
-document.getElementById('btnRunCycle').addEventListener('click', async () => {
-  const btn = document.getElementById('btnRunCycle');
-  const btnText = document.getElementById('btnRunCycleText');
-  const btnIcon = document.getElementById('btnRunCycleIcon');
-  btn.disabled = true;
-  btnText.textContent = t('runningCycle');
-  btnIcon.setAttribute('data-lucide', 'loader-2');
-  btnIcon.classList.add('spin');
-  refreshLucide();
-
-  try {
-    showToast(t('toastExecuting'));
-    const res = await apiFetch('/api/run-cycle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
-    });
-    const data = await res.json();
-
-    if (res.ok) {
-      const s = data.summary;
-      showToast(t('toastSuccess', s.published, s.unseen));
-      await fetchStats();
-      await fetchProducts();
-    } else {
-      showToast(`Error: ${data.detail}`, true);
+const btnRunCycleEl = document.getElementById('btnRunCycle');
+if (btnRunCycleEl) {
+  btnRunCycleEl.addEventListener('click', async () => {
+    const btn = btnRunCycleEl;
+    const btnText = document.getElementById('btnRunCycleText');
+    const btnIcon = document.getElementById('btnRunCycleIcon');
+    btn.disabled = true;
+    if (btnText) btnText.textContent = t('runningCycle');
+    if (btnIcon) {
+      btnIcon.setAttribute('data-lucide', 'loader-2');
+      btnIcon.classList.add('spin');
     }
-  } catch (err) {
-    if (err.message !== 'Unauthorized') {
-      showToast(`Network error: ${err.message}`, true);
-    }
-  } finally {
-    btn.disabled = false;
-    btnText.textContent = t('btnRunCycle');
-    btnIcon.setAttribute('data-lucide', 'zap');
-    btnIcon.classList.remove('spin');
     refreshLucide();
-  }
-});
+
+    try {
+      showToast(t('toastExecuting'));
+      const res = await apiFetch('/api/run-cycle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        const s = data.summary;
+        showToast(t('toastSuccess', s.published, s.unseen));
+        await fetchStats();
+        await fetchProducts();
+      } else {
+        showToast(`Error: ${data.detail}`, true);
+      }
+    } catch (err) {
+      if (err.message !== 'Unauthorized') {
+        showToast(`Network error: ${err.message}`, true);
+      }
+    } finally {
+      btn.disabled = false;
+      if (btnText) btnText.textContent = t('btnRunCycle');
+      if (btnIcon) {
+        btnIcon.setAttribute('data-lucide', 'zap');
+        btnIcon.classList.remove('spin');
+      }
+      refreshLucide();
+    }
+  });
+}
 
 // Clear the catalogue, published rows included
 document.getElementById('btnClearBase').addEventListener('click', async () => {

@@ -11,6 +11,7 @@ from core.pricing import (
     FixedRateConverter,
     calculate_final_price,
     source_price_usd,
+    whole_price,
 )
 
 
@@ -24,12 +25,12 @@ def test_calculate_final_price_same_currency() -> None:
         target_currency="USD",
         fx=fx,
     )
-    assert final == Decimal("65.00")
+    assert final == Decimal("64")
 
 
 def test_calculate_final_price_fixed_rate_conversion() -> None:
-    """Validate formula: price_final = (original_price * fx_rate) + markup."""
-    # 100.00 EUR * 1.08 = 108.00 USD + 15.00 markup = 123.00 USD
+    """Validate formula: price_final = (original_price * fx_rate) + markup, floored to even number."""
+    # 100.00 EUR * 1.08 = 108.00 USD + 15.00 markup = 123.00 USD -> floored to 122
     fx = FixedRateConverter(fixed_rate=Decimal("1.08"))
     final = calculate_final_price(
         original_price=Decimal("100.00"),
@@ -38,11 +39,11 @@ def test_calculate_final_price_fixed_rate_conversion() -> None:
         target_currency="USD",
         fx=fx,
     )
-    assert final == Decimal("123.00")
+    assert final == Decimal("122")
 
 
 def test_calculate_final_price_rounds_cents_down() -> None:
-    """Sale prices drop cents. 68.892 becomes 68, never 68.89 or 69."""
+    """Sale prices drop cents and floor to closest even number. 68.892 becomes 68."""
     # 49.90 * 1.08 = 53.892 + 15.00 = 68.892 -> 68
     fx = FixedRateConverter(fixed_rate=Decimal("1.08"))
     final = calculate_final_price(
@@ -55,6 +56,18 @@ def test_calculate_final_price_rounds_cents_down() -> None:
     assert final == Decimal("68")
 
 
+def test_whole_price_floors_down_to_even() -> None:
+    """Price is always even, floored down to the closest even number."""
+    assert whole_price(Decimal("101.39")) == Decimal("100")
+    assert whole_price(Decimal("101.00")) == Decimal("100")
+    assert whole_price(Decimal("102.39")) == Decimal("102")
+    assert whole_price(Decimal("102.00")) == Decimal("102")
+    assert whole_price(Decimal("103.99")) == Decimal("102")
+    assert whole_price(Decimal("79.99")) == Decimal("78")
+    assert whole_price(Decimal("78")) == Decimal("78")
+    assert whole_price(Decimal("0")) == Decimal("0")
+
+
 def test_fixed_rate_converter_cross_rates() -> None:
     """Test conversion using cross-rate lookup table."""
     rates = {
@@ -64,7 +77,7 @@ def test_fixed_rate_converter_cross_rates() -> None:
     }
     fx = FixedRateConverter(rates=rates)
     
-    # 1000 TRY in USD = 1000 * 0.027 = 27 USD + 10 markup = 37 USD
+    # 1000 TRY in USD = 1000 * 0.027 = 27 USD + 10 markup = 37 USD -> floored to 36
     final = calculate_final_price(
         original_price=Decimal("1000.00"),
         currency="TRY",
@@ -72,7 +85,7 @@ def test_fixed_rate_converter_cross_rates() -> None:
         target_currency="USD",
         fx=fx,
     )
-    assert final == Decimal("37.00")
+    assert final == Decimal("36")
 
 
 def test_dynamic_rate_converter() -> None:

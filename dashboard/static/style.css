@@ -1408,7 +1408,6 @@ input[type="checkbox"]:checked::after {
   }
 
   #btnPublishNow,
-  #btnRunCycle,
   #btnCollect,
   #btnLock {
     grid-column: 1 / -1;
@@ -1419,11 +1418,10 @@ input[type="checkbox"]:checked::after {
   }
 
   #btnPublishNow { order: 1; }
-  #btnRunCycle { order: 2; }
-  #btnCollect { order: 3; }
-  #btnOpenPrompt { order: 4; }
-  #btnOpenConfig { order: 5; }
-  #btnLock { order: 6; font-size: 14px; min-height: 48px; }
+  #btnCollect { order: 2; }
+  #btnOpenPrompt { order: 3; }
+  #btnOpenConfig { order: 4; }
+  #btnLock { order: 5; font-size: 14px; min-height: 48px; }
 
   .metrics-grid {
     grid-template-columns: 1fr 1fr;

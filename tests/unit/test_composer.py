@@ -33,10 +33,11 @@ def test_compose_post_with_link() -> None:
     assert post.photo_url == "https://images.example.com/dress.jpg"
     assert "Silk Slip Dress | ZARA" in post.text
     assert desc in post.text
-    assert "$101" in post.text
+    assert "$100" in post.text
+    assert "$101" not in post.text
     assert "$101.39" not in post.text
     assert "https://zara.com/dress-100" in post.text
-    assert post.price == Decimal("101")
+    assert post.price == Decimal("100")
     assert post.currency == "USD"
 
 

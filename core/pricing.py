@@ -209,12 +209,17 @@ class DynamicRateConverter:
             logger.debug("Failed to write FX disk cache: %s", exc)
 
 
-def whole_price(amount: Decimal) -> Decimal:
-    """Drop cents by rounding down to a whole currency unit.
+def whole_price(amount: Decimal | int | float | str) -> Decimal:
+    """Drop cents and round down to the closest even whole currency unit.
 
-    42.39 becomes 42. The store price itself is not changed.
+    101.39 becomes 100. 102.39 becomes 102.
     """
-    return amount.to_integral_value(rounding=ROUND_DOWN)
+    if not isinstance(amount, Decimal):
+        amount = Decimal(str(amount))
+    floored = int(amount.to_integral_value(rounding=ROUND_DOWN))
+    if floored % 2 != 0:
+        floored -= 1
+    return Decimal(floored)
 
 
 def calculate_final_price(

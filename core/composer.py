@@ -44,7 +44,7 @@ def compose_post(
     clean_title = product.title.strip()
     brand = product.source.upper()
 
-    # Sale price is always a whole unit. 104.90 becomes 104.
+    # Sale price is always an even whole unit floored down to the closest even number.
     shown_price = whole_price(price)
     symbol = "$" if target_currency.upper() == "USD" else f"{target_currency.upper()} "
     price_str = f"{symbol}{int(shown_price)}"
