@@ -18,6 +18,9 @@ const translations = {
     btnCollect: "Yangi mahsulotlarni yuklash",
     collecting: "Mahsulotlar yuklanmoqda...",
     toastCollect: "Brend saytlaridan mahsulotlar yuklanmoqda...",
+    btnClearBase: "Bazani tozalash",
+    clearingBase: "Tozalanmoqda...",
+    clearBaseConfirm: "Bazadagi BARCHA mahsulotlar, chop etilganlari ham o'chiriladi. Shundan keyin bot xuddi shu mahsulotlarni qayta chop etishi mumkin. Davom etilsinmi?",
 
     metricPublishedToday: "Bugun chop etilgan",
     metricPublishedTotal: "Jami chop etilgan",
@@ -148,6 +151,9 @@ const translations = {
     btnCollect: "Загрузить новые товары",
     collecting: "Загружаю товары...",
     toastCollect: "Собираю товары с сайтов брендов, это занимает пару минут...",
+    btnClearBase: "Очистить базу",
+    clearingBase: "Очищаю...",
+    clearBaseConfirm: "Будут удалены ВСЕ товары из базы, включая опубликованные. После этого бот сможет опубликовать те же товары повторно. Продолжить?",
 
     metricPublishedToday: "Опубликовано сегодня",
     metricPublishedTotal: "Всего опубликовано",
@@ -278,6 +284,9 @@ const translations = {
     btnCollect: "Load New Products",
     collecting: "Loading products...",
     toastCollect: "Collecting products from the brand sites, this takes a couple of minutes...",
+    btnClearBase: "Clear Catalogue",
+    clearingBase: "Clearing...",
+    clearBaseConfirm: "EVERY product will be removed, published ones included. The bot will then be able to post the same products again. Continue?",
 
     metricPublishedToday: "Published Today",
     metricPublishedTotal: "Total Published",
@@ -832,6 +841,42 @@ document.getElementById('btnRunCycle').addEventListener('click', async () => {
     btn.disabled = false;
     btnText.textContent = t('btnRunCycle');
     btnIcon.setAttribute('data-lucide', 'zap');
+    btnIcon.classList.remove('spin');
+    refreshLucide();
+  }
+});
+
+// Clear the catalogue, published rows included
+document.getElementById('btnClearBase').addEventListener('click', async () => {
+  if (!window.confirm(t('clearBaseConfirm'))) return;
+
+  const btn = document.getElementById('btnClearBase');
+  const btnText = document.getElementById('btnClearBaseText');
+  const btnIcon = document.getElementById('btnClearBaseIcon');
+  btn.disabled = true;
+  btnText.textContent = t('clearingBase');
+  btnIcon.setAttribute('data-lucide', 'loader-2');
+  btnIcon.classList.add('spin');
+  refreshLucide();
+
+  try {
+    const res = await apiFetch('/api/products', { method: 'DELETE' });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(data.message);
+      await fetchStats();
+      await fetchProducts();
+    } else {
+      showToast(`Error: ${data.detail}`, true);
+    }
+  } catch (err) {
+    if (err.message !== 'Unauthorized') {
+      showToast(`Network error: ${err.message}`, true);
+    }
+  } finally {
+    btn.disabled = false;
+    btnText.textContent = t('btnClearBase');
+    btnIcon.setAttribute('data-lucide', 'trash-2');
     btnIcon.classList.remove('spin');
     refreshLucide();
   }

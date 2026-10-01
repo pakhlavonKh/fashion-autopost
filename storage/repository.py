@@ -505,6 +505,21 @@ class SqlAlchemyProductRepository:
             session.commit()
             return "deleted"
 
+    def delete_all_products(self) -> int:
+        """Clear the catalogue, published rows included. Returns how many were removed.
+
+        The stored history is what keeps a product from being posted twice, so
+        this is only for starting the catalogue over.
+        """
+        with self._get_session() as session:
+            total = session.scalar(select(func.count(ProductRecord.id))) or 0
+            session.execute(delete(StoryJobRecord))
+            session.execute(delete(LogRecord).where(LogRecord.external_id.is_not(None)))
+            session.execute(delete(ProductRecord))
+            session.commit()
+            logger.info("Cleared the product catalogue: %d rows removed", total)
+            return int(total)
+
     def log_event(self, level: str, stage: str, message: str, external_id: str | None = None) -> None:
         with self._get_session() as session:
             log_record = LogRecord(

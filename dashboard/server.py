@@ -570,6 +570,16 @@ def create_dashboard_app(
         )
         return {"success": True, "message": f"Product {external_id} approved and published."}
 
+    @app.delete("/api/products", dependencies=[Depends(verify_admin)])
+    def clear_catalog():
+        """Clear the whole catalogue, published rows included."""
+        try:
+            removed = repo.delete_all_products()
+        except Exception as exc:
+            logger.error("Could not clear the catalogue: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(exc))
+        return {"success": True, "deleted": removed, "message": f"База очищена, удалено товаров: {removed}."}
+
     @app.delete("/api/products/{external_id}", dependencies=[Depends(verify_admin)])
     def delete_product(external_id: str):
         """Delete a product that has not been published yet."""

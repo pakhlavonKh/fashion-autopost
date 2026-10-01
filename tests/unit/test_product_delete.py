@@ -66,3 +66,31 @@ def test_delete_refuses_failed_product_that_already_posted(tmp_path: Path):
     res = client.delete("/api/products/mango-partial-1")
     assert res.status_code == 409
     assert repo.get_by_external_id("mango-partial-1") is not None
+
+
+def test_clearing_the_catalog_removes_published_rows_too(tmp_path: Path):
+    """Starting the catalogue over has to wipe everything the single delete protects."""
+    client, repo = _client(tmp_path)
+    _add(repo, "mango-live-1", "published", telegram_post_id="182")
+    _add(repo, "mango-partial-1", "failed", telegram_post_id="159")
+    _add(repo, "mango-new-1", "new")
+    repo.log_event("ERROR", "publish", "instagram failed", external_id="mango-partial-1")
+
+    res = client.delete("/api/products")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["deleted"] == 3
+    assert "3" in body["message"]
+    assert repo.get_by_external_id("mango-live-1") is None
+    assert repo.get_by_external_id("mango-new-1") is None
+    assert repo.get_published_signatures() == set()
+
+
+def test_clearing_the_catalog_needs_admin_credentials(tmp_path: Path):
+    client, repo = _client(tmp_path)
+    _add(repo, "mango-live-1", "published", telegram_post_id="182")
+    del client.headers["X-Admin-Key"]
+
+    assert client.delete("/api/products").status_code == 401
+    assert repo.get_by_external_id("mango-live-1") is not None
