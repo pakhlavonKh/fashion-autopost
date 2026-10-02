@@ -942,7 +942,11 @@ class PipelineRunner:
 
         if not photo_urls and product.photo_url:
             photo_urls = [product.photo_url]
-        photo_urls = keep_single_product(photo_urls, product.product_url or "")
+        photo_urls = keep_single_product(
+            photo_urls,
+            product.product_url or "",
+            anchor_url=product.photo_url or "",
+        )
         photo_urls = arrange_carousel(photo_urls, max_photos=10)
 
         # Download all photos locally for binary posting & multi-photo albums

@@ -227,3 +227,44 @@ def test_zara_modern_still_life_and_watermarks() -> None:
     assert any("02756113622-e1" in u for u in ordered)
     assert any("02756113622-e2" in u for u in ordered)
     assert any("02756113622-e3" in u for u in ordered)
+
+
+def test_zara_colorway_isolation_drops_other_color_photos() -> None:
+    from core.gallery import keep_single_product, ordered_photos
+
+    pink_photos = [
+        "https://static.zara.net/assets/public/70fc/bdc3/627d4b87b2c2/cfb0c369e050/02756113622-p.jpg",
+        "https://static.zara.net/assets/public/4da6/0ee3/3a9141ecad62/76e97b6c53af/02756113622-a1.jpg",
+        "https://static.zara.net/assets/public/125a/fcc7/b4b1466ca273/634afa32db16/02756113622-e1.jpg",
+        "https://static.zara.net/assets/public/f4f6/51a3/264f429db2bc/0af9980d9db6/02756113622-e2.jpg",
+    ]
+    white_photos = [
+        "https://static.zara.net/assets/public/99aa/bbcc/334455667788/112233445566/02756113250-p.jpg",
+    ]
+    all_photos = pink_photos + white_photos
+
+    # 1. Filtered with anchor URL
+    anchor = pink_photos[0]
+    filtered_anchor = keep_single_product(all_photos, anchor_url=anchor)
+    assert len(filtered_anchor) == 4
+    assert not any("02756113250" in u for u in filtered_anchor)
+    assert all("02756113622" in u for u in filtered_anchor)
+
+    # 2. Filtered with page URL only (no anchor provided)
+    page_url = "https://www.zara.com/de/en/voluminous-sleeve-jumper-p02756113.html?v1=556206021"
+    filtered_page = keep_single_product(all_photos, page_url=page_url)
+    assert len(filtered_page) == 4
+    assert not any("02756113250" in u for u in filtered_page)
+    assert all("02756113622" in u for u in filtered_page)
+
+    # 3. Via ordered_photos with HTML containing both colorways
+    html = f"""
+    {{"kind":"full","path":"/assets/public/70fc/bdc3/cfb0c369e050/02756113622-p.jpg","name":"02756113622-p"}}
+    {{"kind":"plain","path":"/assets/public/125a/fcc7/634afa32db16/02756113622-e1.jpg","name":"02756113622-e1"}}
+    {{"kind":"full","path":"/assets/public/99aa/bbcc/112233445566/02756113250-p.jpg","name":"02756113250-p"}}
+    """
+    ordered = ordered_photos(html, "zara", page_url, fallback=[pink_photos[0]])
+    assert len(ordered) == 2
+    assert not any("02756113250" in u for u in ordered)
+    assert all("02756113622" in u for u in ordered)
+

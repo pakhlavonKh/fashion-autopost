@@ -19,6 +19,9 @@ _WIDTH_SEGMENT = re.compile(r"/w/\d+(?=/|$)")
 _MANGO_NAME = re.compile(r"^(\d+)-([0-9a-z]+)-(\d+)$", re.IGNORECASE)
 _MANGO_IMAGE = re.compile(r"/punto/(\d{6,})-([0-9A-Za-z]+)-([0-9A-Za-z]+)", re.IGNORECASE)
 _MANGO_PAGE = re.compile(r"/(\d{7,8})(?:/([0-9A-Za-z]{2,3}))?(?:/|$)")
+_INDITEX_IMAGE = re.compile(r"(?:^|[/_\-])(\d{8})(\d{3})(?:[/_\-\.]|$)", re.IGNORECASE)
+_ZARA_PAGE = re.compile(r"-p(\d{7,8})(?:\.html|\?|$)", re.IGNORECASE)
+_INDITEX_HOSTS = ("zara.net", "stradivarius.net", "massimodutti.net", "bershka.net", "pullandbear.net", "oysho.net")
 _ZARA_SHOT = re.compile(r"_(\d+)_(\d+)_\d+$")
 _ZARA_KIND = re.compile(r'"kind"\s*:\s*"(full|plain|other|colorcut)"', re.IGNORECASE)
 _TAIL_ROLES = ("front", "back", "close")
@@ -65,13 +68,32 @@ def mango_image_identity(url: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
+def zara_page_identity(page_url: str) -> str | None:
+    """Product reference from a Zara product URL (e.g. -p02756113.html -> 02756113)."""
+    match = _ZARA_PAGE.search(urlsplit(page_url or "").path)
+    return match.group(1) if match else None
+
+
+def inditex_image_identity(url: str) -> tuple[str, str] | None:
+    """(product_id, colour_code) from a Zara / Inditex asset photo."""
+    lower = (url or "").lower()
+    if not any(k in lower for k in _INDITEX_HOSTS):
+        return None
+    match = _INDITEX_IMAGE.search(lower)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
 def keep_single_product(urls: list[str], page_url: str = "", anchor_url: str = "") -> list[str]:
     """Drop photos of other products that a store page embeds next to the garment.
 
     Mango product pages include colourways, "complete the look" and recommendations.
     Those files share the CDN but a different product id. One post keeps one id,
     and the colour named in the page URL when that colour has its own frames.
-    For non-Mango stores, drops photos from recommended/related products that do not
+    Zara and Inditex stores similarly isolate photos to the chosen product reference
+    and 3-digit color code.
+    For other stores, drops photos from recommended/related products that do not
     match the product's URL slug or anchor photo identity.
     """
     mango = [(url, mango_image_identity(url)) for url in urls if url]
@@ -97,6 +119,46 @@ def keep_single_product(urls: list[str], page_url: str = "", anchor_url: str = "
             counts[ident[0]] += 1
         chosen_id = max(order, key=lambda item: (counts[item], -order.index(item)))
         return [url for url, ident in identified if ident[0] == chosen_id]
+
+    # Zara / Inditex product & colorway isolation
+    inditex = [(url, inditex_image_identity(url)) for url in urls if url]
+    inditex_identified = [(url, ident) for url, ident in inditex if ident]
+    if inditex_identified:
+        if anchor_url:
+            anchor_ident = inditex_image_identity(anchor_url)
+            if anchor_ident:
+                anchor_prod, anchor_color = anchor_ident
+                same_color = [u for u, ident in inditex_identified if ident == (anchor_prod, anchor_color)]
+                if same_color:
+                    return same_color
+                same_prod = [u for u, ident in inditex_identified if ident[0] == anchor_prod]
+                if same_prod:
+                    return same_prod
+
+        page_prod = zara_page_identity(page_url)
+        if page_prod:
+            same_prod = [(u, ident) for u, ident in inditex_identified if ident[0] == page_prod]
+            if same_prod:
+                counts_col: dict[str, int] = {}
+                order_col: list[str] = []
+                for _u, ident in same_prod:
+                    col = ident[1]
+                    if col not in counts_col:
+                        order_col.append(col)
+                        counts_col[col] = 0
+                    counts_col[col] += 1
+                chosen_col = max(order_col, key=lambda c: (counts_col[c], -order_col.index(c)))
+                return [u for u, ident in same_prod if ident[1] == chosen_col]
+
+        counts_ident: dict[tuple[str, str], int] = {}
+        order_ident: list[tuple[str, str]] = []
+        for _u, ident in inditex_identified:
+            if ident not in counts_ident:
+                order_ident.append(ident)
+                counts_ident[ident] = 0
+            counts_ident[ident] += 1
+        chosen_ident = max(order_ident, key=lambda item: (counts_ident[item], -order_ident.index(item)))
+        return [u for u, ident in inditex_identified if ident == chosen_ident]
 
     cleaned_urls = [url for url in urls if url and str(url).strip()]
     if len(cleaned_urls) <= 1:
