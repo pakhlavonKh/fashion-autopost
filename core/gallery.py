@@ -65,38 +65,70 @@ def mango_image_identity(url: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
-def keep_single_product(urls: list[str], page_url: str = "") -> list[str]:
+def keep_single_product(urls: list[str], page_url: str = "", anchor_url: str = "") -> list[str]:
     """Drop photos of other products that a store page embeds next to the garment.
 
     Mango product pages include colourways, "complete the look" and recommendations.
     Those files share the CDN but a different product id. One post keeps one id,
     and the colour named in the page URL when that colour has its own frames.
+    For non-Mango stores, drops photos from recommended/related products that do not
+    match the product's URL slug or anchor photo identity.
     """
     mango = [(url, mango_image_identity(url)) for url in urls if url]
     identified = [(url, ident) for url, ident in mango if ident]
-    if not identified:
-        return [url for url in urls if url]
+    if identified:
+        page = mango_page_identity(page_url)
+        if page:
+            product_id, color = page
+            same_product = [(url, ident) for url, ident in identified if ident[0] == product_id]
+            if color:
+                same_color = [url for url, ident in same_product if ident[1].lower() == color.lower()]
+                if same_color:
+                    return same_color
+            if same_product:
+                return [url for url, _ident in same_product]
 
-    page = mango_page_identity(page_url)
-    if page:
-        product_id, color = page
-        same_product = [(url, ident) for url, ident in identified if ident[0] == product_id]
-        if color:
-            same_color = [url for url, ident in same_product if ident[1].lower() == color.lower()]
-            if same_color:
-                return same_color
-        if same_product:
-            return [url for url, _ident in same_product]
+        counts: dict[str, int] = {}
+        order: list[str] = []
+        for _url, ident in identified:
+            if ident[0] not in counts:
+                order.append(ident[0])
+                counts[ident[0]] = 0
+            counts[ident[0]] += 1
+        chosen_id = max(order, key=lambda item: (counts[item], -order.index(item)))
+        return [url for url, ident in identified if ident[0] == chosen_id]
 
-    counts: dict[str, int] = {}
-    order: list[str] = []
-    for _url, ident in identified:
-        if ident[0] not in counts:
-            order.append(ident[0])
-            counts[ident[0]] = 0
-        counts[ident[0]] += 1
-    chosen_id = max(order, key=lambda item: (counts[item], -order.index(item)))
-    return [url for url, ident in identified if ident[0] == chosen_id]
+    cleaned_urls = [url for url in urls if url and str(url).strip()]
+    if len(cleaned_urls) <= 1:
+        return cleaned_urls
+
+    # For non-Mango stores: filter by anchor photo stem if provided
+    if anchor_url:
+        anchor_name = canonical_photo_key(anchor_url).lower()
+        anchor_tokens = [t for t in re.split(r"[-_0-9]+", anchor_name) if len(t) >= 4]
+        if anchor_tokens:
+            same_anchor = [
+                u for u in cleaned_urls
+                if any(tok in canonical_photo_key(u).lower() for tok in anchor_tokens)
+            ]
+            if same_anchor and len(same_anchor) < len(cleaned_urls):
+                return same_anchor
+
+    # Filter by page URL product slug (e.g. /products/schedule-mocha -> 'schedule', 'mocha')
+    if page_url:
+        path = urlsplit(page_url).path.rstrip("/")
+        slug = path.split("/")[-1].lower()
+        slug = re.sub(r"\.(html?|php|asp)$", "", slug)
+        slug_tokens = [t for t in re.split(r"[-_]+", slug) if len(t) >= 4]
+        if slug_tokens:
+            same_slug = [
+                u for u in cleaned_urls
+                if any(tok in canonical_photo_key(u).lower() for tok in slug_tokens)
+            ]
+            if same_slug and len(same_slug) < len(cleaned_urls):
+                return same_slug
+
+    return cleaned_urls
 
 
 def arrange_carousel(
@@ -198,6 +230,9 @@ def ordered_photos(
         elif "hm" in brand_lower or "hm.com" in page:
             hm_found = _hm_urls(html_text)
             urls.extend(hm_found)
+        elif "cdn/shop" in html_text or "shopify" in html_text or "linzi" in brand_lower:
+            shopify_found = _shopify_urls(html_text, page)
+            urls.extend(shopify_found)
 
         # If few or no brand-specific photos were matched, extract general gallery photos from DOM/scripts
         if len(urls) < 3:
@@ -212,9 +247,16 @@ def ordered_photos(
                 if u and u not in urls:
                     urls.append(u)
 
-    urls = keep_single_product(urls, page)
+    if fallback and len(fallback) >= 2:
+        fallback_keys = {canonical_photo_key(u) for u in fallback if u}
+        matching_fallback = [u for u in urls if canonical_photo_key(u) in fallback_keys]
+        if len(matching_fallback) >= 2:
+            urls = matching_fallback
+
+    anchor = fallback[0] if fallback else ""
+    urls = keep_single_product(urls, page, anchor_url=anchor)
     if len(urls) < 2 and fallback:
-        urls = keep_single_product([*urls, *fallback], page)
+        urls = keep_single_product([*urls, *fallback], page, anchor_url=anchor)
 
     if not urls:
         og_images = re.findall(
@@ -378,10 +420,56 @@ def _hm_urls(html_text: str) -> list[str]:
     return urls
 
 
+def _shopify_urls(html_text: str, page_url: str = "") -> list[str]:
+    """Extract product photos from Shopify product media containers or product JSON."""
+    urls: list[str] = []
+    # 1. Look for product__photo / data-product-media-list containers
+    for match in re.finditer(
+        r'<[a-z0-9-]+[^>]+class=[\'"][^\'"]*(?:product__photo|product__media|product-single__media)[^\'"]*[\'"][^>]*>',
+        html_text,
+        flags=re.IGNORECASE,
+    ):
+        tag = match.group(0)
+        src_match = re.search(
+            r'(?:data-image-src|data-zoom-image|data-zoom-src|data-high-res-src|data-src|src)=[\'"]([^\'"]+)[\'"]',
+            tag,
+            flags=re.IGNORECASE,
+        )
+        if src_match:
+            cand = src_match.group(1).split("?")[0]
+            u = urljoin(page_url or "https://shopify.com", cand)
+            if _is_usable_product_image(u) and u not in urls:
+                urls.append(u)
+
+    # 2. Look for Shopify media/images in product script / JSON
+    if not urls:
+        for match in re.finditer(r'"images"\s*:\s*(\[[^\]]+\])', html_text):
+            try:
+                import json
+                raw_list = json.loads(match.group(1))
+                for item in raw_list:
+                    if isinstance(item, str):
+                        full = "https:" + item if item.startswith("//") else item
+                        clean = full.split("?")[0]
+                        if _is_usable_product_image(clean) and clean not in urls:
+                            urls.append(clean)
+            except Exception:
+                continue
+
+    return urls
+
+
+_EXCLUDE_CONTAINERS_RE = re.compile(
+    r'<(?:section|div|aside|nav|header|footer)[^>]+(?:class|id)=[\'"][^\'"]*(?:predictive-search|recommend|related|upsell|cross-sell|also-like|you-may|recently-viewed|collection-slider|cart-drawer)[^\'"]*[\'"][^>]*>[\s\S]*?</(?:section|div|aside|nav|header|footer)>',
+    re.IGNORECASE,
+)
+
+
 def _extract_dom_gallery_urls(html_text: str, page_url: str) -> list[str]:
+    clean_html = _EXCLUDE_CONTAINERS_RE.sub("", html_text) if html_text else ""
     urls: list[str] = []
     # 1. <source srcset="..."> inside <picture>
-    for match in re.finditer(r'<picture[^>]*>(.*?)</picture>', html_text, flags=re.DOTALL | re.IGNORECASE):
+    for match in re.finditer(r'<picture[^>]*>(.*?)</picture>', clean_html, flags=re.DOTALL | re.IGNORECASE):
         pic = match.group(1)
         srcsets = re.findall(r'srcset=[\'"]([^\'"]+)[\'"]', pic, flags=re.IGNORECASE)
         for s in srcsets:
@@ -393,14 +481,14 @@ def _extract_dom_gallery_urls(html_text: str, page_url: str) -> list[str]:
                     urls.append(u)
 
     # 2. <img ... data-zoom-src/data-large-img-url/data-high-res-src/data-src/src>
-    for match in re.finditer(r'<img[^>]+(?:data-zoom-src|data-large-img-url|data-high-res-src|data-src|src)=[\'"]([^\'"]+)[\'"]', html_text, flags=re.IGNORECASE):
+    for match in re.finditer(r'<img[^>]+(?:data-zoom-src|data-large-img-url|data-high-res-src|data-src|src)=[\'"]([^\'"]+)[\'"]', clean_html, flags=re.IGNORECASE):
         cand = match.group(1).split("?")[0]
         u = urljoin(page_url, cand)
         if _is_usable_product_image(u) and u not in urls:
             urls.append(u)
 
     # 3. JSON arrays in script tags with image URLs
-    for match in re.finditer(r'["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png))["\']', html_text, flags=re.IGNORECASE):
+    for match in re.finditer(r'["\'](https?://[^\s"\'<>]+\.(?:jpg|jpeg|webp|png))["\']', clean_html, flags=re.IGNORECASE):
         cand = match.group(1).split("?")[0]
         if _is_usable_product_image(cand) and cand not in urls:
             urls.append(cand)

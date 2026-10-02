@@ -156,3 +156,47 @@ def test_the_same_shot_at_two_exposures_is_posted_once() -> None:
         back_shot.save(back, quality=92)
 
         assert unique_images([front, relit, back]) == [front, back]
+
+
+def test_shopify_extracts_only_own_product_images_and_ignores_recommendations() -> None:
+    html = """
+    <div class="predictive-search">
+      <div class="product-item__image">
+        <img src="//www.linzi.com/cdn/shop/files/UPGRADEBROWNSUEDE.jpg" />
+      </div>
+    </div>
+    <div class="product-media-container" data-product-media-list>
+      <div class="product__photo" data-image-src="//www.linzi.com/cdn/shop/files/SCHEDULEMOCHA_1.jpg?v=1"></div>
+      <div class="product__photo" data-image-src="//www.linzi.com/cdn/shop/files/SCHEDULEMOCHA_2.jpg?v=1"></div>
+      <div class="product__photo" data-image-src="//www.linzi.com/cdn/shop/files/SCHEDULEMOCHA_3.jpg?v=1"></div>
+    </div>
+    <section class="recommendations">
+      <img src="//www.linzi.com/cdn/shop/files/SELECTEDBLACKPU.jpg" />
+    </section>
+    """
+    page_url = "https://www.linzi.com/en-de/products/schedule-mocha"
+    ordered = ordered_photos(html, "linzi", page_url)
+    assert len(ordered) == 3
+    assert all("SCHEDULEMOCHA" in u for u in ordered)
+    assert not any("UPGRADE" in u or "SELECTED" in u for u in ordered)
+
+
+def test_keep_single_product_filters_by_slug_and_anchor_url() -> None:
+    from core.gallery import keep_single_product
+
+    urls = [
+        "https://www.linzi.com/cdn/shop/files/UPGRADEBROWNSUEDE.jpg",
+        "https://www.linzi.com/cdn/shop/files/SCHEDULEMOCHA_1.jpg",
+        "https://www.linzi.com/cdn/shop/files/SCHEDULEMOCHA_2.jpg",
+        "https://www.linzi.com/cdn/shop/files/SELECTEDBLACKPU.jpg",
+    ]
+    # Filter by page slug
+    filtered_by_slug = keep_single_product(urls, page_url="https://www.linzi.com/en-de/products/schedule-mocha")
+    assert len(filtered_by_slug) == 2
+    assert all("SCHEDULEMOCHA" in u for u in filtered_by_slug)
+
+    # Filter by anchor url
+    anchor = "https://www.linzi.com/cdn/shop/files/SCHEDULEMOCHA_1.jpg?v=123"
+    filtered_by_anchor = keep_single_product(urls, anchor_url=anchor)
+    assert len(filtered_by_anchor) == 2
+    assert all("SCHEDULEMOCHA" in u for u in filtered_by_anchor)
