@@ -215,8 +215,8 @@ def is_heeled_footwear(*parts: str) -> bool:
     return True
 
 
-def format_heel_height(raw: str | None) -> str | None:
-    """Keep a measurement the page printed. A bare number is not a height."""
+def format_heel_height(raw: str | None, adjust_cm: float = 0.0) -> str | None:
+    """Keep a measurement the page printed, optionally adjusting by adjust_cm."""
     if not raw:
         return None
     match = _MEASUREMENT.search(str(raw))
@@ -230,21 +230,31 @@ def format_heel_height(raw: str | None) -> str | None:
     if unit.lower() in {"mm", "мм"}:
         if not 10 <= value <= 200:
             return None
+        value = round(value + adjust_cm * 10.0, 4)
+        if value <= 0:
+            return None
         shown_unit = "мм"
     else:
         if not 1 <= value <= 20:
+            return None
+        value = round(value + adjust_cm, 4)
+        if value <= 0:
             return None
         shown_unit = "см"
     if abs(value - round(value)) < 1e-9:
         shown_number = str(int(round(value)))
     else:
-        shown_number = number
+        formatted_val = f"{value:.2f}".rstrip("0").rstrip(".")
+        if "," in number:
+            shown_number = formatted_val.replace(".", ",")
+        else:
+            shown_number = formatted_val
     return f"{shown_number} {shown_unit}"
 
 
 def heel_caption_line(raw: str | None) -> str | None:
     """Russian caption line, or None when the page did not print a height."""
-    shown = format_heel_height(raw)
+    shown = format_heel_height(raw, adjust_cm=-1.0)
     if not shown:
         return None
     return f"Высота каблука: {shown}."

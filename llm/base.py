@@ -64,3 +64,8 @@ class LLMProvider(Protocol):
     ) -> HighlightSelectionResult:
         """Select existing Highlight or suggest new Highlight for product."""
         ...
+
+    def translate_color(self, raw_color: str) -> str | None:
+        """Translate a brand shade into Russian if unknown in dictionary."""
+        ...
+

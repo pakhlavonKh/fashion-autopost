@@ -98,7 +98,7 @@ def test_high_heel_description_rule_extraction() -> None:
     rule = HighHeelDescriptionRule()
     p1 = _make_raw_product("h1", title="Leather High-Heel Sandals", heel_height="8.5 cm")
     res1 = rule.apply(p1, "Beautiful sandals\nPrice: $60")
-    assert "Высота каблука: 8.5 см." in res1
+    assert "Высота каблука: 7.5 см." in res1
 
     # A heeled shoe with no measurement on the product stays without one.
     p2 = _make_raw_product("h2", title="High Heel Pumps", heel_height=None)

@@ -19,6 +19,7 @@ from adapters.base import RawProduct, SourceAdapter
 from adapters.playwright_url_processor import process_product_url_with_playwright
 from adapters.product_page import ProductPageError, fetch_product_page
 from config.app_config import AppConfig
+from core.color_names import russian_color
 from core.composer import compose_post
 from core.dedup import extract_duplicate_signatures, filter_unseen
 from core.image_downloader import ImageDownloader
@@ -751,6 +752,20 @@ class PipelineRunner:
         stored = (getattr(record, "description_gpt", None) or "").strip()
         return stored if _carries_size_line(stored) else ""
 
+    def _resolve_color(self, raw_color: str | None) -> str:
+        """Resolve product color to Russian via dictionary, compound rules, and LLM fallback."""
+        if not raw_color:
+            return ""
+        ru = russian_color(raw_color)
+        if re.search(r"[a-zA-Z]", ru) and hasattr(self.llm, "translate_color"):
+            try:
+                translated = self.llm.translate_color(raw_color)
+                if translated and re.search(r"[а-яёА-ЯЁ]", translated):
+                    return translated
+            except Exception as exc:
+                logger.warning("Color translation fallback failed for %r: %s", raw_color, exc)
+        return ru
+
     def _publish_first_with_site_facts(
         self,
         chosen: RawProduct,
@@ -882,8 +897,9 @@ class PipelineRunner:
         product = attach_site_facts(product)
         product_title = self._russian_title(product, title_override)
         # Size, color, and heel height are copied from the product page. The model must not fill them in.
+        product_color = self._resolve_color(product.color)
         heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
-        description = site_description(product.color, product.sizes, heel_height=heel)
+        description = site_description(product_color or product.color, product.sizes, heel_height=heel)
         if not order_sizes(product.sizes):
             # A bot wall answers with a script shell that carries no size grid.
             # Instagram reposts what Telegram already carries, so it can fall
@@ -953,7 +969,7 @@ class PipelineRunner:
                 photo_urls=downloaded_strings,
                 original_product_url=getattr(product, "original_product_url", None),
                 heel_height=getattr(product, "heel_height", None),
-                color=product.color,
+                color=product_color or product.color,
                 sizes=product.sizes,
             ),
             description=description,

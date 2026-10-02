@@ -106,6 +106,65 @@ def test_the_shade_the_store_prints_is_said_in_russian() -> None:
     assert russian_color("") == ""
 
 
+def test_compound_color_decomposition() -> None:
+    """Multi-word shades are decomposed and translated with proper hyphenated Russian grammar."""
+    from core.color_names import russian_color
+
+    assert russian_color("Sand Brown") == "песочно-коричневый"
+    assert russian_color("sand-brown") == "песочно-коричневый"
+    assert russian_color("Olive Green") == "оливково-зеленый"
+    assert russian_color("Grey Blue") == "серо-синий"
+    assert russian_color("Dusty Pink") == "пыльно-розовый"
+    assert russian_color("Smoky Grey") == "дымчато-серый"
+
+
+def test_expanded_creative_color_shades() -> None:
+    """Creative brand shades from European and Turkish stores are mapped to Russian."""
+    from core.color_names import russian_color
+
+    assert russian_color("Lagoon") == "морская волна"
+    assert russian_color("LAGOON") == "морская волна"
+    assert russian_color("petrol") == "петроль"
+    assert russian_color("cognac") == "коньячный"
+    assert russian_color("sage") == "шалфейный"
+    assert russian_color("rust") == "терракотовый"
+    assert russian_color("butter") == "сливочный"
+    assert russian_color("lime") == "лаймовый"
+    assert russian_color("cappuccino") == "капучино"
+    assert russian_color("cinnamon") == "коричный"
+    assert russian_color("peach") == "персиковый"
+
+
+def test_color_cache_and_ai_fallback(tmp_path, monkeypatch) -> None:
+    """Unknown shades cached on disk or translated by LLM are resolved in Russian."""
+    from core import color_names
+    from core.color_names import russian_color, save_color_translation
+
+    # Direct cache save & retrieval
+    save_color_translation("Midnight Sky", "полуночно-синий")
+    assert russian_color("Midnight Sky") == "полуночно-синий"
+    assert russian_color("midnight sky") == "полуночно-синий"
+
+    # Pipeline runner LLM fallback resolution
+    from unittest.mock import MagicMock
+    from core.pipeline import PipelineRunner
+
+    mock_llm = MagicMock()
+    mock_llm.translate_color.return_value = "туманный беж"
+
+    runner = object.__new__(PipelineRunner)
+    runner.llm = mock_llm
+
+    resolved = runner._resolve_color("Misty Beige")
+    assert resolved == "туманный беж"
+    mock_llm.translate_color.assert_called_once_with("Misty Beige")
+
+    # Already translated or Cyrillic colors do not invoke LLM
+    assert runner._resolve_color("черный") == "черный"
+    assert runner._resolve_color("Sand Brown") == "песочно-коричневый"
+    assert mock_llm.translate_color.call_count == 1
+
+
 def test_missing_facts_are_left_blank() -> None:
     html = "<html><title>Coat</title></html>"
     assert extract_site_facts(html, "https://shop.mango.com/p/1") == (None, ())
@@ -184,7 +243,20 @@ def test_heel_height_is_copied_from_the_visible_page_label() -> None:
     product = parse_product_html(html, "https://www.zara.com/es/es/leather-slingback-shoes-p12345678.html")
     assert product is not None
     assert product.heel_height == "9 см"
-    assert site_description(product.color, product.sizes, product.heel_height) == "Высота каблука: 9 см."
+    assert site_description(product.color, product.sizes, product.heel_height) == "Высота каблука: 8 см."
+
+
+def test_heel_caption_line_is_one_cm_less_than_website() -> None:
+    from core.product_facts import heel_caption_line
+
+    assert heel_caption_line("9 cm") == "Высота каблука: 8 см."
+    assert heel_caption_line("9 см") == "Высота каблука: 8 см."
+    assert heel_caption_line("8.5 cm") == "Высота каблука: 7.5 см."
+    assert heel_caption_line("7,5 cm") == "Высота каблука: 6,5 см."
+    assert heel_caption_line("90 mm") == "Высота каблука: 80 мм."
+    assert heel_caption_line("1 cm") is None
+    assert heel_caption_line("10 mm") is None
+    assert heel_caption_line(None) is None
 
 
 def test_heel_height_is_read_from_product_json_and_keeps_the_site_number() -> None:

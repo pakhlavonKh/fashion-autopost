@@ -7,6 +7,7 @@ Enforces strict JSON schema parsing, hot prompt file reloading, and retry logic.
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 from pydantic import BaseModel, Field
 from openai import OpenAI, OpenAIError
@@ -309,3 +310,48 @@ class OpenAIProvider:
             suggested_name=suggested[:16],
             confidence=0.90,
         )
+
+    def translate_color(self, raw_color: str) -> str | None:
+        """Translate a brand shade into Russian with local caching."""
+        if not raw_color or not raw_color.strip():
+            return None
+
+        clean = raw_color.strip()
+        if not re.search(r"[a-zA-Z]", clean):
+            return clean.casefold()
+
+        from core.color_names import russian_color, save_color_translation
+        ru = russian_color(clean)
+        if not re.search(r"[a-zA-Z]", ru):
+            return ru
+
+        if self._is_mock:
+            return None
+
+        client = OpenAI(api_key=self.api_key)
+        system_instruction = (
+            "You are an expert fashion translator for a luxury clothing store.\n"
+            "Translate the given fashion color / shade name into Russian in lowercase.\n"
+            "Output ONLY the Russian color name (1-3 words, e.g. 'песочно-коричневый', 'дымчатый индиго', 'светлый хаки').\n"
+            "Do not include quotation marks, markdown, punctuation, or explanations."
+        )
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": clean},
+                    ],
+                    temperature=0.0,
+                    max_tokens=30,
+                )
+                text = (response.choices[0].message.content or "").strip().strip('"\'.,;').casefold()
+                if text and re.search(r"[а-яё]", text) and not re.search(r"[a-zA-Z]", text):
+                    save_color_translation(clean, text)
+                    return text
+            except Exception as exc:
+                logger.warning("OpenAI translate_color attempt %d failed for %r: %s", attempt + 1, clean, exc)
+
+        return None

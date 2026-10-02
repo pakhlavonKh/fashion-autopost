@@ -84,11 +84,11 @@ def test_compose_post_copies_heel_height_from_the_product_page() -> None:
         include_link=True,
     )
     assert post.text.count("Высота каблука") == 1
-    assert "Высота каблука: 9 см." in post.text
+    assert "Высота каблука: 8 см." in post.text
 
     again = compose_post(
         product=product,
-        description="Размеры от 36 до 41.\nЦвет: Black.\nВысота каблука: 9 см.",
+        description="Размеры от 36 до 41.\nЦвет: Black.\nВысота каблука: 8 см.",
         price=Decimal("89"),
         target_currency="USD",
     )
