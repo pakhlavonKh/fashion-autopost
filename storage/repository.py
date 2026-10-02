@@ -257,6 +257,10 @@ class SqlAlchemyProductRepository:
                     conn.exec_driver_sql("ALTER TABLE products ADD COLUMN telegram_message_url TEXT")
                 if "telegram_published_at" not in cols:
                     conn.exec_driver_sql("ALTER TABLE products ADD COLUMN telegram_published_at DATETIME")
+                if "color" not in cols:
+                    conn.exec_driver_sql("ALTER TABLE products ADD COLUMN color VARCHAR(128)")
+                if "sizes" not in cols:
+                    conn.exec_driver_sql("ALTER TABLE products ADD COLUMN sizes TEXT")
 
                 mres = conn.exec_driver_sql("PRAGMA table_info(manual_posts)")
                 mcols = {row[1] for row in mres.fetchall()}
@@ -320,6 +324,7 @@ class SqlAlchemyProductRepository:
             records = session.scalars(stmt).all()
             products: list[RawProduct] = []
             for r in records:
+                raw_sizes = getattr(r, "sizes", None) or ""
                 products.append(
                     RawProduct(
                         external_id=r.external_id,
@@ -331,6 +336,8 @@ class SqlAlchemyProductRepository:
                         product_url=r.product_url or "",
                         in_stock=True,
                         heel_height=getattr(r, "heel_height", None),
+                        color=getattr(r, "color", None) or None,
+                        sizes=tuple(s for s in raw_sizes.split("|") if s),
                     )
                 )
             return products
@@ -352,6 +359,7 @@ class SqlAlchemyProductRepository:
             records = session.scalars(stmt).all()
             products: list[RawProduct] = []
             for record in records:
+                raw_sizes = getattr(record, "sizes", None) or ""
                 products.append(
                     RawProduct(
                         external_id=record.external_id,
@@ -364,6 +372,8 @@ class SqlAlchemyProductRepository:
                         in_stock=True,
                         original_product_url=getattr(record, "original_product_url", None),
                         heel_height=getattr(record, "heel_height", None),
+                        color=getattr(record, "color", None) or None,
+                        sizes=tuple(s for s in raw_sizes.split("|") if s),
                     )
                 )
             return products
@@ -402,6 +412,8 @@ class SqlAlchemyProductRepository:
                     product_url=product.product_url,
                     original_product_url=getattr(product, "original_product_url", None) or product.product_url,
                     heel_height=getattr(product, "heel_height", None),
+                    color=getattr(product, "color", None) or None,
+                    sizes="|".join(product.sizes) if getattr(product, "sizes", None) else None,
                     status="new",
                 )
                 session.add(record)

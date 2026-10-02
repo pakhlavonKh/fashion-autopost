@@ -39,6 +39,8 @@ class ProductRecord(Base):
     product_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     original_product_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     heel_height: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    color: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    sizes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # pipe-separated, e.g. "XS|S|M|L"
     outfit_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     outfit_position: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     
