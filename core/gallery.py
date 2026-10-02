@@ -311,7 +311,14 @@ def extract_gallery_photos(
 def _shot_role(url: str) -> str | None:
     """front, back, close, or skip. None means a model photo that stays in place."""
     lower = url.lower().split("?")[0]
-    if "/swatches/" in lower or "_swatch" in lower or "swatch" in lower.rsplit("/", 1)[-1]:
+    if (
+        "/swatches/" in lower
+        or "_swatch" in lower
+        or "swatch" in lower.rsplit("/", 1)[-1]
+        or "/watermarks/" in lower
+        or "/assets/watermark/" in lower
+        or "svg-landscape" in lower
+    ):
         return "skip"
     name = lower.rstrip("/").split("/")[-1]
     name = re.sub(r"\.(jpe?g|png|webp)$", "", name)
@@ -330,6 +337,16 @@ def _shot_role(url: str) -> str | None:
         return "close"
     if _MANGO_NAME.match(name) and (suffix == "023" or re.fullmatch(r"03\d", suffix)):
         # Mango detail shots: 023 is the fabric, 030-039 the finishing.
+        return "close"
+
+    # Zara modern still-life shots: -e0 / -e1 (front), -e2 (back), -e3+ (close-up)
+    zara_e = re.search(r"-e(\d+)$", name)
+    if zara_e:
+        e_num = int(zara_e.group(1))
+        if e_num <= 1:
+            return "front"
+        if e_num == 2:
+            return "back"
         return "close"
 
     zara = _ZARA_SHOT.search(name)
@@ -378,7 +395,15 @@ def _zara_urls(html_text: str) -> list[str]:
     found = re.findall(r"https://static\.zara\.net/(?:photos|assets|stdphotos)/[^\s\"'<>]+", html_text)
     urls: list[str] = []
     for url in found:
-        if "/swatches/" in url or "_swatch" in url or "swatch" in url.lower():
+        lower = url.lower()
+        if (
+            "/swatches/" in lower
+            or "_swatch" in lower
+            or "swatch" in lower
+            or "/watermarks/" in lower
+            or "/assets/watermark/" in lower
+            or "svg-landscape" in lower
+        ):
             continue
         cleaned = url.replace("{width}", "2048").split("?")[0].rstrip(".,;\"'")
         if cleaned.lower().endswith((".jpg", ".jpeg", ".webp", ".png")) and cleaned not in urls:
@@ -387,6 +412,9 @@ def _zara_urls(html_text: str) -> list[str]:
     # Also parse JSON paths: "path":"/assets/public/..." and "name":"..." or "path":"/photos/..."
     for match in re.finditer(r'"path"\s*:\s*"(/assets/public/[^"]+|/photos/[^"]+)"\s*,\s*"name"\s*:\s*"([^"]+)"', html_text):
         p, n = match.group(1), match.group(2)
+        lower_pn = f"{p}/{n}".lower()
+        if "/watermarks/" in lower_pn or "watermark" in lower_pn or "svg-landscape" in lower_pn:
+            continue
         base = f"https://static.zara.net{p.rstrip('/')}/{n}"
         if not base.lower().endswith((".jpg", ".jpeg", ".webp", ".png")):
             base += ".jpg"
@@ -516,6 +544,9 @@ def _zara_entries(html_text: str) -> list[tuple[str, str]]:
         window = html_text[match.end(): match.end() + 900]
         url = _zara_url_from_window(window) or _zara_url_from_window(html_text[max(0, match.start() - 400): match.start()])
         if not url:
+            continue
+        lower_url = url.lower()
+        if "/watermarks/" in lower_url or "/assets/watermark/" in lower_url or "svg-landscape" in lower_url:
             continue
         key = canonical_photo_key(url)
         if key in seen:

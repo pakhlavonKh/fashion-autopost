@@ -171,7 +171,8 @@ def is_material_or_color_swatch(image_path: Path) -> bool:
 
     Checks:
     1. Small dimension icons (< 350x350, such as 200x200 swatches).
-    2. Uniform solid colors or low-contrast fabric patches (color stddev < 18.0).
+    2. Uniform solid colors or low-contrast fabric patches (color stddev < 18.0)
+       for thumbnail-sized crops (not full-size product photos).
     """
     try:
         from PIL import Image, ImageStat
@@ -180,6 +181,10 @@ def is_material_or_color_swatch(image_path: Path) -> bool:
             if w < 350 or h < 350:
                 logger.info("Filtered swatch image %s: small dimensions (%dx%d)", image_path.name, w, h)
                 return True
+            # Full-resolution product photos (>= 1200px on long edge, >= 600px on short edge)
+            # are studio garment shots, not fabric swatch tiles.
+            if max(w, h) >= 1200 and min(w, h) >= 600:
+                return False
             stat = ImageStat.Stat(im.convert("RGB"))
             avg_std = sum(stat.stddev) / len(stat.stddev)
             if avg_std < 18.0:

@@ -200,3 +200,30 @@ def test_keep_single_product_filters_by_slug_and_anchor_url() -> None:
     filtered_by_anchor = keep_single_product(urls, anchor_url=anchor)
     assert len(filtered_by_anchor) == 2
     assert all("SCHEDULEMOCHA" in u for u in filtered_by_anchor)
+
+
+def test_zara_modern_still_life_and_watermarks() -> None:
+    e1 = "https://static.zara.net/assets/public/125a/fcc7/b4b1466ca273/634afa32db16/02756113622-e1.jpg"
+    e2 = "https://static.zara.net/assets/public/f4f6/51a3/264f429db2bc/0af9980d9db6/02756113622-e2.jpg"
+    e3 = "https://static.zara.net/assets/public/b1a8/807c/d56c4498a5f9/5af454189d60/02756113622-e3.jpg"
+    watermark = "https://static.zara.net/contents/cm/watermarks/looks-ctx/simple-large@en_GB_0.jpg"
+
+    assert is_product_angle(e1)
+    assert is_product_angle(e2)
+    assert is_product_angle(e3)
+    assert not is_product_angle(watermark)
+
+    html = f"""
+    {{"kind":"full","path":"/contents/cm/watermarks/looks-ctx/simple-large@en_GB_0.jpg","name":"simple-large@en_GB_0"}}
+    {{"kind":"full","path":"/assets/public/70fc/bdc3/627d4b87b2c2/cfb0c369e050/02756113622-p.jpg","name":"02756113622-p"}}
+    {{"kind":"other","path":"/assets/public/4da6/0ee3/3a9141ecad62/76e97b6c53af/02756113622-a1.jpg","name":"02756113622-a1"}}
+    {{"kind":"plain","path":"/assets/public/125a/fcc7/b4b1466ca273/634afa32db16/02756113622-e1.jpg","name":"02756113622-e1"}}
+    {{"kind":"plain","path":"/assets/public/f4f6/51a3/264f429db2bc/0af9980d9db6/02756113622-e2.jpg","name":"02756113622-e2"}}
+    {{"kind":"plain","path":"/assets/public/b1a8/807c/d56c4498a5f9/5af454189d60/02756113622-e3.jpg","name":"02756113622-e3"}}
+    """
+    ordered = ordered_photos(html, "zara", "https://www.zara.com/de/en/item-p02756113.html")
+    assert not any("watermarks" in u for u in ordered)
+    assert any("02756113622-p" in u for u in ordered)
+    assert any("02756113622-e1" in u for u in ordered)
+    assert any("02756113622-e2" in u for u in ordered)
+    assert any("02756113622-e3" in u for u in ordered)
