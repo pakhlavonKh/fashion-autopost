@@ -3,10 +3,13 @@
 Per SDD §3.3 and SRS FR-2.
 """
 
-from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from __future__ import annotations
 
-from adapters.base import RawProduct
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from adapters.base import RawProduct
 
 
 @dataclass(frozen=True)
@@ -67,5 +70,9 @@ class LLMProvider(Protocol):
 
     def translate_color(self, raw_color: str) -> str | None:
         """Translate a brand shade into Russian if unknown in dictionary."""
+        ...
+
+    def translate_title(self, title: str) -> str | None:
+        """Short Russian product name for a store title, without curation rules."""
         ...
 

@@ -417,3 +417,44 @@ def test_the_caption_says_the_shade_the_shopper_reads_not_the_swatch_hex() -> No
     color, _sizes = extract_site_facts(html, "https://www.zara.com/de/en/jumper-p08851172.html")
 
     assert color == "camel"
+
+
+def test_shopify_productgroup_variants_and_dom_inputs() -> None:
+    html = """
+    <html><head>
+      <script type="application/ld+json">
+      {
+        "@type": "ProductGroup",
+        "name": "Context Black Heeled Sock Boots",
+        "image": "https://www.linzi.com/cdn/shop/files/CONTEXTBLACK.jpg",
+        "description": "Heel Height: 8cm",
+        "hasVariant": [
+          {"@type": "Product", "name": "Context Black Heeled Sock Boots - 3", "sku": "CONTEXT-3", "offers": {"price": "69.00", "priceCurrency": "EUR"}},
+          {"@type": "Product", "name": "Context Black Heeled Sock Boots - 4", "sku": "CONTEXT-4", "offers": {"price": "69.00", "priceCurrency": "EUR"}},
+          {"@type": "Product", "name": "Context Black Heeled Sock Boots - 5", "sku": "CONTEXT-5", "offers": {"price": "69.00", "priceCurrency": "EUR"}}
+        ]
+      }
+      </script>
+    </head><body>
+      <input type="hidden" name="properties[Colour]" value="Black">
+      <input type="radio" name="Size-1" value="3">
+      <input type="radio" name="Size-1" value="4">
+      <input type="radio" name="Size-1" value="5">
+    </body></html>
+    """
+    url = "https://www.linzi.com/en-de/products/context-black"
+    color, sizes = extract_site_facts(html, url)
+    assert color == "Black"
+    assert sizes == ("3", "4", "5")
+    product = parse_product_html(html, url)
+    assert product is not None
+    assert product.title == "Context Black Heeled Sock Boots"
+    assert product.price == Decimal("69.00")
+    assert product.currency == "EUR"
+    assert product.color == "Black"
+    assert product.sizes == ("3", "4", "5")
+    assert product.heel_height == "8 см"
+    desc = site_description(product.color, product.sizes, heel_height=product.heel_height)
+    assert "Размеры от 3 до 5." in desc
+    assert "Цвет: черный." in desc
+    assert "Высота каблука: 7 см." in desc

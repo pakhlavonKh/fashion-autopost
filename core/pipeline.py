@@ -864,7 +864,21 @@ class PipelineRunner:
         return chosen
 
     def _translated_title(self, product: RawProduct) -> str:
-        """Ask the model for this one product's Russian name, or "" if it cannot."""
+        """Ask the model for this one product's Russian name, or "" if it cannot.
+
+        A plain translation comes first. The curation call is only a fallback:
+        its prompt may reject the product (a busy print, for example) and then
+        no title comes back at all, even though the product is being posted.
+        """
+        translator = getattr(self.llm, "translate_title", None)
+        if callable(translator):
+            try:
+                candidate = (translator(product.title) or "").strip()
+                if _reads_in_russian(candidate):
+                    return candidate
+            except Exception as exc:
+                logger.warning("Plain title translation failed for %s: %s", product.external_id, exc)
+
         try:
             selections = self.llm.select_products(
                 candidates=[product],
@@ -942,11 +956,13 @@ class PipelineRunner:
 
         if not photo_urls and product.photo_url:
             photo_urls = [product.photo_url]
-        photo_urls = keep_single_product(
-            photo_urls,
-            product.product_url or "",
-            anchor_url=product.photo_url or "",
-        )
+        verified = bool(getattr(product, "photos_verified", False)) and photo_urls == list(product.photo_urls or [])
+        if not verified:
+            photo_urls = keep_single_product(
+                photo_urls,
+                product.product_url or "",
+                anchor_url=product.photo_url or "",
+            )
         photo_urls = arrange_carousel(photo_urls, max_photos=10)
 
         # Download all photos locally for binary posting & multi-photo albums

@@ -319,6 +319,10 @@ class OpenAIProvider:
         clean = raw_color.strip()
         if not re.search(r"[a-zA-Z]", clean):
             return clean.casefold()
+        # An article number («Ref. 1150/864/131») is not a shade; asking the
+        # model to translate one only invites an invented colour.
+        if re.search(r"^(?:ref|art|sku|cod|code)\b|\d{3,}", clean, flags=re.IGNORECASE):
+            return None
 
         from core.color_names import russian_color, save_color_translation
         ru = russian_color(clean)
@@ -333,7 +337,8 @@ class OpenAIProvider:
             "You are an expert fashion translator for a luxury clothing store.\n"
             "Translate the given fashion color / shade name into Russian in lowercase.\n"
             "Output ONLY the Russian color name (1-3 words, e.g. 'песочно-коричневый', 'дымчатый индиго', 'светлый хаки').\n"
-            "Do not include quotation marks, markdown, punctuation, or explanations."
+            "Do not include quotation marks, markdown, punctuation, or explanations.\n"
+            "If the input is not a color name (for example a reference code or a number), output exactly NONE."
         )
 
         for attempt in range(self.max_retries + 1):
@@ -353,5 +358,49 @@ class OpenAIProvider:
                     return text
             except Exception as exc:
                 logger.warning("OpenAI translate_color attempt %d failed for %r: %s", attempt + 1, clean, exc)
+
+        return None
+
+    def translate_title(self, title: str) -> str | None:
+        """Short Russian name for a store title, or None when none came back.
+
+        This is a plain translation. It does not carry the curation prompt, so
+        a product the admin already chose (a busy print, say) cannot be
+        rejected here the way select_products would reject it.
+        """
+        clean = " ".join((title or "").split())
+        if not clean:
+            return None
+        if re.search(r"[А-Яа-яЁё]", clean):
+            return clean
+        if self._is_mock:
+            return None
+
+        client = OpenAI(api_key=self.api_key)
+        system_instruction = (
+            "You translate fashion product names from any store language into Russian.\n"
+            "Output ONLY a short, natural Russian product name (1-6 words), capitalised like a sentence, "
+            "e.g. 'Рубашка-баллон с цветочным принтом', 'Ботильоны с пряжкой', 'Трикотажный кардиган'.\n"
+            "Keep what the garment is and its key detail. Do not add the brand, color, size, price, "
+            "quotation marks, punctuation at the end, or any explanation."
+        )
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": clean},
+                    ],
+                    temperature=0.2,
+                    max_tokens=40,
+                )
+                text = " ".join((response.choices[0].message.content or "").split()).strip("\"'«».,;: ")
+                if text and len(text) <= 80 and re.search(r"[А-Яа-яЁё]", text):
+                    return text
+                logger.warning("OpenAI translate_title gave no Russian name for %r: %r", clean, text)
+            except Exception as exc:
+                logger.warning("OpenAI translate_title attempt %d failed for %r: %s", attempt + 1, clean, exc)
 
         return None

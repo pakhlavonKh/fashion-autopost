@@ -25,6 +25,9 @@ class RawProduct:
     # Color name and the full size grid, copied from the product page.
     color: str | None = None
     sizes: tuple[str, ...] = ()
+    # True when photo_urls is the store's own main gallery for this product,
+    # already isolated, so the reference filter must not trim it again.
+    photos_verified: bool = False
 
 
 @runtime_checkable

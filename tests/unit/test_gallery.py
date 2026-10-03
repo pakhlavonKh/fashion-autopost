@@ -268,3 +268,45 @@ def test_zara_colorway_isolation_drops_other_color_photos() -> None:
     assert not any("02756113250" in u for u in ordered)
     assert all("02756113622" in u for u in ordered)
 
+
+def _zara_two_color_page() -> str:
+    """Trimmed Zara page: white (250) listed first with 3 photos, red (632) with 4."""
+    def media(code: str, names: list[str]) -> str:
+        items = []
+        for name, kind in names:
+            items.append(
+                f'{{"datatype":"xmedia","type":"image","kind":"{kind}",'
+                f'"path":"/assets/public/aa/bb/04174878{code}-{name}","name":"04174878{code}-{name}"}}'
+            )
+        return ",".join(items)
+
+    white = media("250", [("p", "full"), ("a1", "other"), ("e1", "plain")])
+    red = media("632", [("p", "full"), ("a1", "other"), ("a2", "other"), ("e1", "plain")])
+    return (
+        '{"detail":{"reference":"04174378-I2026","colors":['
+        f'{{"id":"250","hexCode":"#F4F6FA","productId":590144886,"name":"Blanc","xmedia":[{white}]}},'
+        f'{{"id":"632","hexCode":"#D50030","productId":590144883,"name":"Rouge","xmedia":[{red}]}}'
+        ']}}'
+    )
+
+
+def test_zara_keeps_the_page_selected_color_not_the_one_with_most_photos() -> None:
+    page = "https://www.zara.com/fr/fr/t-shirt-interlock-manches-courtes-p04174378.html"
+    ordered = ordered_photos(_zara_two_color_page(), "zara", page)
+    assert len(ordered) == 3
+    assert all("04174878250-" in url for url in ordered)
+
+
+def test_zara_v1_in_the_link_picks_that_color() -> None:
+    page = "https://www.zara.com/fr/fr/t-shirt-interlock-manches-courtes-p04174378.html?v1=590144883"
+    ordered = ordered_photos(_zara_two_color_page(), "zara", page)
+    assert len(ordered) == 4
+    assert all("04174878632-" in url for url in ordered)
+
+
+def test_zara_color_code_on_the_page_wins_over_list_order() -> None:
+    page = "https://www.zara.com/fr/fr/t-shirt-interlock-manches-courtes-p04174378.html"
+    html = _zara_two_color_page() + '{"colorCode":"632"}'
+    ordered = ordered_photos(html, "zara", page)
+    assert all("04174878632-" in url for url in ordered)
+

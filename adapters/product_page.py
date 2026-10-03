@@ -21,7 +21,7 @@ import httpx
 
 from adapters.base import RawProduct
 from adapters.scrapers.base import generate_deterministic_id, parse_price
-from core.gallery import ordered_photos
+from core.gallery import ordered_photos, page_gallery_is_authoritative
 from core.product_facts import extract_heel_height, extract_site_facts, is_heeled_footwear
 
 logger = logging.getLogger(__name__)
@@ -145,6 +145,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
         heel_height=heel,
         color=color,
         sizes=sizes,
+        photos_verified=page_gallery_is_authoritative(html_text, brand, url),
     )
 
 
@@ -478,10 +479,15 @@ def _best_json_ld(html_text: str, url: str, default_currency: str) -> _ParsedPro
 def _product_from_json_ld(node: dict, url: str, default_currency: str) -> _ParsedProduct | None:
     types = node.get("@type")
     type_names = types if isinstance(types, list) else [types]
-    if "Product" not in [str(item) for item in type_names if item]:
+    matched_types = [str(item) for item in type_names if item]
+    if "Product" not in matched_types and "ProductGroup" not in matched_types:
         return None
     title = str(node.get("name") or "").strip()
     offers = node.get("offers") or {}
+    if not offers and isinstance(node.get("hasVariant"), list) and node["hasVariant"]:
+        first_variant = node["hasVariant"][0]
+        if isinstance(first_variant, dict):
+            offers = first_variant.get("offers") or {}
     if isinstance(offers, list):
         offers = offers[0] if offers else {}
     if not isinstance(offers, dict):
@@ -497,9 +503,17 @@ def _product_from_json_ld(node: dict, url: str, default_currency: str) -> _Parse
     except ValueError:
         return None
     images = _image_urls(node.get("image"), url)
+    if not images and isinstance(node.get("hasVariant"), list) and node["hasVariant"]:
+        first_variant = node["hasVariant"][0]
+        if isinstance(first_variant, dict):
+            images = _image_urls(first_variant.get("image"), url)
     availability = str(offers.get("availability") or "")
     in_stock = "OutOfStock" not in availability and "SoldOut" not in availability
     raw_id = str(node.get("sku") or node.get("productID") or node.get("mpn") or "")
+    if not raw_id and isinstance(node.get("hasVariant"), list) and node["hasVariant"]:
+        first_variant = node["hasVariant"][0]
+        if isinstance(first_variant, dict):
+            raw_id = str(first_variant.get("sku") or first_variant.get("productID") or "")
     match_url = str(offers.get("url") or node.get("url") or "")
     return _ParsedProduct(title, price, currency, images, in_stock, raw_id, match_url)
 

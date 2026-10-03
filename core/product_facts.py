@@ -78,12 +78,29 @@ _DOM_COLOR = (
     ),
     re.compile(r"data-color-name=[\"']([^\"']{1,40})[\"']", re.IGNORECASE),
     # Storefronts that hash their class names still keep the word in them,
-    # as in «ColorsSelector-module__F5Cauq__label».
+    # as in «ColorsSelector-module__F5Cauq__label». The «label» must sit in the
+    # same class name as «color»: Bershka's reference line carries an unrelated
+    # «bds-typography-label-xs» next to «color-selector__reference».
     re.compile(
-        r"class=[\"'][^\"']*colou?rs?[^\"']*(?:label|name|value)[^\"']*[\"'][^>]*>([^<]{1,40})<",
+        r"class=[\"'][^\"']*colou?rs?[^\"'\s]*(?:label|name|value)[^\"']*[\"'][^>]*>([^<]{1,40})<",
         re.IGNORECASE,
     ),
+    re.compile(r"<input\b[^>]*name=[\"'][^\"']*(?:colou?r)[^\"']*[\"'][^>]*value=[\"']([^\"']{1,40})[\"']", re.IGNORECASE),
+    re.compile(r"<input\b[^>]*value=[\"']([^\"']{1,40})[\"'][^>]*name=[\"'][^\"']*(?:colou?r)[^\"']*[\"']", re.IGNORECASE),
+    re.compile(r"colou?r:\s*</span>\s*<[^>]+>([^<]{1,40})<", re.IGNORECASE),
 )
+# A colour name element whose text follows a hidden screen-reader label, as in
+# <span class="color-selector__name"><span class="sr-only">Farbe</span> Taupe</span>.
+_DOM_COLOR_NAMED = re.compile(
+    r"<(?:span|div|p|strong|h\d)\b[^>]*class=[\"'][^\"']*colou?rs?[^\"'\s]*name[^\"']*[\"'][^>]*>",
+    re.IGNORECASE,
+)
+_HIDDEN_LABEL = re.compile(
+    r"<(\w+)\b[^>]*class=[\"'][^\"']*(?:sr-only|visually-hidden|screen-reader)[^\"']*[\"'][^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+# Article numbers such as «Ref. 1150/864/131» are not shades.
+_REFERENCE_CODE = re.compile(r"^(?:ref|art|sku|cod|code)\b|\d{3,}", re.IGNORECASE)
 
 
 class _Variant:
@@ -173,6 +190,9 @@ _FOOTWEAR = re.compile(
     r"\b(?:shoes?|boots?|sandals?|heels?|pumps?|mules?|loafers?|sneakers?|"
     r"slingbacks?|stilettos?|zapatos?|botas?|sandalias?|tacones?|"
     r"ayakkab\w*|çizme|topuklu|sandalet)\b|"
+    # German, French, Italian storefronts.
+    r"\b(?:stiefel\w*|schuh\w*|sandale\w*|bottines?|escarpins?|chaussures?|"
+    r"stival\w*|scarpe|sandali)\b|"
     r"туфл|ботил|сапог|босонож|ботин|обув|каблук|мюл|лодоч|сандал|кроссов|кед|сабо|шпильк"
     r")",
     re.IGNORECASE,
@@ -585,7 +605,9 @@ def _consume(node: object, parent_key: str, found: list[_Variant]) -> None:
     if not isinstance(node, dict):
         return
 
-    variants = node.get("hasVariant")
+    variants = node.get("hasVariant") or (
+        node.get("variants") if isinstance(node.get("variants"), list) else None
+    )
     if isinstance(variants, list):
         _add_grouped_variants(variants, found)
 
@@ -595,9 +617,57 @@ def _consume(node: object, parent_key: str, found: list[_Variant]) -> None:
         found.append(_Variant(color, tuple(labels), _ids_on(node, parent_key), _is_selected(node)))
 
     for key, value in node.items():
-        if key == "hasVariant":
+        if key in ("hasVariant", "variants"):
             continue
         _consume(value, str(key), found)
+
+
+def _variant_size_labels(item: dict) -> list[str]:
+    for key in ("public_title", "title", "option1", "option2", "option3"):
+        val = item.get(key)
+        if isinstance(val, str) and val.strip():
+            for part in re.split(r"[/|]", val):
+                cleaned = clean_size(part.strip())
+                if cleaned:
+                    return [cleaned]
+    options = item.get("options")
+    if isinstance(options, list):
+        for opt in options:
+            if isinstance(opt, str):
+                for part in re.split(r"[/|]", opt):
+                    cleaned = clean_size(part.strip())
+                    if cleaned:
+                        return [cleaned]
+    name = item.get("name")
+    if isinstance(name, str) and "-" in name:
+        tail = name.rsplit("-", 1)[-1].strip()
+        cleaned = clean_size(tail)
+        if cleaned:
+            return [cleaned]
+    sku = item.get("sku")
+    if isinstance(sku, str) and "-" in sku:
+        tail = sku.rsplit("-", 1)[-1].strip()
+        cleaned = clean_size(tail)
+        if cleaned:
+            return [cleaned]
+    return []
+
+
+def _variant_color(item: dict) -> str | None:
+    for key in ("option1", "option2", "option3", "color", "colour"):
+        val = item.get(key)
+        if isinstance(val, str):
+            text = _color_text(val)
+            if text:
+                return text
+    options = item.get("options")
+    if isinstance(options, list):
+        for opt in options:
+            if isinstance(opt, str):
+                text = _color_text(opt)
+                if text:
+                    return text
+    return None
 
 
 def _add_grouped_variants(variants: list, found: list[_Variant]) -> None:
@@ -607,10 +677,12 @@ def _add_grouped_variants(variants: list, found: list[_Variant]) -> None:
     for item in variants:
         if not isinstance(item, dict):
             continue
-        color = _color_from(item, "hasVariant") or ""
+        color = _color_from(item, "hasVariant") or _variant_color(item) or ""
         labels = _labels_from_size_value(item.get("size"))
         if not labels:
             labels = _sizes_on(item)
+        if not labels:
+            labels = _variant_size_labels(item)
         grouped.setdefault(color, []).extend(labels)
         ids.setdefault(color, []).extend(_ids_on(item, "hasVariant"))
         if _is_selected(item):
@@ -742,6 +814,8 @@ def _plausible_color(text: str) -> bool:
         return False
     if _HEX_COLOR.match(text):
         return False
+    if _REFERENCE_CODE.search(text):
+        return False
     if len(text.split()) > 4:
         return False
     if text.casefold() in _NOT_COLOR or clean_size(text):
@@ -773,22 +847,30 @@ def _is_selected(node: dict) -> bool:
 
 
 def _iter_json_documents(html_text: str):
+    decoder = json.JSONDecoder()
     for raw in re.findall(r"<script\b[^>]*>(.*?)</script>", html_text, flags=re.IGNORECASE | re.DOTALL):
         text = raw.strip()
         if not text or ("{" not in text and "[" not in text):
             continue
-        start_obj = text.find("{")
-        start_list = text.find("[")
-        start = start_obj
-        if start < 0 or (start_list >= 0 and start_list < start):
-            start = start_list
-        if start < 0:
-            continue
-        try:
-            value, _ = json.JSONDecoder().raw_decode(text[start:])
-        except json.JSONDecodeError:
-            continue
-        yield value
+        idx = 0
+        limit = len(text)
+        count = 0
+        while idx < limit and count < 8:
+            start_obj = text.find("{", idx)
+            start_list = text.find("[", idx)
+            start = start_obj
+            if start < 0 or (start_list >= 0 and start_list < start):
+                start = start_list
+            if start < 0:
+                break
+            try:
+                value, end_offset = decoder.raw_decode(text[start:])
+                idx = start + max(1, end_offset)
+                count += 1
+                if value:
+                    yield value
+            except json.JSONDecodeError:
+                idx = start + 1
 
 
 def _variants_from_size_arrays(html_text: str) -> list[_Variant]:
@@ -830,6 +912,16 @@ def _ids_before(window: str) -> tuple[str, ...]:
     return tuple(found[-4:])
 
 
+_DOM_SIZE_INPUT = re.compile(
+    r"<input\b[^>]*name=[\"'][^\"']*(?:size|talla|taille|taglia|größe|grosse|rozmiar)[^\"']*[\"'][^>]*value=[\"']([^\"']{1,16})[\"']",
+    re.IGNORECASE,
+)
+_DOM_SIZE_INPUT_ALT = re.compile(
+    r"<input\b[^>]*value=[\"']([^\"']{1,16})[\"'][^>]*name=[\"'][^\"']*(?:size|talla|taille|taglia|größe|grosse|rozmiar)[^\"']*[\"']",
+    re.IGNORECASE,
+)
+
+
 def _sizes_from_dom(html_text: str) -> tuple[str, ...]:
     labels: list[str] = []
     for match in _DOM_SIZE.finditer(html_text):
@@ -839,6 +931,11 @@ def _sizes_from_dom(html_text: str) -> tuple[str, ...]:
         label = clean_size(match.group(2))
         if label and label not in labels:
             labels.append(label)
+    for pattern in (_DOM_SIZE_INPUT, _DOM_SIZE_INPUT_ALT):
+        for match in pattern.finditer(html_text):
+            label = clean_size(match.group(1))
+            if label and label not in labels:
+                labels.append(label)
     ordered = tuple(order_sizes(labels))
     if _is_measurement_list(list(ordered)):
         return ()
@@ -853,4 +950,9 @@ def _color_from_dom(html_text: str) -> str | None:
             text = _color_text(match.group(1))
             if text:
                 return text
+    for match in _DOM_COLOR_NAMED.finditer(html_text):
+        window = _HIDDEN_LABEL.sub(" ", html_text[match.end() : match.end() + 400])
+        text = _color_text(html_lib.unescape(window.split("<", 1)[0]))
+        if text:
+            return text
     return None

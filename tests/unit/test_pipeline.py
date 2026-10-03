@@ -545,3 +545,64 @@ def test_a_title_the_model_already_wrote_in_russian_is_left_alone(
 
     assert pub.published_posts[0].title == "Рубашка из поплина"
 
+
+class _RejectingCuratorLLM(FakeLLMProvider):
+    """The curation prompt rejects busy prints; the plain translator still names them."""
+
+    def __init__(self, translation: str | None) -> None:
+        super().__init__()
+        self.translation = translation
+        self.translated: list[str] = []
+
+    def select_products(
+        self,
+        candidates: list[RawProduct],
+        prompt: str,
+        max_items: int,
+    ) -> list[SelectionResult]:
+        return []
+
+    def translate_title(self, title: str) -> str | None:
+        self.translated.append(title)
+        return self.translation
+
+
+def test_a_product_the_curator_rejects_still_gets_a_russian_title(
+    sample_products: list[RawProduct],
+) -> None:
+    """Zara «imprimé fleuri» went out in French: the curation prompt chose 0 items."""
+    repo = FakeProductRepository()
+    pub = FakePublisher("telegram")
+    foreign = replace(sample_products[1], title="CHEMISE BALLON À IMPRIMÉ FLEURI")
+    repo.upsert_new(foreign)
+
+    runner = _runner(repo, [foreign], pub)
+    llm = _RejectingCuratorLLM("Рубашка-баллон с цветочным принтом")
+    runner.llm = llm
+    summary = CycleSummary()
+    runner._process_single_product(foreign, "", summary)
+
+    assert llm.translated == ["CHEMISE BALLON À IMPRIMÉ FLEURI"]
+    assert pub.published_posts[0].title == "Рубашка-баллон с цветочным принтом"
+
+
+class _TranslatorDownLLM(_TranslatingLLM):
+    def translate_title(self, title: str) -> str | None:
+        raise RuntimeError("translator unavailable")
+
+
+def test_when_the_plain_translator_fails_the_curation_call_is_the_fallback(
+    sample_products: list[RawProduct],
+) -> None:
+    repo = FakeProductRepository()
+    pub = FakePublisher("telegram")
+    foreign = replace(sample_products[1], title="BLOUSON BOMBER À PATTES")
+    repo.upsert_new(foreign)
+
+    runner = _runner(repo, [foreign], pub)
+    runner.llm = _TranslatorDownLLM()
+    summary = CycleSummary()
+    runner._process_single_product(foreign, "", summary)
+
+    assert pub.published_posts[0].title == "Куртка-бомбер"
+

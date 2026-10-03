@@ -8,9 +8,10 @@ of the carousel: front, then back, then a close-up. When the store has no back
 shot, a second close-up takes its place. The same photo is kept once.
 """
 
+import html as html_lib
 import logging
 import re
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,12 @@ _INDITEX_HOSTS = ("zara.net", "stradivarius.net", "massimodutti.net", "bershka.n
 _ZARA_SHOT = re.compile(r"_(\d+)_(\d+)_\d+$")
 _ZARA_KIND = re.compile(r'"kind"\s*:\s*"(full|plain|other|colorcut)"', re.IGNORECASE)
 _TAIL_ROLES = ("front", "back", "close")
+_INDITEX_BRANDS = ("stradivarius", "massimodutti", "bershka", "pullandbear", "oysho")
+_PDP_MAIN_IMAGE = re.compile(r"<img\b[^>]*data-qa-anchor=[\"']pdpMainImage[\"'][^>]*>", re.IGNORECASE)
+_ZARA_COLORS_START = re.compile(r'"colors"\s*:\s*\[')
+_ZARA_COLOR_ENTRY = re.compile(r'\{\s*"id"\s*:\s*"(\d{3})"\s*,([^{}\[\]]{0,600})')
+_ZARA_PRODUCT_ID = re.compile(r'"productId"\s*:\s*"?(\d+)')
+_ZARA_COLOR_CODE = re.compile(r'"colorCode"\s*:\s*"?(\d{3})"?')
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -251,6 +258,43 @@ def is_product_angle(url: str) -> bool:
     return _shot_role(url) in _TAIL_ROLES
 
 
+def inditex_pdp_gallery(html_text: str) -> list[str]:
+    """Photos of the main gallery of an Inditex product page, in page order.
+
+    Bershka files the model shot under a sibling reference (11150865 next to
+    the product's 11150864), which the reference filter would drop. The main
+    gallery is exactly what the shopper sees, so it is taken as it stands.
+    """
+    urls: list[str] = []
+    seen: set[str] = set()
+    for tag in _PDP_MAIN_IMAGE.findall(html_text or ""):
+        src = ""
+        for attr in ("data-original", "src"):
+            match = re.search(rf"(?<![\w-]){attr}=[\"']([^\"']+)[\"']", tag, flags=re.IGNORECASE)
+            if match:
+                src = match.group(1)
+                break
+        url = html_lib.unescape(src).split("?")[0]
+        if not url.startswith(("http://", "https://")):
+            continue
+        if not any(host in url.lower() for host in _INDITEX_HOSTS) or _shot_role(url) == "skip":
+            continue
+        key = canonical_photo_key(url)
+        if key and key not in seen:
+            seen.add(key)
+            urls.append(url)
+    return urls
+
+
+def page_gallery_is_authoritative(html_text: str, brand: str, page_url: str) -> bool:
+    """True when the page marks its own main gallery and that list is used as is."""
+    brand_lower = (brand or "").lower()
+    page = page_url or ""
+    if not any(k in brand_lower or k in page for k in _INDITEX_BRANDS):
+        return False
+    return len(inditex_pdp_gallery(html_text)) >= 2
+
+
 def ordered_photos(
     html_text: str,
     brand: str,
@@ -286,7 +330,9 @@ def ordered_photos(
                 for u in zara_found:
                     if u not in urls:
                         urls.append(u)
-        elif any(k in brand_lower or k in page for k in ("stradivarius", "massimodutti", "bershka", "pullandbear", "oysho")):
+        elif any(k in brand_lower or k in page for k in _INDITEX_BRANDS):
+            if page_gallery_is_authoritative(html_text, brand, page):
+                return arrange_carousel(inditex_pdp_gallery(html_text), roles=roles, max_photos=max_photos)
             inditex_found = _inditex_urls(html_text)
             urls.extend(inditex_found)
         elif "hm" in brand_lower or "hm.com" in page:
@@ -314,6 +360,9 @@ def ordered_photos(
         matching_fallback = [u for u in urls if canonical_photo_key(u) in fallback_keys]
         if len(matching_fallback) >= 2:
             urls = matching_fallback
+
+    if "zara" in brand_lower or "zara.com" in page:
+        urls = _keep_zara_selected_color(urls, html_text, page)
 
     anchor = fallback[0] if fallback else ""
     urls = keep_single_product(urls, page, anchor_url=anchor)
@@ -595,6 +644,43 @@ def _is_usable_product_image(url: str) -> bool:
     if any(k in lower for k in skip_keywords):
         return False
     return True
+
+
+def _zara_selected_color(html_text: str, page_url: str) -> str | None:
+    """3-digit colour code the Zara page shows: ?v1= in the link, then colorCode, then the first colour."""
+    colors: list[tuple[str, str]] = []
+    start = _ZARA_COLORS_START.search(html_text or "")
+    if start:
+        for match in _ZARA_COLOR_ENTRY.finditer(html_text, start.end()):
+            fields = match.group(2)
+            if '"hexCode"' not in fields and '"productId"' not in fields:
+                continue
+            product = _ZARA_PRODUCT_ID.search(fields)
+            colors.append((match.group(1), product.group(1) if product else ""))
+
+    query = parse_qs(urlsplit(page_url or "").query)
+    for value in query.get("v1", []):
+        for code, product_id in colors:
+            if product_id and product_id == value.strip():
+                return code
+
+    color_code = _ZARA_COLOR_CODE.search(html_text or "")
+    if color_code:
+        return color_code.group(1)
+    if colors:
+        return colors[0][0]
+    return None
+
+
+def _keep_zara_selected_color(urls: list[str], html_text: str, page_url: str) -> list[str]:
+    """Only the selected colourway's photos. Unchanged when the colour is unclear or has too few photos."""
+    code = _zara_selected_color(html_text, page_url)
+    if not code:
+        return urls
+    same_color = [url for url in urls if (inditex_image_identity(url) or ("", ""))[1] == code]
+    if len(same_color) < 2:
+        return urls
+    return same_color
 
 
 def _zara_entries(html_text: str) -> list[tuple[str, str]]:
