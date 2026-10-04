@@ -41,6 +41,7 @@ class ManualPost:
     status: str
     error: str | None
     original_product_url: str | None = None
+    target_channel: str = "both"
 
 
 @runtime_checkable
@@ -266,6 +267,8 @@ class SqlAlchemyProductRepository:
                 mcols = {row[1] for row in mres.fetchall()}
                 if "original_product_url" not in mcols:
                     conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN original_product_url TEXT")
+                if "target_channel" not in mcols:
+                    conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN target_channel VARCHAR(32) DEFAULT 'both'")
                 conn.commit()
         except Exception as exc:
             logger.warning("Auto-migration in _ensure_columns encountered: %s", exc)
@@ -736,7 +739,7 @@ class SqlAlchemyProductRepository:
             waiting = session.scalars(
                 select(ManualPostRecord).where(
                     ManualPostRecord.admin_user_id == str(admin_user_id),
-                    ManualPostRecord.status == "awaiting_time",
+                    ManualPostRecord.status.in_(("awaiting_time", "awaiting_destination")),
                 )
             ).all()
             for row in waiting:
@@ -748,6 +751,7 @@ class SqlAlchemyProductRepository:
                 product_url=product_url,
                 original_product_url=original_product_url or product_url,
                 status="awaiting_time",
+                target_channel="both",
             )
             session.add(record)
             session.commit()
@@ -760,7 +764,7 @@ class SqlAlchemyProductRepository:
                 select(ManualPostRecord)
                 .where(
                     ManualPostRecord.admin_user_id == str(admin_user_id),
-                    ManualPostRecord.status == "awaiting_time",
+                    ManualPostRecord.status.in_(("awaiting_time", "awaiting_destination")),
                 )
                 .order_by(ManualPostRecord.id.desc())
             )
@@ -771,7 +775,7 @@ class SqlAlchemyProductRepository:
             rows = session.scalars(
                 select(ManualPostRecord).where(
                     ManualPostRecord.admin_user_id == str(admin_user_id),
-                    ManualPostRecord.status == "awaiting_time",
+                    ManualPostRecord.status.in_(("awaiting_time", "awaiting_destination")),
                 )
             ).all()
             if not rows:
@@ -783,12 +787,32 @@ class SqlAlchemyProductRepository:
             session.commit()
             return True
 
-    def schedule_manual_post(self, post_id: int, publish_at: datetime) -> ManualPost | None:
+    def set_manual_post_time(self, post_id: int, publish_at: datetime) -> ManualPost | None:
+        """Record the chosen publication time and wait for platform selection."""
         with self._get_session() as session:
             record = session.get(ManualPostRecord, post_id)
             if record is None:
                 return None
             record.publish_at = publish_at
+            record.status = "awaiting_destination"
+            record.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(record)
+            return _manual_post_from_row(record)
+
+    def schedule_manual_post(
+        self,
+        post_id: int,
+        publish_at: datetime | None = None,
+        target_channel: str = "both",
+    ) -> ManualPost | None:
+        with self._get_session() as session:
+            record = session.get(ManualPostRecord, post_id)
+            if record is None:
+                return None
+            if publish_at is not None:
+                record.publish_at = publish_at
+            record.target_channel = target_channel
             record.status = "scheduled"
             record.updated_at = datetime.now(timezone.utc)
             session.commit()
@@ -828,7 +852,7 @@ class SqlAlchemyProductRepository:
         with self._get_session() as session:
             rows = session.scalars(
                 select(ManualPostRecord).where(
-                    ManualPostRecord.status.in_(("awaiting_time", "scheduled", "publishing"))
+                    ManualPostRecord.status.in_(("awaiting_time", "awaiting_destination", "scheduled", "publishing"))
                 )
             ).all()
             for row in rows:
@@ -1031,4 +1055,5 @@ def _manual_post_from_row(record: ManualPostRecord) -> ManualPost:
         status=record.status,
         error=record.error,
         original_product_url=record.original_product_url or record.product_url,
+        target_channel=getattr(record, "target_channel", "both") or "both",
     )

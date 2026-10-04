@@ -152,6 +152,17 @@ class AdminIntakeBot:
                 ok, msg = False, f"Ошибка при выборе следующего товара: {exc}"
             self._send(chat_id, msg or ("Следующий товар опубликован!" if ok else "Нет доступных товаров."))
 
+        elif data.startswith("dest:"):
+            try:
+                parts = data.split(":")
+                destination = parts[1]
+                post_id = int(parts[2])
+            except (ValueError, IndexError):
+                return
+            reply = self._finalize_schedule(post_id, destination)
+            if reply:
+                self._send(chat_id, reply)
+
     def _answer_callback(self, query_id: str, text: str = "") -> None:
         if not query_id:
             return
@@ -198,7 +209,7 @@ class AdminIntakeBot:
             return self._accept_link(user_id, chat_id, product_url)
         if not text.strip():
             return "Пришлите ссылку на товар."
-        return self._accept_time(user_id, text)
+        return self._accept_time(user_id, chat_id, text)
 
     def _accept_link(self, user_id: int, chat_id: str, product_url: str) -> str:
         from core.dedup import extract_duplicate_signatures
@@ -276,26 +287,90 @@ class AdminIntakeBot:
         except Exception as exc:
             logger.warning("Failed to send duplicate warning inline message: %s", exc)
 
-    def _accept_time(self, user_id: int, text: str) -> str:
+    def _finalize_schedule(self, post_id: int, destination: str) -> str:
+        scheduled = self.repo.schedule_manual_post(post_id, target_channel=destination)
+        if scheduled is None:
+            return "Не удалось сохранить настройки. Пришлите ссылку ещё раз."
+
+        run_at = scheduled.publish_at or datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        is_immediate = (run_at <= now + timedelta(seconds=5))
+        if is_immediate:
+            run_at = now + timedelta(seconds=1)
+
+        self._arm_job(scheduled.id, run_at)
+
+        channel_labels = {
+            "telegram": "Telegram",
+            "instagram": "Instagram",
+            "both": "Telegram и Instagram",
+        }
+        dest_label = channel_labels.get(destination, destination)
+
+        if is_immediate:
+            return f"Публикую сейчас в {dest_label}"
+        return f"Поставил пост на {self._format_local(scheduled.publish_at)} в {dest_label}"
+
+    def _accept_time(self, user_id: int, chat_id: str, text: str | None = None) -> str:
+        if text is None:
+            text = chat_id
+            chat_id = str(user_id)
+
         draft = self.repo.get_awaiting_manual(str(user_id))
         if draft is None:
             return "Сначала пришлите ссылку на товар."
+
+        if draft.status == "awaiting_destination":
+            dest = _parse_destination(text)
+            if dest:
+                return self._finalize_schedule(draft.id, dest)
+
+        words = text.strip().split()
+        dest_override = None
+        time_text = text
+        if len(words) >= 2:
+            last_word = words[-1]
+            dest_candidate = _parse_destination(last_word)
+            if dest_candidate:
+                time_candidate = " ".join(words[:-1])
+                try:
+                    parse_publish_time(time_candidate, datetime.now(timezone.utc), self.timezone_name)
+                    dest_override = dest_candidate
+                    time_text = time_candidate
+                except Exception:
+                    pass
+
         try:
-            parsed = parse_publish_time(text, datetime.now(timezone.utc), self.timezone_name)
+            parsed = parse_publish_time(time_text, datetime.now(timezone.utc), self.timezone_name)
         except ValueError as exc:
+            if draft.status == "awaiting_destination":
+                self._send(
+                    chat_id,
+                    "Куда опубликовать пост?\nВыберите Telegram, Instagram или Везде:",
+                    reply_markup=_destination_keyboard(draft.id),
+                )
+                return ""
             return str(exc)
 
-        scheduled = self.repo.schedule_manual_post(draft.id, parsed.when)
-        if scheduled is None:
-            return "Не удалось сохранить время. Пришлите ссылку ещё раз."
-        run_at = parsed.when
+        time_val = parsed.when
         if parsed.note == "сейчас":
-            run_at = datetime.now(timezone.utc) + timedelta(seconds=1)
-        self._arm_job(scheduled.id, run_at)
+            time_val = datetime.now(timezone.utc)
 
-        if parsed.note == "сейчас":
-            return "Публикую сейчас"
-        return f"Поставил пост на {self._format_local(parsed.when)}"
+        if dest_override:
+            self.repo.set_manual_post_time(draft.id, time_val)
+            return self._finalize_schedule(draft.id, dest_override)
+
+        updated = self.repo.set_manual_post_time(draft.id, time_val)
+        if updated is None:
+            return "Не удалось сохранить время. Пришлите ссылку ещё раз."
+
+        time_label = "сейчас" if parsed.note == "сейчас" else self._format_local(parsed.when)
+        prompt_text = (
+            f"Время: {time_label} ({self.timezone_name}).\n"
+            f"Куда опубликовать пост?"
+        )
+        self._send(chat_id, prompt_text, reply_markup=_destination_keyboard(draft.id))
+        return ""
 
     def _arm_job(self, post_id: int, run_at: datetime) -> None:
         from apscheduler.triggers.date import DateTrigger
@@ -322,6 +397,9 @@ class AdminIntakeBot:
             self.repo.set_manual_post_status(post_id, "publishing")
             product_url = post.product_url
             chat_id = post.chat_id
+            target_channel = getattr(post, "target_channel", "both") or "both"
+
+        publishers_filter = None if target_channel in ("both", "all") else target_channel
         try:
             ok, message = self.runner.publish_manual_url(
                 product_url,
@@ -329,6 +407,7 @@ class AdminIntakeBot:
                     chat_id,
                     _platform_notice(platform, success, detail),
                 ),
+                publishers_filter=publishers_filter,
             )
         except Exception as exc:
             logger.error("Scheduled manual post %s failed: %s", post_id, exc, exc_info=True)
@@ -395,25 +474,50 @@ class AdminIntakeBot:
         updates = payload.get("result") or []
         return list(updates)
 
-    def _send(self, chat_id: str, text: str) -> None:
+    def _send(self, chat_id: str, text: str, reply_markup: dict[str, Any] | None = None) -> None:
         if self._sender is not None:
             self._sender(str(chat_id), text)
             return
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         try:
             with httpx.Client(timeout=20.0) as client:
-                response = client.post(
-                    url,
-                    json={
-                        "chat_id": chat_id,
-                        "text": text,
-                        "disable_web_page_preview": True,
-                    },
-                )
+                response = client.post(url, json=payload)
                 if response.status_code != 200:
                     logger.warning("Telegram sendMessage failed (%s): %s", response.status_code, response.text)
         except Exception as exc:
             logger.warning("Telegram sendMessage failed: %s", exc)
+
+
+def _parse_destination(text: str) -> str | None:
+    t = text.strip().lower()
+    if t in {"тг", "tg", "telegram", "телеграм", "телеграмм", "в тг", "в телеграм"}:
+        return "telegram"
+    if t in {"инста", "инст", "ig", "instagram", "инстаграм", "в инсту", "в инстаграм"}:
+        return "instagram"
+    if t in {"оба", "обе", "везде", "все", "всё", "both", "all", "в оба", "в обе"}:
+        return "both"
+    return None
+
+
+def _destination_keyboard(post_id: int) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✈️ Telegram", "callback_data": f"dest:telegram:{post_id}"},
+                {"text": "📸 Instagram", "callback_data": f"dest:instagram:{post_id}"},
+            ],
+            [
+                {"text": "🌐 Везде (TG + IG)", "callback_data": f"dest:both:{post_id}"},
+            ],
+        ]
+    }
 
 
 def _platform_notice(platform: str, success: bool, detail: str) -> str:

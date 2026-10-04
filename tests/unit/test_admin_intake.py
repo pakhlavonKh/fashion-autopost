@@ -156,18 +156,22 @@ class _Scheduler:
 class _Runner:
     def __init__(self, ok: bool = True) -> None:
         self.urls: list[str] = []
+        self.filters: list[str | None] = []
         self.ok = ok
 
-    def publish_manual_url(self, url: str, on_platform=None) -> tuple[bool, str]:
+    def publish_manual_url(self, url: str, on_platform=None, publishers_filter=None, **kwargs) -> tuple[bool, str]:
         self.urls.append(url)
+        self.filters.append(publishers_filter)
         if not self.ok:
             if on_platform is not None:
                 on_platform("telegram", False, "канал недоступен")
                 return False, ""
             return False, "Не удалось опубликовать: канал недоступен"
         if on_platform is not None:
-            on_platform("telegram", True, "")
-            on_platform("instagram", True, "")
+            if publishers_filter in (None, "both", "telegram"):
+                on_platform("telegram", True, "")
+            if publishers_filter in (None, "both", "instagram"):
+                on_platform("instagram", True, "")
             return True, ""
         return True, "Пост опубликован: Wool coat\nЦена: 55.00 USD"
 
@@ -180,6 +184,21 @@ def _message(user_id: int, text: str, update_id: int = 1) -> dict:
             "from": {"id": user_id, "first_name": "Admin"},
             "chat": {"id": user_id, "type": "private", "first_name": "Admin"},
             "text": text,
+        },
+    }
+
+
+def _callback(user_id: int, data: str, update_id: int = 100) -> dict:
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": str(update_id),
+            "from": {"id": user_id, "first_name": "Admin"},
+            "message": {
+                "message_id": update_id,
+                "chat": {"id": user_id, "type": "private"},
+            },
+            "data": data,
         },
     }
 
@@ -215,23 +234,34 @@ def test_admin_link_then_time_publishes_with_pipeline(tmp_path: Path) -> None:
     link = "https://www.zara.com/es/es/wool-coat-p12345678.html"
     bot.handle_update(_message(ADMIN_ID, link, update_id=1))
     assert "какое время" in sent[-1][1].lower()
-    assert bot.repo.get_awaiting_manual(str(ADMIN_ID)) is not None
+    draft = bot.repo.get_awaiting_manual(str(ADMIN_ID))
+    assert draft is not None
 
     bot.handle_update(_message(ADMIN_ID, "после обеда", update_id=2))
     assert "не понял время" in sent[-1][1].lower()
 
     bot.handle_update(_message(ADMIN_ID, "18:30", update_id=3))
+    assert "куда опубликовать" in sent[-1][1].lower()
+    draft = bot.repo.get_awaiting_manual(str(ADMIN_ID))
+    assert draft is not None
+    assert draft.status == "awaiting_destination"
+
+    # Admin chooses "both" via inline keyboard callback
+    bot.handle_update(_callback(ADMIN_ID, f"dest:both:{draft.id}", update_id=4))
     assert sent[-1][1].startswith("Поставил пост на ")
+    assert "telegram и instagram" in sent[-1][1].lower()
     assert "наценка" not in sent[-1][1].lower()
     assert len(scheduler.jobs) == 1
-    draft = bot.repo.get_manual_post(scheduler.jobs[0]["args"][0])
-    assert draft is not None
-    assert draft.status == "scheduled"
-    assert draft.product_url == link
+    scheduled_post = bot.repo.get_manual_post(scheduler.jobs[0]["args"][0])
+    assert scheduled_post is not None
+    assert scheduled_post.status == "scheduled"
+    assert scheduled_post.product_url == link
+    assert scheduled_post.target_channel == "both"
 
     job = scheduler.jobs[0]
     job["func"](*job["args"])
     assert runner.urls == [link]
+    assert runner.filters == [None]
     assert "опубликован в тг" in sent[-2][1].lower()
     assert "опубликован в инсте" in sent[-1][1].lower()
     finished = bot.repo.get_manual_post(draft.id)
@@ -244,7 +274,11 @@ def test_immediate_publish_uses_a_short_confirmation(tmp_path: Path) -> None:
     link = "https://www.zara.com/es/es/wool-coat-p12345678.html"
     bot.handle_update(_message(ADMIN_ID, link, update_id=1))
     bot.handle_update(_message(ADMIN_ID, "сейчас", update_id=2))
-    assert sent[-1][1] == "Публикую сейчас"
+    assert "куда опубликовать" in sent[-1][1].lower()
+    draft = bot.repo.get_awaiting_manual(str(ADMIN_ID))
+    assert draft is not None
+    bot.handle_update(_callback(ADMIN_ID, f"dest:both:{draft.id}", update_id=3))
+    assert sent[-1][1] == "Публикую сейчас в Telegram и Instagram"
     assert len(scheduler.jobs) == 1
 
 
@@ -253,6 +287,9 @@ def test_platform_failure_is_reported_on_its_own(tmp_path: Path) -> None:
     link = "https://www.zara.com/es/es/wool-coat-p12345678.html"
     bot.handle_update(_message(ADMIN_ID, link, update_id=1))
     bot.handle_update(_message(ADMIN_ID, "сейчас", update_id=2))
+    draft = bot.repo.get_awaiting_manual(str(ADMIN_ID))
+    assert draft is not None
+    bot.handle_update(_callback(ADMIN_ID, f"dest:both:{draft.id}", update_id=3))
     scheduler.jobs[0]["func"](*scheduler.jobs[0]["args"])
     assert sent[-1][1] == "Не удалось опубликовать в ТГ: канал недоступен"
     finished = bot.repo.get_manual_post(scheduler.jobs[0]["args"][0])
@@ -265,7 +302,10 @@ def test_duplicate_scheduled_link_is_not_queued_twice(tmp_path: Path) -> None:
     link = "https://shop.mango.com/es/es/p/coat/87012345"
     bot.handle_update(_message(ADMIN_ID, link, update_id=1))
     bot.handle_update(_message(ADMIN_ID, "21:00", update_id=2))
-    bot.handle_update(_message(ADMIN_ID, link, update_id=3))
+    draft = bot.repo.get_awaiting_manual(str(ADMIN_ID))
+    assert draft is not None
+    bot.handle_update(_callback(ADMIN_ID, f"dest:both:{draft.id}", update_id=3))
+    bot.handle_update(_message(ADMIN_ID, link, update_id=4))
     assert "уже стоит в очереди" in sent[-1][1]
     assert len(scheduler.jobs) == 1
 
@@ -437,4 +477,62 @@ def test_publish_manual_url_dynamic_fx_and_multi_photo_album(tmp_path: Path, mon
     ig_post = instagram.published_posts[0]
     assert len(ig_post.photo_urls) == 3
     assert ig_post.price == Decimal("46.00")
+
+
+def test_admin_selects_telegram_destination(tmp_path: Path) -> None:
+    bot, sent, scheduler, runner = _bot(tmp_path)
+    link = "https://www.zara.com/es/es/wool-coat-p12345678.html"
+    bot.handle_update(_message(ADMIN_ID, link, update_id=1))
+    bot.handle_update(_message(ADMIN_ID, "18:30", update_id=2))
+    draft = bot.repo.get_awaiting_manual(str(ADMIN_ID))
+    assert draft is not None
+    assert draft.status == "awaiting_destination"
+
+    bot.handle_update(_callback(ADMIN_ID, f"dest:telegram:{draft.id}", update_id=3))
+    assert sent[-1][1].startswith("Поставил пост на ")
+    assert "telegram" in sent[-1][1].lower()
+    assert "instagram" not in sent[-1][1].lower()
+
+    job = scheduler.jobs[0]
+    job["func"](*job["args"])
+    assert runner.filters == ["telegram"]
+    assert "опубликован в тг" in sent[-1][1].lower()
+    assert "опубликован в инсте" not in sent[-1][1].lower()
+
+
+def test_admin_selects_instagram_destination(tmp_path: Path) -> None:
+    bot, sent, scheduler, runner = _bot(tmp_path)
+    link = "https://www.zara.com/es/es/wool-coat-p12345678.html"
+    bot.handle_update(_message(ADMIN_ID, link, update_id=1))
+    bot.handle_update(_message(ADMIN_ID, "19:00", update_id=2))
+    draft = bot.repo.get_awaiting_manual(str(ADMIN_ID))
+    assert draft is not None
+
+    bot.handle_update(_callback(ADMIN_ID, f"dest:instagram:{draft.id}", update_id=3))
+    assert sent[-1][1].startswith("Поставил пост на ")
+    assert "instagram" in sent[-1][1].lower()
+
+    job = scheduler.jobs[0]
+    job["func"](*job["args"])
+    assert runner.filters == ["instagram"]
+    assert "опубликован в инсте" in sent[-1][1].lower()
+    assert "опубликован в тг" not in sent[-1][1].lower()
+
+
+def test_admin_destination_text_fallback_and_combined(tmp_path: Path) -> None:
+    bot, sent, scheduler, runner = _bot(tmp_path)
+    link = "https://www.zara.com/es/es/wool-coat-p12345678.html"
+    # Link then time, then typed destination
+    bot.handle_update(_message(ADMIN_ID, link, update_id=1))
+    bot.handle_update(_message(ADMIN_ID, "20:00", update_id=2))
+    bot.handle_update(_message(ADMIN_ID, "тг", update_id=3))
+    assert sent[-1][1].startswith("Поставил пост на ")
+    assert "telegram" in sent[-1][1].lower()
+
+    # Next link: time and destination combined in one message
+    link2 = "https://shop.mango.com/es/es/p/coat/87012345"
+    bot.handle_update(_message(ADMIN_ID, link2, update_id=4))
+    bot.handle_update(_message(ADMIN_ID, "сейчас инста", update_id=5))
+    assert "публикую сейчас в instagram" in sent[-1][1].lower()
+
 

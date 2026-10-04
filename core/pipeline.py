@@ -335,16 +335,23 @@ class PipelineRunner:
         product_url: str,
         on_platform: Callable[[str, bool, str], None] | None = None,
         bypass_duplicate_gate: bool = False,
+        publishers_filter: str | None = None,
     ) -> tuple[bool, str]:
         """Publish one admin-submitted product with the same pricing, copy, and channels as scheduled posts."""
         with self._cycle_lock:
-            return self._publish_manual_url_locked(product_url, on_platform, bypass_duplicate_gate=bypass_duplicate_gate)
+            return self._publish_manual_url_locked(
+                product_url,
+                on_platform,
+                bypass_duplicate_gate=bypass_duplicate_gate,
+                publishers_filter=publishers_filter,
+            )
 
     def _publish_manual_url_locked(
         self,
         product_url: str,
         on_platform: Callable[[str, bool, str], None] | None = None,
         bypass_duplicate_gate: bool = False,
+        publishers_filter: str | None = None,
     ) -> tuple[bool, str]:
         try:
             self.config.reload_hot_fields()
@@ -451,6 +458,7 @@ class PipelineRunner:
                 summary,
                 title_override=selection.title,
                 on_platform=on_platform,
+                publishers_filter=publishers_filter,
                 bypass_duplicate_gate=bypass_duplicate_gate,
             )
         except SiteFactsUnavailable as exc:
