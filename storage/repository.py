@@ -42,6 +42,8 @@ class ManualPost:
     error: str | None
     original_product_url: str | None = None
     target_channel: str = "both"
+    custom_description: str | None = None
+    photo_url: str | None = None
 
 
 @runtime_checkable
@@ -269,6 +271,10 @@ class SqlAlchemyProductRepository:
                     conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN original_product_url TEXT")
                 if "target_channel" not in mcols:
                     conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN target_channel VARCHAR(32) DEFAULT 'both'")
+                if "custom_description" not in mcols:
+                    conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN custom_description TEXT")
+                if "photo_url" not in mcols:
+                    conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN photo_url TEXT")
                 conn.commit()
         except Exception as exc:
             logger.warning("Auto-migration in _ensure_columns encountered: %s", exc)
@@ -733,13 +739,20 @@ class SqlAlchemyProductRepository:
         chat_id: str,
         product_url: str,
         original_product_url: str | None = None,
+        custom_description: str | None = None,
+        photo_url: str | None = None,
     ) -> ManualPost:
         """Replace this admin's unanswered link with a new one waiting for a publish time."""
         with self._get_session() as session:
             waiting = session.scalars(
                 select(ManualPostRecord).where(
                     ManualPostRecord.admin_user_id == str(admin_user_id),
-                    ManualPostRecord.status.in_(("awaiting_time", "awaiting_destination")),
+                    ManualPostRecord.status.in_((
+                        "awaiting_description",
+                        "awaiting_time",
+                        "awaiting_destination",
+                        "awaiting_approval",
+                    )),
                 )
             ).all()
             for row in waiting:
@@ -750,8 +763,10 @@ class SqlAlchemyProductRepository:
                 chat_id=str(chat_id),
                 product_url=product_url,
                 original_product_url=original_product_url or product_url,
-                status="awaiting_time",
+                status="awaiting_description",
                 target_channel="both",
+                custom_description=custom_description,
+                photo_url=photo_url,
             )
             session.add(record)
             session.commit()
@@ -764,7 +779,12 @@ class SqlAlchemyProductRepository:
                 select(ManualPostRecord)
                 .where(
                     ManualPostRecord.admin_user_id == str(admin_user_id),
-                    ManualPostRecord.status.in_(("awaiting_time", "awaiting_destination")),
+                    ManualPostRecord.status.in_((
+                        "awaiting_description",
+                        "awaiting_time",
+                        "awaiting_destination",
+                        "awaiting_approval",
+                    )),
                 )
                 .order_by(ManualPostRecord.id.desc())
             )
@@ -775,7 +795,12 @@ class SqlAlchemyProductRepository:
             rows = session.scalars(
                 select(ManualPostRecord).where(
                     ManualPostRecord.admin_user_id == str(admin_user_id),
-                    ManualPostRecord.status.in_(("awaiting_time", "awaiting_destination")),
+                    ManualPostRecord.status.in_((
+                        "awaiting_description",
+                        "awaiting_time",
+                        "awaiting_destination",
+                        "awaiting_approval",
+                    )),
                 )
             ).all()
             if not rows:
@@ -787,14 +812,55 @@ class SqlAlchemyProductRepository:
             session.commit()
             return True
 
-    def set_manual_post_time(self, post_id: int, publish_at: datetime) -> ManualPost | None:
-        """Record the chosen publication time and wait for platform selection."""
+    def set_manual_post_description(
+        self,
+        post_id: int,
+        description: str,
+        next_status: str = "awaiting_time",
+    ) -> ManualPost | None:
+        """Record the custom product description (part 1)."""
+        with self._get_session() as session:
+            record = session.get(ManualPostRecord, post_id)
+            if record is None:
+                return None
+            record.custom_description = description
+            record.status = next_status
+            record.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(record)
+            return _manual_post_from_row(record)
+
+    def set_manual_post_time(
+        self,
+        post_id: int,
+        publish_at: datetime,
+        next_status: str = "awaiting_destination",
+    ) -> ManualPost | None:
+        """Record the chosen publication time."""
         with self._get_session() as session:
             record = session.get(ManualPostRecord, post_id)
             if record is None:
                 return None
             record.publish_at = publish_at
-            record.status = "awaiting_destination"
+            record.status = next_status
+            record.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(record)
+            return _manual_post_from_row(record)
+
+    def set_manual_post_destination(
+        self,
+        post_id: int,
+        target_channel: str,
+        next_status: str = "awaiting_approval",
+    ) -> ManualPost | None:
+        """Record the selected platform destination."""
+        with self._get_session() as session:
+            record = session.get(ManualPostRecord, post_id)
+            if record is None:
+                return None
+            record.target_channel = target_channel
+            record.status = next_status
             record.updated_at = datetime.now(timezone.utc)
             session.commit()
             session.refresh(record)
@@ -805,6 +871,7 @@ class SqlAlchemyProductRepository:
         post_id: int,
         publish_at: datetime | None = None,
         target_channel: str = "both",
+        custom_description: str | None = None,
     ) -> ManualPost | None:
         with self._get_session() as session:
             record = session.get(ManualPostRecord, post_id)
@@ -812,7 +879,10 @@ class SqlAlchemyProductRepository:
                 return None
             if publish_at is not None:
                 record.publish_at = publish_at
-            record.target_channel = target_channel
+            if target_channel:
+                record.target_channel = target_channel
+            if custom_description is not None:
+                record.custom_description = custom_description
             record.status = "scheduled"
             record.updated_at = datetime.now(timezone.utc)
             session.commit()
@@ -852,7 +922,14 @@ class SqlAlchemyProductRepository:
         with self._get_session() as session:
             rows = session.scalars(
                 select(ManualPostRecord).where(
-                    ManualPostRecord.status.in_(("awaiting_time", "awaiting_destination", "scheduled", "publishing"))
+                    ManualPostRecord.status.in_((
+                        "awaiting_description",
+                        "awaiting_time",
+                        "awaiting_destination",
+                        "awaiting_approval",
+                        "scheduled",
+                        "publishing",
+                    ))
                 )
             ).all()
             for row in rows:
@@ -1056,4 +1133,6 @@ def _manual_post_from_row(record: ManualPostRecord) -> ManualPost:
         error=record.error,
         original_product_url=record.original_product_url or record.product_url,
         target_channel=getattr(record, "target_channel", "both") or "both",
+        custom_description=getattr(record, "custom_description", None),
+        photo_url=getattr(record, "photo_url", None),
     )

@@ -39,6 +39,8 @@ class MockAggregatorClient:
                 "image": "https://images.unsplash.com/photo-1595777457583-95e059d581b8?w=800&auto=format&fit=crop&q=80",
                 "url": "https://www.zara.com/sample/pleated-satin-midi-dress-101",
                 "available": True,
+                "color": "изумрудный",
+                "sizes": ["XS", "S", "M", "L"],
             },
             {
                 "id": "zara-bl-204",
@@ -49,6 +51,8 @@ class MockAggregatorClient:
                 "image": "https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=800&auto=format&fit=crop&q=80",
                 "url": "https://www.zara.com/sample/double-breasted-blazer-204",
                 "available": True,
+                "color": "черный",
+                "sizes": ["S", "M", "L", "XL"],
             },
             {
                 "id": "mango-ct-305",
@@ -59,6 +63,8 @@ class MockAggregatorClient:
                 "image": "https://images.unsplash.com/photo-1544441893-675973e31985?w=800&auto=format&fit=crop&q=80",
                 "url": "https://shop.mango.com/sample/belted-trench-coat-305",
                 "available": True,
+                "color": "бежевый",
+                "sizes": ["XS", "S", "M", "L"],
             },
             {
                 "id": "mango-sh-402",
@@ -69,6 +75,8 @@ class MockAggregatorClient:
                 "image": "https://images.unsplash.com/photo-1598033129183-c4f50c736f10?w=800&auto=format&fit=crop&q=80",
                 "url": "https://shop.mango.com/sample/linen-relaxed-shirt-402",
                 "available": True,
+                "color": "белый",
+                "sizes": ["S", "M", "L"],
             },
             {
                 "id": "zara-sk-508",
@@ -79,6 +87,8 @@ class MockAggregatorClient:
                 "image": "https://images.unsplash.com/photo-1582533561751-ef6f6ab93a2e?w=800&auto=format&fit=crop&q=80",
                 "url": "https://www.zara.com/sample/wide-leg-denim-508",
                 "available": True,
+                "color": "синий",
+                "sizes": ["34", "36", "38", "40", "42"],
             },
             {
                 "id": "mango-oo-999",
@@ -89,6 +99,8 @@ class MockAggregatorClient:
                 "image": "https://images.unsplash.com/photo-1576566588028-4147f3842f27?w=800&auto=format&fit=crop&q=80",
                 "url": "https://shop.mango.com/sample/cashmere-knit-999",
                 "available": False,  # Should be filtered out by adapter
+                "color": "серый",
+                "sizes": ["S", "M"],
             },
         ]
 

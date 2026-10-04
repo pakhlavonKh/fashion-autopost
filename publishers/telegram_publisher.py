@@ -403,8 +403,18 @@ class TelegramPublisher:
 
         footer = (self.bio_footer or DEFAULT_BIO_FOOTER).strip()
 
+        first_line = desc_clean.split("\n")[0].strip() if desc_clean else ""
+        has_header_already = (
+            desc_clean.lower().startswith(header.lower())
+            or (title_clean and desc_clean.lower().startswith(title_clean.lower() + "-"))
+            or ("-" in first_line and any(cur in first_line for cur in ("$", "€", "сум", "USD", "EUR")))
+        )
+
         if desc_clean:
-            caption = f"{header}\n{desc_clean}\n\n{footer}"
+            if has_header_already:
+                caption = f"{desc_clean}\n\n{footer}"
+            else:
+                caption = f"{header}\n{desc_clean}\n\n{footer}"
         else:
             caption = f"{header}\n\n{footer}"
         if len(caption) > MAX_TELEGRAM_CAPTION_LEN:

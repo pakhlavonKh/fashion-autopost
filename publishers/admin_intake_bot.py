@@ -17,6 +17,7 @@ import httpx
 
 from core.publish_time import parse_publish_time
 from publishers.telegram_discovery import TelegramChatDiscoveryService
+from publishers.telegram_publisher import DEFAULT_BIO_FOOTER
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,24 @@ class AdminIntakeBot:
                 ok, msg = False, f"Ошибка при выборе следующего товара: {exc}"
             self._send(chat_id, msg or ("Следующий товар опубликован!" if ok else "Нет доступных товаров."))
 
+        elif data.startswith("desc:auto:"):
+            try:
+                post_id = int(data.split(":")[2])
+            except (ValueError, IndexError):
+                return
+            post = self.repo.get_manual_post(post_id)
+            if post is None:
+                self._send(chat_id, "Ошибка: черновик не найден.")
+                return
+            self.repo.set_manual_post_status(post_id, "awaiting_time")
+            self._send(
+                chat_id,
+                f"Описание принято!\n"
+                f"В какое время выложить пост?\n"
+                f"Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
+                f"Часовой пояс: {self.timezone_name}."
+            )
+
         elif data.startswith("dest:"):
             try:
                 parts = data.split(":")
@@ -159,9 +178,54 @@ class AdminIntakeBot:
                 post_id = int(parts[2])
             except (ValueError, IndexError):
                 return
-            reply = self._finalize_schedule(post_id, destination)
+            self.repo.set_manual_post_destination(post_id, destination, next_status="awaiting_approval")
+            self._send_prerender(chat_id, post_id)
+
+        elif data.startswith("approve:"):
+            try:
+                post_id = int(data.split(":")[1])
+            except (ValueError, IndexError):
+                return
+            reply = self._finalize_schedule(post_id)
             if reply:
                 self._send(chat_id, reply)
+
+        elif data.startswith("edit:desc:"):
+            try:
+                post_id = int(data.split(":")[2])
+            except (ValueError, IndexError):
+                return
+            self.repo.set_manual_post_status(post_id, "awaiting_description")
+            self._send(chat_id, "Пришлите новое краткое описание (Часть 1) для этого поста:")
+
+        elif data.startswith("edit:time:"):
+            try:
+                post_id = int(data.split(":")[2])
+            except (ValueError, IndexError):
+                return
+            self.repo.set_manual_post_status(post_id, "awaiting_time")
+            self._send(
+                chat_id,
+                f"В какое время выложить пост?\n"
+                f"Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
+                f"Часовой пояс: {self.timezone_name}."
+            )
+
+        elif data.startswith("edit:dest:"):
+            try:
+                post_id = int(data.split(":")[2])
+            except (ValueError, IndexError):
+                return
+            self.repo.set_manual_post_status(post_id, "awaiting_destination")
+            self._send(chat_id, "Куда опубликовать пост?", reply_markup=_destination_keyboard(post_id))
+
+        elif data.startswith("cancel:"):
+            try:
+                post_id = int(data.split(":")[1])
+            except (ValueError, IndexError):
+                return
+            self.repo.set_manual_post_status(post_id, "cancelled")
+            self._send(chat_id, "❌ Публикация отменена. Пришлите новую ссылку, когда будете готовы.")
 
     def _answer_callback(self, query_id: str, text: str = "") -> None:
         if not query_id:
@@ -194,9 +258,8 @@ class AdminIntakeBot:
         command = _command_name(text)
         if command in {"/start", "/help"}:
             return (
-                "Пришлите ссылку на товар. Я спрошу, в какое время выложить пост, "
-                "и опубликую его с теми же настройками, что и остальные: "
-                "описание, наценка, Telegram и Instagram."
+                "Пришлите ссылку на товар. Я сформирую описание, спрошу время и канал, "
+                "покажу предпросмотр перед публикацией и запланирую отправку."
             )
         if command == "/cancel":
             cancelled = self.repo.cancel_awaiting_manual(str(user_id))
@@ -209,6 +272,51 @@ class AdminIntakeBot:
             return self._accept_link(user_id, chat_id, product_url)
         if not text.strip():
             return "Пришлите ссылку на товар."
+
+        draft = self.repo.get_awaiting_manual(str(user_id))
+        if draft is None:
+            return "Сначала пришлите ссылку на товар."
+
+        if draft.status == "awaiting_description":
+            is_time = False
+            if draft.custom_description:
+                try:
+                    parse_publish_time(text, datetime.now(timezone.utc), self.timezone_name)
+                    is_time = True
+                except Exception:
+                    pass
+            if is_time:
+                return self._accept_time(user_id, chat_id, text)
+
+            self.repo.set_manual_post_description(draft.id, text.strip(), next_status="awaiting_time")
+            return (
+                "Описание сохранено!\n"
+                "В какое время выложить пост?\n"
+                "Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
+                f"Часовой пояс: {self.timezone_name}."
+            )
+
+        if draft.status == "awaiting_time":
+            return self._accept_time(user_id, chat_id, text)
+
+        if draft.status == "awaiting_destination":
+            dest = _parse_destination(text)
+            if dest:
+                self.repo.set_manual_post_destination(draft.id, dest, next_status="awaiting_approval")
+                self._send_prerender(chat_id, draft.id)
+                return ""
+            self._send(
+                chat_id,
+                "Куда опубликовать пост?\nВыберите Telegram, Instagram или Везде:",
+                reply_markup=_destination_keyboard(draft.id),
+            )
+            return ""
+
+        if draft.status == "awaiting_approval":
+            return (
+                "Пост ожидает подтверждения. Нажмите «✅ Подтвердить и запланировать» выше или выберите, что нужно изменить."
+            )
+
         return self._accept_time(user_id, chat_id, text)
 
     def _accept_link(self, user_id: int, chat_id: str, product_url: str) -> str:
@@ -248,13 +356,55 @@ class AdminIntakeBot:
                 "Выше отправлен запрос с кнопками [Опубликовать повторно] и [Отклонить]."
             )
 
-        self.repo.create_manual_draft(str(user_id), chat_id, processed_url, original_product_url=original_url)
-        return (
-            "Ссылку принял и обработал через Playwright.\n"
-            "В какое время выложить пост?\n"
-            "Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
-            f"Часовой пояс: {self.timezone_name}."
+        draft_data = None
+        if hasattr(self.runner, "prepare_manual_draft_data"):
+            try:
+                draft_data = self.runner.prepare_manual_draft_data(processed_url)
+            except Exception as exc:
+                logger.warning("prepare_manual_draft_data failed: %s", exc)
+
+        auto_desc = (draft_data.get("description") or "").strip() if draft_data else ""
+        photo_url = draft_data.get("photo_url") if draft_data else None
+
+        draft = self.repo.create_manual_draft(
+            str(user_id),
+            chat_id,
+            processed_url,
+            original_product_url=original_url,
+            custom_description=auto_desc if auto_desc else None,
+            photo_url=photo_url,
         )
+
+        if auto_desc:
+            text = (
+                "Ссылку принял и обработал.\n\n"
+                "📝 <b>Краткое описание товара (Часть 1):</b>\n\n"
+                f"{auto_desc}\n\n"
+                "Нажмите <b>«✅ Использовать это описание»</b> или отправьте свой вариант текста в ответном сообщении.\n\n"
+                "<i>(Контакты и ссылки добавятся автоматически во 2-й части)</i>"
+            )
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "✅ Использовать это описание", "callback_data": f"desc:auto:{draft.id}"}],
+                    [{"text": "❌ Отмена", "callback_data": f"cancel:{draft.id}"}],
+                ]
+            }
+            if photo_url:
+                self._send_photo(chat_id, photo_url)
+            self._send(chat_id, text, reply_markup=reply_markup)
+            return ""
+
+        text = (
+            "Ссылку принял. Введите краткое описание товара (Часть 1):\n\n"
+            "Например:\n"
+            "Слингбэки с вышивкой-98$\n"
+            "Размеры с 35 по 42.\n"
+            "Высота каблука 4,5 см.\n"
+            "Цвет: черный.\n\n"
+            "<i>(Контакты и ссылки добавятся автоматически во 2-й части)</i>"
+        )
+        self._send(chat_id, text)
+        return ""
 
     def _send_duplicate_warning(self, chat_id: str, approval_id: int, url: str) -> None:
         text = (
@@ -287,8 +437,68 @@ class AdminIntakeBot:
         except Exception as exc:
             logger.warning("Failed to send duplicate warning inline message: %s", exc)
 
-    def _finalize_schedule(self, post_id: int, destination: str) -> str:
-        scheduled = self.repo.schedule_manual_post(post_id, target_channel=destination)
+    def _send_prerender(self, chat_id: str, post_id: int) -> None:
+        post = self.repo.get_manual_post(post_id)
+        if post is None:
+            self._send(chat_id, "Ошибка: черновик не найден.")
+            return
+
+        channel_labels = {
+            "telegram": "Telegram",
+            "instagram": "Instagram",
+            "both": "Telegram и Instagram",
+        }
+        dest_label = channel_labels.get(post.target_channel, post.target_channel)
+
+        now = datetime.now(timezone.utc)
+        run_at = post.publish_at or now
+        is_immediate = (run_at <= now + timedelta(seconds=5))
+        time_label = "сейчас" if is_immediate else self._format_local(run_at)
+
+        part1 = (post.custom_description or "").strip()
+        part2 = DEFAULT_BIO_FOOTER.strip()
+
+        preview_caption = f"{part1}\n\n{part2}" if part1 else part2
+
+        text = (
+            f"🔍 <b>Предпросмотр поста перед публикацией</b>\n\n"
+            f"📍 Канал: <b>{dest_label}</b>\n"
+            f"⏰ Время: <b>{time_label}</b> ({self.timezone_name})\n\n"
+            f"👇 <b>Текст поста:</b>\n"
+            f"----------------------------------------\n"
+            f"{preview_caption}\n"
+            f"----------------------------------------\n\n"
+            f"Проверьте правильность и подтвердите публикацию:"
+        )
+
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "✅ Подтвердить и запланировать", "callback_data": f"approve:{post.id}"}],
+                [
+                    {"text": "✏️ Изменить описание", "callback_data": f"edit:desc:{post.id}"},
+                    {"text": "⏰ Изменить время", "callback_data": f"edit:time:{post.id}"},
+                ],
+                [
+                    {"text": "🌐 Изменить канал", "callback_data": f"edit:dest:{post.id}"},
+                    {"text": "❌ Отмена", "callback_data": f"cancel:{post.id}"},
+                ],
+            ]
+        }
+        if getattr(post, "photo_url", None):
+            self._send_photo(chat_id, post.photo_url)
+        self._send(chat_id, text, reply_markup=keyboard)
+
+    def _finalize_schedule(self, post_id: int, destination: str | None = None) -> str:
+        post = self.repo.get_manual_post(post_id)
+        if post is None:
+            return "Не удалось найти пост. Пришлите ссылку ещё раз."
+
+        dest = destination or getattr(post, "target_channel", "both") or "both"
+        scheduled = self.repo.schedule_manual_post(
+            post_id,
+            target_channel=dest,
+            custom_description=getattr(post, "custom_description", None),
+        )
         if scheduled is None:
             return "Не удалось сохранить настройки. Пришлите ссылку ещё раз."
 
@@ -305,7 +515,7 @@ class AdminIntakeBot:
             "instagram": "Instagram",
             "both": "Telegram и Instagram",
         }
-        dest_label = channel_labels.get(destination, destination)
+        dest_label = channel_labels.get(dest, dest)
 
         if is_immediate:
             return f"Публикую сейчас в {dest_label}"
@@ -323,7 +533,9 @@ class AdminIntakeBot:
         if draft.status == "awaiting_destination":
             dest = _parse_destination(text)
             if dest:
-                return self._finalize_schedule(draft.id, dest)
+                self.repo.set_manual_post_destination(draft.id, dest, next_status="awaiting_approval")
+                self._send_prerender(chat_id, draft.id)
+                return ""
 
         words = text.strip().split()
         dest_override = None
@@ -357,10 +569,12 @@ class AdminIntakeBot:
             time_val = datetime.now(timezone.utc)
 
         if dest_override:
-            self.repo.set_manual_post_time(draft.id, time_val)
-            return self._finalize_schedule(draft.id, dest_override)
+            self.repo.set_manual_post_time(draft.id, time_val, next_status="awaiting_approval")
+            self.repo.set_manual_post_destination(draft.id, dest_override, next_status="awaiting_approval")
+            self._send_prerender(chat_id, draft.id)
+            return ""
 
-        updated = self.repo.set_manual_post_time(draft.id, time_val)
+        updated = self.repo.set_manual_post_time(draft.id, time_val, next_status="awaiting_destination")
         if updated is None:
             return "Не удалось сохранить время. Пришлите ссылку ещё раз."
 
@@ -389,6 +603,27 @@ class AdminIntakeBot:
         )
         logger.info("Scheduled manual post %s at %s", post_id, when.isoformat())
 
+    def _send_photo(self, chat_id: str, photo: str, caption: str = "", reply_markup: dict[str, Any] | None = None) -> bool:
+        if self._sender is not None:
+            return True
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
+        payload: dict[str, Any] = {
+            "chat_id": str(chat_id),
+            "photo": photo,
+        }
+        if caption:
+            payload["caption"] = caption
+            payload["parse_mode"] = "HTML"
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post(url, json=payload)
+                return resp.status_code == 200
+        except Exception as exc:
+            logger.debug("Failed to send preview photo %s: %s", photo, exc)
+            return False
+
     def _publish_scheduled(self, post_id: int) -> None:
         with self._fire_lock:
             post = self.repo.get_manual_post(post_id)
@@ -398,6 +633,7 @@ class AdminIntakeBot:
             product_url = post.product_url
             chat_id = post.chat_id
             target_channel = getattr(post, "target_channel", "both") or "both"
+            custom_desc = getattr(post, "custom_description", None)
 
         publishers_filter = None if target_channel in ("both", "all") else target_channel
         try:
@@ -408,6 +644,7 @@ class AdminIntakeBot:
                     _platform_notice(platform, success, detail),
                 ),
                 publishers_filter=publishers_filter,
+                custom_description=custom_desc,
             )
         except Exception as exc:
             logger.error("Scheduled manual post %s failed: %s", post_id, exc, exc_info=True)

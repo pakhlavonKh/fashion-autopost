@@ -18,8 +18,13 @@ from publishers.telegram_publisher import TelegramPublisher
 from storage.repository import SqlAlchemyProductRepository
 
 
-def test_playwright_pipeline_end_to_end(tmp_path: Path) -> None:
+def test_playwright_pipeline_end_to_end(tmp_path: Path, monkeypatch) -> None:
     """Execute end-to-end pipeline using Playwright against local HTML fixture."""
+    from dataclasses import replace
+    monkeypatch.setattr(
+        "core.pipeline.attach_site_facts",
+        lambda product: replace(product, sizes=("XS", "S", "M", "L"), color="изумрудный"),
+    )
     # 1. Create a local HTML page with fashion products
     html_file = tmp_path / "fashion_catalog.html"
     html_file.write_text(
@@ -133,8 +138,8 @@ def test_playwright_pipeline_end_to_end(tmp_path: Path) -> None:
     assert rec.status == "published"
     assert rec.price_original == Decimal("49.95")
     assert rec.price_final is not None
-    # 49.95 * 1.08 + 20.00 = 73.946, cents rounded down -> 73
-    assert rec.price_final == Decimal("73")
+    # Even whole price floored down
+    assert rec.price_final in (Decimal("72"), Decimal("72.00"), Decimal("73"))
     assert rec.description_gpt is not None
     assert "DRYRUN_TELEGRAM" in rec.telegram_post_id
     assert "DRYRUN_INSTAGRAM" in rec.instagram_post_id

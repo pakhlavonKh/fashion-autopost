@@ -330,12 +330,77 @@ class PipelineRunner:
                     pass
         return self.config.max_source_price_usd
 
+    def prepare_manual_draft_data(self, product_url: str) -> dict[str, Any]:
+        """Extract product facts, Russian title, calculated final price and Part 1 description for admin intake."""
+        try:
+            self.config.reload_hot_fields()
+        except Exception as exc:
+            logger.warning("Failed to reload hot config fields before prepare_manual_draft: %s", exc)
+
+        try:
+            processed_url, _ = process_product_url_with_playwright(
+                product_url,
+                headless=self.config.scraper.headless,
+            )
+        except Exception as exc:
+            logger.warning("Playwright URL processing fell back to input URL: %s", exc)
+            processed_url = product_url
+
+        try:
+            product = fetch_product_page(processed_url, headless=self.config.scraper.headless)
+        except Exception as exc:
+            logger.warning("Failed to fetch product for draft preview: %s", exc)
+            return {
+                "processed_url": processed_url,
+                "title": "",
+                "price_final": None,
+                "currency": self.config.target_currency,
+                "header": "",
+                "description": "",
+                "photo_url": None,
+            }
+
+        product = attach_site_facts(product)
+        product_title = self._russian_title(product)
+        product_color = self._resolve_color(product.color)
+        heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
+        facts_desc = site_description(product_color or product.color, product.sizes, heel_height=heel)
+
+        final_price = calculate_final_price(
+            original_price=product.price,
+            currency=product.currency,
+            markup=self.config.markup,
+            target_currency=self.config.target_currency,
+            fx=self.fx,
+        )
+        price_val = int(whole_price(final_price))
+        symbol = "$" if self.config.target_currency.upper() == "USD" else f" {self.config.target_currency}"
+        price_display = f"{price_val}$" if self.config.target_currency.upper() == "USD" else f"{price_val}{symbol}"
+
+        header = f"{product_title}-{price_display}"
+        part1 = f"{header}\n{facts_desc}".strip() if facts_desc else header
+
+        photo_url = product.photo_url
+        if not photo_url and getattr(product, "photo_urls", None):
+            photo_url = product.photo_urls[0]
+
+        return {
+            "processed_url": processed_url,
+            "title": product_title,
+            "price_final": price_val,
+            "currency": self.config.target_currency,
+            "header": header,
+            "description": part1,
+            "photo_url": photo_url,
+        }
+
     def publish_manual_url(
         self,
         product_url: str,
         on_platform: Callable[[str, bool, str], None] | None = None,
         bypass_duplicate_gate: bool = False,
         publishers_filter: str | None = None,
+        custom_description: str | None = None,
     ) -> tuple[bool, str]:
         """Publish one admin-submitted product with the same pricing, copy, and channels as scheduled posts."""
         with self._cycle_lock:
@@ -344,6 +409,7 @@ class PipelineRunner:
                 on_platform,
                 bypass_duplicate_gate=bypass_duplicate_gate,
                 publishers_filter=publishers_filter,
+                custom_description=custom_description,
             )
 
     def _publish_manual_url_locked(
@@ -352,6 +418,7 @@ class PipelineRunner:
         on_platform: Callable[[str, bool, str], None] | None = None,
         bypass_duplicate_gate: bool = False,
         publishers_filter: str | None = None,
+        custom_description: str | None = None,
     ) -> tuple[bool, str]:
         try:
             self.config.reload_hot_fields()
@@ -430,24 +497,33 @@ class PipelineRunner:
         else:
             self.repo.upsert_new(product)
 
-        try:
-            selections = self.llm.select_products(
-                candidates=[product],
-                prompt=self.prompt_loader.load_prompt(),
-                max_items=1,
-            )
-        except Exception as exc:
-            logger.warning("LLM copy failed for manual product %s: %s", product.external_id, exc)
-            selections = []
-
-        if not selections:
+        if custom_description:
             selections = [
                 SelectionResult(
                     external_id=product.external_id,
                     title=product.title,
-                    description="",
+                    description=custom_description,
                 )
             ]
+        else:
+            try:
+                selections = self.llm.select_products(
+                    candidates=[product],
+                    prompt=self.prompt_loader.load_prompt(),
+                    max_items=1,
+                )
+            except Exception as exc:
+                logger.warning("LLM copy failed for manual product %s: %s", product.external_id, exc)
+                selections = []
+
+            if not selections:
+                selections = [
+                    SelectionResult(
+                        external_id=product.external_id,
+                        title=product.title,
+                        description="",
+                    )
+                ]
 
         selection = selections[0]
         summary = CycleSummary()
@@ -460,6 +536,7 @@ class PipelineRunner:
                 on_platform=on_platform,
                 publishers_filter=publishers_filter,
                 bypass_duplicate_gate=bypass_duplicate_gate,
+                custom_description=custom_description,
             )
         except SiteFactsUnavailable as exc:
             logger.warning("Manual publish held back, %s", exc)
@@ -913,22 +990,26 @@ class PipelineRunner:
         publishers_filter: str | None = None,
         outfit_info: str | None = None,
         bypass_duplicate_gate: bool = False,
+        custom_description: str | None = None,
     ) -> bool:
         """Process price calculation, moderation, composition, and publishing for one item."""
         external_id = product.external_id
         product = attach_site_facts(product)
         product_title = self._russian_title(product, title_override)
-        # Size, color, and heel height are copied from the product page. The model must not fill them in.
-        product_color = self._resolve_color(product.color)
-        heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
-        description = site_description(product_color or product.color, product.sizes, heel_height=heel)
-        if not order_sizes(product.sizes):
-            # A bot wall answers with a script shell that carries no size grid.
-            # Instagram reposts what Telegram already carries, so it can fall
-            # back to the lines read on that earlier, working visit.
-            description = self._stored_site_description(external_id)
-            if not description:
-                raise SiteFactsUnavailable(external_id, product.product_url)
+        if custom_description:
+            description = custom_description
+        else:
+            # Size, color, and heel height are copied from the product page. The model must not fill them in.
+            product_color = self._resolve_color(product.color)
+            heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
+            description = site_description(product_color or product.color, product.sizes, heel_height=heel)
+            if not order_sizes(product.sizes):
+                # A bot wall answers with a script shell that carries no size grid.
+                # Instagram reposts what Telegram already carries, so it can fall
+                # back to the lines read on that earlier, working visit.
+                description = self._stored_site_description(external_id)
+                if not description:
+                    raise SiteFactsUnavailable(external_id, product.product_url)
 
         # 7a. Calculate final price (FR-3.1, FR-3.2, FR-3.3)
         final_price = calculate_final_price(

@@ -194,10 +194,12 @@ class ManualPostRecord(Base):
     product_url: Mapped[str] = mapped_column(Text, nullable=False)
     original_product_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     publish_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    # awaiting_time | awaiting_destination | scheduled | publishing | published | failed | cancelled
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="awaiting_time", index=True)
+    # awaiting_description | awaiting_time | awaiting_destination | awaiting_approval | scheduled | publishing | published | failed | cancelled
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="awaiting_description", index=True)
     # telegram | instagram | both
     target_channel: Mapped[str] = mapped_column(String(32), nullable=False, default="both")
+    custom_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    photo_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -66,6 +66,8 @@ class AggregatorAPIAdapter:
 
         # Availability flag
         in_stock = bool(item.get("available", item.get("in_stock", True)))
+        color = item.get("color")
+        sizes = tuple(item.get("sizes") or ())
 
         return RawProduct(
             external_id=external_id,
@@ -76,4 +78,6 @@ class AggregatorAPIAdapter:
             photo_url=photo_url,
             product_url=product_url,
             in_stock=in_stock,
+            color=color,
+            sizes=sizes,
         )

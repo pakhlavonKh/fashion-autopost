@@ -542,7 +542,16 @@ def format_instagram_caption(post: ComposedPost, footer: str | None = None) -> s
 
 
 def _assemble_caption(header: str, description: str, contact: str) -> str:
-    body = f"{header}\n{description}" if description else header
+    first_line = description.split("\n")[0].strip() if description else ""
+    has_header_already = (
+        description.lower().startswith(header.lower())
+        or description.lower().startswith(header.split("-")[0].lower() + "-")
+        or ("-" in first_line and any(cur in first_line for cur in ("$", "€", "сум", "USD", "EUR")))
+    )
+    if description and has_header_already:
+        body = description
+    else:
+        body = f"{header}\n{description}" if description else header
     chunks = [body]
     if contact:
         chunks.append(contact)
