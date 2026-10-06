@@ -21,6 +21,7 @@ import httpx
 
 from adapters.base import RawProduct
 from adapters.scrapers.base import generate_deterministic_id, parse_price
+from core.color_variants import extract_color_variants
 from core.gallery import MAX_PRODUCT_PHOTOS, ordered_photos, page_gallery_is_authoritative
 from core.product_facts import extract_heel_height, extract_site_facts, is_heeled_footwear
 
@@ -146,6 +147,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
         color=color,
         sizes=sizes,
         photos_verified=page_gallery_is_authoritative(html_text, brand, url),
+        color_variants=tuple(extract_color_variants(html_text, url, current_color=color)),
     )
 
 
@@ -764,15 +766,11 @@ def _walk_nodes(data):
 
 
 def _product_angles(stills: list[str], details: list[str]) -> list[str]:
-    """Product-only shots in carousel order: front, back, close-up."""
+    """Every product-only shot in carousel order: front, back, close-ups, then the other stills."""
     tail: list[str] = []
-    if stills:
-        tail.append(stills[0])
-    if len(stills) > 1:
-        tail.append(stills[1])
-    close = details[0] if details else (stills[2] if len(stills) > 2 else "")
-    if close and close not in tail:
-        tail.append(close)
+    for url in [*stills[:2], *details, *stills[2:]]:
+        if url and url not in tail:
+            tail.append(url)
     return tail
 
 

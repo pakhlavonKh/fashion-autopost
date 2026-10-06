@@ -3,7 +3,8 @@
 Per SDD §3.7 and SRS FR-6 (Anti-duplicate tracking).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 import logging
@@ -29,6 +30,17 @@ from storage.models import (
 logger = logging.getLogger(__name__)
 
 
+# Drafts still in the dialogue with the admin, before they are scheduled.
+OPEN_DRAFT_STATUSES = (
+    "awaiting_color",
+    "awaiting_repeat",
+    "awaiting_description",
+    "awaiting_time",
+    "awaiting_destination",
+    "awaiting_approval",
+)
+
+
 @dataclass
 class ManualPost:
     """Detached view of an admin-scheduled product link."""
@@ -44,6 +56,13 @@ class ManualPost:
     target_channel: str = "both"
     custom_description: str | None = None
     photo_url: str | None = None
+    variants: list[dict[str, Any]] = field(default_factory=list)
+    variant_urls: list[str] = field(default_factory=list)
+    allow_repeat: bool = False
+
+    def publish_urls(self) -> list[str]:
+        """One post per link: every chosen colour, or the single product link."""
+        return list(self.variant_urls) or [self.product_url]
 
 
 @runtime_checkable
@@ -275,6 +294,12 @@ class SqlAlchemyProductRepository:
                     conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN custom_description TEXT")
                 if "photo_url" not in mcols:
                     conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN photo_url TEXT")
+                if "variants" not in mcols:
+                    conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN variants TEXT")
+                if "variant_urls" not in mcols:
+                    conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN variant_urls TEXT")
+                if "allow_repeat" not in mcols:
+                    conn.exec_driver_sql("ALTER TABLE manual_posts ADD COLUMN allow_repeat BOOLEAN NOT NULL DEFAULT 0")
                 conn.commit()
         except Exception as exc:
             logger.warning("Auto-migration in _ensure_columns encountered: %s", exc)
@@ -754,18 +779,16 @@ class SqlAlchemyProductRepository:
         original_product_url: str | None = None,
         custom_description: str | None = None,
         photo_url: str | None = None,
+        variants: list[dict[str, Any]] | None = None,
+        status: str = "awaiting_description",
+        allow_repeat: bool = False,
     ) -> ManualPost:
         """Replace this admin's unanswered link with a new one waiting for a publish time."""
         with self._get_session() as session:
             waiting = session.scalars(
                 select(ManualPostRecord).where(
                     ManualPostRecord.admin_user_id == str(admin_user_id),
-                    ManualPostRecord.status.in_((
-                        "awaiting_description",
-                        "awaiting_time",
-                        "awaiting_destination",
-                        "awaiting_approval",
-                    )),
+                    ManualPostRecord.status.in_(OPEN_DRAFT_STATUSES),
                 )
             ).all()
             for row in waiting:
@@ -776,10 +799,12 @@ class SqlAlchemyProductRepository:
                 chat_id=str(chat_id),
                 product_url=product_url,
                 original_product_url=original_product_url or product_url,
-                status="awaiting_description",
+                status=status,
                 target_channel="both",
                 custom_description=custom_description,
                 photo_url=photo_url,
+                variants=json.dumps(variants, ensure_ascii=False) if variants else None,
+                allow_repeat=allow_repeat,
             )
             session.add(record)
             session.commit()
@@ -792,12 +817,7 @@ class SqlAlchemyProductRepository:
                 select(ManualPostRecord)
                 .where(
                     ManualPostRecord.admin_user_id == str(admin_user_id),
-                    ManualPostRecord.status.in_((
-                        "awaiting_description",
-                        "awaiting_time",
-                        "awaiting_destination",
-                        "awaiting_approval",
-                    )),
+                    ManualPostRecord.status.in_(OPEN_DRAFT_STATUSES),
                 )
                 .order_by(ManualPostRecord.id.desc())
             )
@@ -808,12 +828,7 @@ class SqlAlchemyProductRepository:
             rows = session.scalars(
                 select(ManualPostRecord).where(
                     ManualPostRecord.admin_user_id == str(admin_user_id),
-                    ManualPostRecord.status.in_((
-                        "awaiting_description",
-                        "awaiting_time",
-                        "awaiting_destination",
-                        "awaiting_approval",
-                    )),
+                    ManualPostRecord.status.in_(OPEN_DRAFT_STATUSES),
                 )
             ).all()
             if not rows:
@@ -824,6 +839,42 @@ class SqlAlchemyProductRepository:
                 row.updated_at = now
             session.commit()
             return True
+
+    def update_manual_post(
+        self,
+        post_id: int,
+        *,
+        status: str | None = None,
+        product_url: str | None = None,
+        variant_urls: list[str] | None = None,
+        allow_repeat: bool | None = None,
+        custom_description: str | None = None,
+        clear_description: bool = False,
+        photo_url: str | None = None,
+    ) -> ManualPost | None:
+        """Change the colour, the repeat permission or the text of a draft in one step."""
+        with self._get_session() as session:
+            record = session.get(ManualPostRecord, post_id)
+            if record is None:
+                return None
+            if status is not None:
+                record.status = status
+            if product_url is not None:
+                record.product_url = product_url
+            if variant_urls is not None:
+                record.variant_urls = json.dumps(list(variant_urls), ensure_ascii=False) if variant_urls else None
+            if allow_repeat is not None:
+                record.allow_repeat = allow_repeat
+            if clear_description:
+                record.custom_description = None
+            elif custom_description is not None:
+                record.custom_description = custom_description
+            if photo_url is not None:
+                record.photo_url = photo_url
+            record.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(record)
+            return _manual_post_from_row(record)
 
     def set_manual_post_description(
         self,
@@ -935,14 +986,7 @@ class SqlAlchemyProductRepository:
         with self._get_session() as session:
             rows = session.scalars(
                 select(ManualPostRecord).where(
-                    ManualPostRecord.status.in_((
-                        "awaiting_description",
-                        "awaiting_time",
-                        "awaiting_destination",
-                        "awaiting_approval",
-                        "scheduled",
-                        "publishing",
-                    ))
+                    ManualPostRecord.status.in_((*OPEN_DRAFT_STATUSES, "scheduled", "publishing"))
                 )
             ).all()
             for row in rows:
@@ -1148,4 +1192,17 @@ def _manual_post_from_row(record: ManualPostRecord) -> ManualPost:
         target_channel=getattr(record, "target_channel", "both") or "both",
         custom_description=getattr(record, "custom_description", None),
         photo_url=getattr(record, "photo_url", None),
+        variants=_json_list(getattr(record, "variants", None)),
+        variant_urls=[str(url) for url in _json_list(getattr(record, "variant_urls", None)) if url],
+        allow_repeat=bool(getattr(record, "allow_repeat", False)),
     )
+
+
+def _json_list(raw: str | None) -> list[Any]:
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return value if isinstance(value, list) else []

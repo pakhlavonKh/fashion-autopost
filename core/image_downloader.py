@@ -110,34 +110,55 @@ def _raise_query_int(url: str, name: str, minimum: int, extra: dict[str, str] | 
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(updated), parts.fragment))
 
 
-OUTLINE_SIZE = 32
-# Two shots of one garment disagree on tens of grey levels per pixel; the same shot
-# served twice disagrees by about two, which is exposure drift and JPEG noise.
-MAX_OUTLINE_DIFFERENCE = 10.0
+OUTLINE_SIZE = 64
+# The same shot served twice (another size, another JPEG quality, a slightly
+# different exposure) differs by a couple of grey levels on average and almost
+# nowhere by more. Front and back of one dress share the silhouette, the
+# backdrop and the colour, and differ only in a neckline, buttons or a zip, so
+# both the average and the share of clearly changed pixels must be tiny before
+# a photo is dropped. When in doubt the photo is kept: a missing angle costs the
+# post more than a repeated one.
+MAX_OUTLINE_DIFFERENCE = 4.0
+CHANGED_PIXEL_LEVEL = 64
+MAX_CHANGED_SHARE = 0.001
 # The outline ignores brightness, so this keeps one pose in two colourways apart.
 MAX_COLOR_GAP = 120
+MAX_ASPECT_GAP = 0.03
 
 
 class _Fingerprint(NamedTuple):
     color: tuple[int, int, int]
     outline: bytes
+    aspect: float
 
 
 def unique_images(paths: list[Path], max_difference: float = MAX_OUTLINE_DIFFERENCE) -> list[Path]:
-    """Drop a later photo when it is the same picture as one already kept."""
+    """Drop a later photo only when it is the very same picture as one already kept."""
     kept: list[Path] = []
     seen: list[_Fingerprint] = []
+    seen_bytes: set[str] = set()
     for path in paths:
-        digest = _image_fingerprint(path)
-        if digest is None:
-            kept.append(path)
+        content_hash = _content_hash(path)
+        if content_hash and content_hash in seen_bytes:
+            logger.info("Dropping byte-identical photo %s", path.name)
             continue
-        if any(_same_picture(digest, previous, max_difference) for previous in seen):
+        digest = _image_fingerprint(path)
+        if digest is not None and any(_same_picture(digest, previous, max_difference) for previous in seen):
             logger.info("Dropping duplicate photo %s", path.name)
             continue
-        seen.append(digest)
+        if content_hash:
+            seen_bytes.add(content_hash)
+        if digest is not None:
+            seen.append(digest)
         kept.append(path)
     return kept
+
+
+def _content_hash(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def _image_fingerprint(path: Path) -> _Fingerprint | None:
@@ -146,24 +167,30 @@ def _image_fingerprint(path: Path) -> _Fingerprint | None:
         from PIL import Image, ImageOps
 
         with Image.open(path) as image:
+            width, height = image.size
             small = image.convert("RGB").resize((OUTLINE_SIZE, OUTLINE_SIZE), Image.Resampling.BOX)
             outline = ImageOps.autocontrast(small.convert("L")).tobytes()
             raw = small.tobytes()
     except Exception:
         return None
-    if not raw or not outline:
+    if not raw or not outline or not height:
         return None
     count = len(raw) // 3
     mean = [sum(raw[channel::3]) // count for channel in range(3)]
-    return _Fingerprint((mean[0], mean[1], mean[2]), outline)
+    return _Fingerprint((mean[0], mean[1], mean[2]), outline, width / height)
 
 
 def _same_picture(left: _Fingerprint, right: _Fingerprint, max_difference: float) -> bool:
+    if abs(left.aspect - right.aspect) > MAX_ASPECT_GAP * max(left.aspect, right.aspect):
+        return False
     color_gap = sum(abs(one - other) for one, other in zip(left.color, right.color))
     if color_gap > MAX_COLOR_GAP:
         return False
-    drift = sum(abs(one - other) for one, other in zip(left.outline, right.outline))
-    return drift / len(left.outline) <= max_difference
+    diffs = [abs(one - other) for one, other in zip(left.outline, right.outline)]
+    if sum(diffs) / len(diffs) > max_difference:
+        return False
+    changed = sum(1 for value in diffs if value > CHANGED_PIXEL_LEVEL)
+    return changed / len(diffs) <= MAX_CHANGED_SHARE
 
 
 def is_material_or_color_swatch(image_path: Path) -> bool:

@@ -20,6 +20,7 @@ _WIDTH_SEGMENT = re.compile(r"/w/\d+(?=/|$)")
 _MANGO_NAME = re.compile(r"^(\d+)-([0-9a-z]+)-(\d+)$", re.IGNORECASE)
 _MANGO_IMAGE = re.compile(r"/punto/(\d{6,})-([0-9A-Za-z]+)-([0-9A-Za-z]+)", re.IGNORECASE)
 _MANGO_PAGE = re.compile(r"/(\d{7,8})(?:/([0-9A-Za-z]{2,3}))?(?:/|$)")
+_MANGO_SLUG_ID = re.compile(r"_(\d{7,8})(?:\.html)?/?$")
 _INDITEX_IMAGE = re.compile(r"(?:^|[/_\-])(\d{8})(\d{3})(?:[/_\-\.]|$)", re.IGNORECASE)
 _ZARA_PAGE = re.compile(r"-p(\d{7,8})(?:\.html|\?|$)", re.IGNORECASE)
 _INDITEX_HOSTS = ("zara.net", "stradivarius.net", "massimodutti.net", "bershka.net", "pullandbear.net", "oysho.net")
@@ -64,9 +65,15 @@ def canonical_photo_key(url: str) -> str:
 
 def mango_page_identity(page_url: str) -> tuple[str, str] | None:
     """(product id, colour code) from a Mango product URL. Colour may be empty."""
-    match = _MANGO_PAGE.search(urlsplit(page_url or "").path)
+    parts = urlsplit(page_url or "")
+    match = _MANGO_PAGE.search(parts.path)
     if not match:
-        return None
+        # Newer links end the slug with the id and pick the colour as ?c=99.
+        slug = _MANGO_SLUG_ID.search(parts.path)
+        if not slug:
+            return None
+        color = (parse_qs(parts.query).get("c") or [""])[0].strip()
+        return slug.group(1), color
     return match.group(1), match.group(2) or ""
 
 
