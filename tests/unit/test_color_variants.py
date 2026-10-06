@@ -148,3 +148,87 @@ def test_admin_text_gets_each_colour_line() -> None:
     text = "Платье-55$\nРазмеры от XS до L.\nЦвет: черный."
     assert swap_color_line(text, "бежевый") == "Платье-55$\nРазмеры от XS до L.\nЦвет: бежевый."
     assert swap_color_line("Платье-55$", "синий") == "Платье-55$\nЦвет: синий."
+
+
+MANGO_LINK = "https://shop.mango.com/es/es/p/mujer/marroquineria/neceseres/bolso-vanity-acolchado/37066365/75/00"
+
+
+def test_mango_colours_hidden_in_next_js_chunks() -> None:
+    payload = (
+        '{\\"colors\\":[{\\"id\\":\\"75\\",\\"label\\":\\"Burdeos\\"},{\\"id\\":\\"99\\",\\"label\\":\\"Negro\\"}]}'
+    )
+    html = f'<script>self.__next_f.push([1,"7:{payload}\\n"])</script>'
+    variants = extract_color_variants(html, MANGO_LINK)
+    assert [(item.code, item.name, item.selected) for item in variants] == [
+        ("75", "Burdeos", True),
+        ("99", "Negro", False),
+    ]
+    assert variants[1].url.endswith("/37066365/99/00")
+
+
+def test_mango_colours_keyed_by_code() -> None:
+    html = '<script>{"product":{"colors":{"75":{"label":"Burdeos"},"99":{"label":"Negro"}}}}</script>'
+    assert [item.code for item in extract_color_variants(html, MANGO_LINK)] == ["75", "99"]
+
+
+def test_recommendation_colour_list_does_not_win_over_the_product() -> None:
+    html = (
+        '<script>{"related":{"colors":[{"id":"01","label":"Blanco"},{"id":"05","label":"Gris"}]},'
+        '"product":{"colors":[{"id":"75","label":"Burdeos"},{"id":"99","label":"Negro"}]}}</script>'
+    )
+    assert [item.code for item in extract_color_variants(html, MANGO_LINK)] == ["75", "99"]
+
+
+def test_colour_switcher_links_are_read_when_there_is_no_json() -> None:
+    html = """
+    <ul class="colors">
+      <li><span aria-current="true">Burdeos</span></li>
+      <li><a href="/es/es/p/mujer/marroquineria/neceseres/bolso-vanity-acolchado/37066365/99/00" aria-label="Color: Negro"><span></span></a></li>
+      <li><a href="/es/es/p/mujer/otro/12345678/99/00" aria-label="Negro">other product</a></li>
+    </ul>"""
+    variants = extract_color_variants(html, MANGO_LINK, current_color="Burdeos")
+    assert [(item.code, item.name, item.selected) for item in variants] == [
+        ("75", "Burdeos", True),
+        ("99", "Negro", False),
+    ]
+
+
+def test_mango_photo_names_are_the_last_resort() -> None:
+    html = (
+        '<img src="https://media.mango.com/is/image/punto/37066365-75-01?wid=600">'
+        '<img src="https://media.mango.com/is/image/punto/37066365-75-02?wid=600">'
+        '<img src="https://media.mango.com/is/image/punto/37066365-99-99?wid=40">'
+        '<img src="https://media.mango.com/is/image/punto/27099999-01-01?wid=600">'
+    )
+    variants = extract_color_variants(html, MANGO_LINK, current_color="Burdeos")
+    assert [(item.code, item.name, item.selected) for item in variants] == [
+        ("75", "Burdeos", True),
+        ("99", "Цвет 99", False),
+    ]
+
+
+def test_sizes_hidden_in_next_js_chunks_are_read() -> None:
+    from core.product_facts import extract_site_facts
+
+    payload = (
+        '{\\"colors\\":[{\\"id\\":\\"75\\",\\"label\\":\\"Burdeos\\",\\"sizes\\":[{\\"label\\":\\"S\\"},{\\"label\\":\\"M\\"}]},'
+        '{\\"id\\":\\"99\\",\\"label\\":\\"Negro\\",\\"sizes\\":[{\\"label\\":\\"S\\"}]}]}'
+    )
+    html = f'<script>self.__next_f.push([1,"7:{payload}\\n"])</script>'
+    color, sizes = extract_site_facts(html, "https://shop.mango.com/es/es/p/mujer/vestido_87039062?c=75")
+    assert color == "Burdeos"
+    assert sizes == ("S", "M")
+
+
+def test_inspect_url_reports_colours_and_saves_the_page(tmp_path, monkeypatch) -> None:
+    from core.diagnostics import inspect_product_url
+
+    html = ZARA_PAGE + " " * 100
+    monkeypatch.setattr(
+        "adapters.product_page.fetch_product_html",
+        lambda url, timeout_seconds=20.0: (url, html),
+    )
+    report = inspect_product_url("https://www.zara.com/uz/ru/linen-dress-p03067301.html?v1=364089537", save_dir=tmp_path)
+    assert "Цветов: 3" in report
+    assert "ECRU [364089537]" in report and "← по ссылке" in report
+    assert len(list(tmp_path.glob("*.html"))) == 1

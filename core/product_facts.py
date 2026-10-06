@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 from adapters.base import RawProduct
 from core.color_names import russian_color
+from core.page_data import flight_text
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,12 @@ def extract_site_facts(html_text: str, url: str = "") -> tuple[str | None, tuple
     for document in _iter_json_documents(html_text):
         _consume(document, "", found)
     found.extend(_variants_from_size_arrays(html_text))
+    # Next.js storefronts keep the product JSON escaped inside script strings.
+    hidden = flight_text(html_text)
+    if hidden:
+        for document in _iter_json_in_text(hidden, limit=400):
+            _consume(document, "", found)
+        found.extend(_variants_from_size_arrays(hidden))
 
     color, sizes = _choose(found, url)
     sizes = _prefer_sizes(sizes, _sizes_from_dom(html_text))
@@ -847,30 +854,34 @@ def _is_selected(node: dict) -> bool:
 
 
 def _iter_json_documents(html_text: str):
-    decoder = json.JSONDecoder()
     for raw in re.findall(r"<script\b[^>]*>(.*?)</script>", html_text, flags=re.IGNORECASE | re.DOTALL):
         text = raw.strip()
         if not text or ("{" not in text and "[" not in text):
             continue
-        idx = 0
-        limit = len(text)
-        count = 0
-        while idx < limit and count < 8:
-            start_obj = text.find("{", idx)
-            start_list = text.find("[", idx)
-            start = start_obj
-            if start < 0 or (start_list >= 0 and start_list < start):
-                start = start_list
-            if start < 0:
-                break
-            try:
-                value, end_offset = decoder.raw_decode(text[start:])
-                idx = start + max(1, end_offset)
-                count += 1
-                if value:
-                    yield value
-            except json.JSONDecodeError:
-                idx = start + 1
+        yield from _iter_json_in_text(text, limit=8)
+
+
+def _iter_json_in_text(text: str, limit: int):
+    decoder = json.JSONDecoder()
+    idx = 0
+    size = len(text)
+    count = 0
+    while idx < size and count < limit:
+        start_obj = text.find("{", idx)
+        start_list = text.find("[", idx)
+        start = start_obj
+        if start < 0 or (start_list >= 0 and start_list < start):
+            start = start_list
+        if start < 0:
+            break
+        try:
+            value, end_offset = decoder.raw_decode(text[start:])
+            idx = start + max(1, end_offset)
+            count += 1
+            if value:
+                yield value
+        except json.JSONDecodeError:
+            idx = start + 1
 
 
 def _variants_from_size_arrays(html_text: str) -> list[_Variant]:

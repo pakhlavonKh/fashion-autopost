@@ -12,17 +12,24 @@ the store's default colour, and that is how a beige link used to post black.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
+import html as html_lib
 import json
 import logging
 import re
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from core.dedup import _COLOR_QUERY_KEYS as _DEDUP_COLOR_KEYS, normalize_url, variant_parts
+from core.gallery import mango_page_identity
+from core.page_data import searchable_texts
 
 logger = logging.getLogger(__name__)
 
 _INDITEX_BRANDS = ("stradivarius", "massimodutti", "bershka", "pullandbear", "oysho")
 _COLORS_ARRAY = re.compile(r'"colou?rs"\s*:\s*\[')
+_COLORS_OBJECT = re.compile(r'"colou?rs"\s*:\s*\{')
+_MANGO_PHOTO = re.compile(r"/punto/(\d{6,10})-([0-9A-Za-z]{2,3})-", re.IGNORECASE)
+_ANCHOR = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.IGNORECASE | re.DOTALL)
 _MANGO_PATH_COLOR = re.compile(r"(/\d{7,10}/)([0-9a-z]{2,3})(?=/|$)", re.IGNORECASE)
 _HM_ARTICLE = re.compile(r"productpage\.(\d{6,})", re.IGNORECASE)
 COLOR_QUERY_KEYS = frozenset(_DEDUP_COLOR_KEYS)
@@ -48,30 +55,51 @@ def extract_color_variants(html_text: str, page_url: str, current_color: str | N
     No colour is marked when the page does not say which one it shows; a guess
     here would post a colour the admin never saw.
 
+    Store pages change shape, so several readings are tried in turn: the store's
+    own JSON (plain, or escaped inside Next.js chunks), schema.org JSON-LD, the
+    colour switcher links, and for Mango the colour codes in its photo names.
+
     Returns an empty list when the page names fewer than two colours.
     """
     if not html_text or not page_url:
         return []
     host = urlsplit(page_url).netloc.lower()
-    extractors = []
+    texts = searchable_texts(html_text)
+    readers: list = []
     if host.endswith("hm.com"):
-        extractors.append(_hm_variants)
+        readers.append(_hm_variants)
     if "zara." in host or any(brand in host for brand in _INDITEX_BRANDS):
-        extractors.append(_inditex_variants)
-    extractors.append(_json_ld_variants)
+        readers.append(_inditex_variants)
     if "mango." in host:
-        extractors.append(_mango_variants)
+        readers.append(_mango_variants)
+    readers.append(_json_ld_variants)
 
-    for extractor in extractors:
+    attempts = [(reader, text) for reader in readers for text in texts]
+    attempts.append((partial(_switcher_link_variants, current_color=current_color), html_text))
+    if "mango." in host:
+        attempts.append((partial(_mango_photo_variants, current_color=current_color), html_text))
+
+    for reader, text in attempts:
         try:
-            found = extractor(html_text, page_url)
+            found = reader(text, page_url)
         except Exception as exc:  # A page shape we do not know must not stop the post.
-            logger.debug("%s could not read colours from %s: %s", extractor.__name__, page_url, exc)
+            logger.debug("%s could not read colours from %s: %s", _reader_name(reader), page_url, exc)
             continue
         found = _unique(found)
         if len(found) >= 2:
+            logger.info(
+                "Colours on %s via %s: %s",
+                page_url,
+                _reader_name(reader),
+                ", ".join(f"{item.name} ({item.code})" for item in found),
+            )
             return _mark_selected(found, page_url, current_color)
+    logger.info("No colour choice found on %s", page_url)
     return []
+
+
+def _reader_name(reader) -> str:
+    return getattr(getattr(reader, "func", reader), "__name__", "reader")
 
 
 def link_names_color(url: str) -> bool:
@@ -157,6 +185,14 @@ def _color_arrays(html_text: str):
         items = _decode_array_at(html_text, match.end() - 1)
         if items and all(isinstance(item, dict) for item in items):
             yield items
+    # Some pages key colours by code: "colors":{"75":{...},"99":{...}}.
+    for match in _COLORS_OBJECT.finditer(html_text):
+        try:
+            value, _end = json.JSONDecoder().raw_decode(html_text[match.end() - 1:])
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(value, dict) and value and all(isinstance(item, dict) for item in value.values()):
+            yield [{"id": key, **item} if "id" not in item else item for key, item in value.items()]
 
 
 def _entry_name(entry: dict) -> str:
@@ -272,18 +308,107 @@ def _json_ld_variants(html_text: str, page_url: str) -> list[ColorVariant]:
 
 def _mango_variants(html_text: str, page_url: str) -> list[ColorVariant]:
     """Mango names a colour by a two-digit code, in the path (/37016751/99) or as ?c=99."""
-    variants: list[ColorVariant] = []
+    page = mango_page_identity(page_url)
+    own_code = page[1].lower() if page else ""
+    best: list[ColorVariant] = []
     for items in _color_arrays(html_text):
+        variants: list[ColorVariant] = []
         for entry in items:
             name = _entry_name(entry)
             code = _entry_code(entry)
             if not name or not re.fullmatch(r"[0-9A-Za-z]{2,3}", code):
                 continue
-            variants.append(ColorVariant(code, name, mango_color_url(page_url, code)))
-        if len(variants) >= 2:
+            selected = bool(entry.get("selected") or entry.get("isSelected") or entry.get("default") is True)
+            variants.append(ColorVariant(code, name, mango_color_url(page_url, code), selected))
+        if len(variants) < 2:
+            continue
+        # Recommendations carry colour lists too; the product's own one holds the link's colour.
+        if own_code and any(item.code.lower() == own_code for item in variants):
             return variants
-        variants = []
+        if not best:
+            best = variants
+    return best
+
+
+def _mango_photo_variants(html_text: str, page_url: str, current_color: str | None = None) -> list[ColorVariant]:
+    """Last resort for Mango: colour codes in the product's own photo names (37066365-75-01).
+
+    The names of the other colours are not on the photos, so they read «Цвет 99»
+    until the admin opens that colour.
+    """
+    page = mango_page_identity(page_url)
+    if not page:
+        return []
+    product_id, own_code = page
+    codes: list[str] = []
+    for found_id, code in _MANGO_PHOTO.findall(html_text):
+        if found_id == product_id and code.lower() not in [item.lower() for item in codes]:
+            codes.append(code)
+    return [
+        ColorVariant(
+            code,
+            (current_color or "").strip() if own_code and code.lower() == own_code.lower() and current_color else f"Цвет {code}",
+            mango_color_url(page_url, code),
+            bool(own_code) and code.lower() == own_code.lower(),
+        )
+        for code in codes
+    ]
+
+
+def _switcher_link_variants(html_text: str, page_url: str, current_color: str | None = None) -> list[ColorVariant]:
+    """Colour switcher links: same product, another colour in the link, the colour named on the link."""
+    page_product, page_color = variant_parts(page_url)
+    page_article = (_HM_ARTICLE.search(page_url) or [None, ""])[1]
+    if not page_product and not page_article:
+        return []
+    variants: list[ColorVariant] = []
+    for match in _ANCHOR.finditer(html_text):
+        attrs, inner = match.group(1), match.group(2)
+        href = _attr(attrs, "href")
+        if not href:
+            continue
+        url = urljoin(page_url, html_lib.unescape(href))
+        if urlsplit(url).netloc.lower() != urlsplit(page_url).netloc.lower():
+            continue
+        if page_article:
+            article = (_HM_ARTICLE.search(url) or [None, ""])[1]
+            # H&M colours share the first seven digits of the article number.
+            if not article or article[:7] != page_article[:7]:
+                continue
+            code = article
+        else:
+            product, color = variant_parts(url)
+            if product != page_product or not color:
+                continue
+            code = color
+        name = ""
+        for key in ("aria-label", "title", "data-color-name", "data-colour-name", "data-color"):
+            name = _clean_name(_attr(attrs, key))
+            if name:
+                break
+        if not name:
+            name = _clean_name(re.sub(r"<[^>]+>", " ", inner))
+        if name:
+            variants.append(ColorVariant(code, name, url))
+    # The switcher often shows the open colour as plain text, not as a link.
+    own_code = page_article or page_color
+    if variants and own_code and current_color and all(item.code.lower() != own_code.lower() for item in variants):
+        variants.insert(0, ColorVariant(own_code, current_color.strip(), page_url, True))
     return variants
+
+
+def _attr(attrs: str, name: str) -> str:
+    match = re.search(rf"(?<![\w-]){re.escape(name)}\s*=\s*([\"'])(.*?)\1", attrs, re.IGNORECASE | re.DOTALL)
+    return html_lib.unescape(match.group(2)).strip() if match else ""
+
+
+def _clean_name(text: str) -> str:
+    """A colour name from a label such as «Color: Negro» or «Seleccionar color Burdeos»."""
+    words = " ".join((text or "").split())
+    words = re.sub(r"^(?:seleccionar colou?r|select colou?r|colou?r seleccionado|colou?r|farbe|couleur|colore|цвет)\s*[:\-]?\s*", "", words, flags=re.IGNORECASE)
+    if not words or len(words) > 40 or not re.search(r"[A-Za-zА-Яа-яЁё]", words):
+        return ""
+    return words
 
 
 def mango_color_url(page_url: str, code: str) -> str:

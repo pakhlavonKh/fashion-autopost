@@ -362,7 +362,7 @@ class PipelineRunner:
             }
 
         product = attach_site_facts(product)
-        product_title = self._russian_title(product)
+        product_title = self._russian_title(product, None)
         product_color = self._resolve_color(product.color)
         heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
         facts_desc = site_description(product_color or product.color, product.sizes, heel_height=heel)
