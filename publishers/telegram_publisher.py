@@ -410,11 +410,20 @@ class TelegramPublisher:
 
         footer = (self.bio_footer or DEFAULT_BIO_FOOTER).strip()
 
-        first_line = desc_clean.split("\n")[0].strip() if desc_clean else ""
+        # If this post was created with an explicit custom description (admin manual post),
+        # do NOT auto-prepend a header (e.g. Плетёная сумка с короткой ручкой-500$).
+        # The admin provides the exact text for Part 1, followed by footer (Part 2).
+        if getattr(post, "is_custom_description", False):
+            caption = f"{desc_clean}\n\n{footer}" if desc_clean else footer
+            if len(caption) > MAX_TELEGRAM_CAPTION_LEN:
+                caption = caption[: MAX_TELEGRAM_CAPTION_LEN - 3] + "..."
+            return caption
+
+        first_lines = [line.strip() for line in desc_clean.split("\n") if line.strip()][:4]
         has_header_already = (
             desc_clean.lower().startswith(header.lower())
             or (title_clean and desc_clean.lower().startswith(title_clean.lower() + "-"))
-            or ("-" in first_line and any(cur in first_line for cur in ("$", "€", "сум", "USD", "EUR")))
+            or any("-" in line and any(cur in line for cur in ("$", "€", "сум", "USD", "EUR")) for line in first_lines)
         )
 
         if desc_clean:

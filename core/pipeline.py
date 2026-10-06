@@ -1096,6 +1096,7 @@ class PipelineRunner:
             target_currency=self.config.target_currency,
             include_link=self.config.include_product_link,
             outfit_info=outfit_info,
+            is_custom_description=bool(custom_description),
         )
 
         # Feature 10: Duplicate publication check and Admin approval gate

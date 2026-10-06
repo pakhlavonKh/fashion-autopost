@@ -6,6 +6,7 @@ through the same pipeline as the regular schedule.
 """
 
 from datetime import datetime, timedelta, timezone
+import html
 import json
 import logging
 import re
@@ -496,12 +497,17 @@ class AdminIntakeBot:
         part1 = (post.custom_description or "").strip()
         part2 = DEFAULT_BIO_FOOTER.strip()
 
-        preview_caption = f"{part1}\n\n{part2}" if part1 else part2
+        part1_esc = html.escape(part1)
+        part2_esc = html.escape(part2)
+        dest_esc = html.escape(dest_label)
+        time_esc = html.escape(time_label)
+
+        preview_caption = f"{part1_esc}\n\n{part2_esc}" if part1_esc else part2_esc
 
         text = (
             f"🔍 <b>Предпросмотр поста перед публикацией</b>\n\n"
-            f"📍 Канал: <b>{dest_label}</b>\n"
-            f"⏰ Время: <b>{time_label}</b> ({self.timezone_name})\n\n"
+            f"📍 Канал: <b>{dest_esc}</b>\n"
+            f"⏰ Время: <b>{time_esc}</b> ({self.timezone_name})\n\n"
             f"👇 <b>Текст поста:</b>\n"
             f"----------------------------------------\n"
             f"{preview_caption}\n"
@@ -753,7 +759,13 @@ class AdminIntakeBot:
         updates = payload.get("result") or []
         return list(updates)
 
-    def _send(self, chat_id: str, text: str, reply_markup: dict[str, Any] | None = None) -> None:
+    def _send(
+        self,
+        chat_id: str,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        parse_mode: str = "HTML",
+    ) -> None:
         if self._sender is not None:
             self._sender(str(chat_id), text)
             return
@@ -763,11 +775,16 @@ class AdminIntakeBot:
             "text": text,
             "disable_web_page_preview": True,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         try:
             with httpx.Client(timeout=20.0) as client:
                 response = client.post(url, json=payload)
+                if response.status_code == 400 and parse_mode:
+                    del payload["parse_mode"]
+                    response = client.post(url, json=payload)
                 if response.status_code != 200:
                     logger.warning("Telegram sendMessage failed (%s): %s", response.status_code, response.text)
         except Exception as exc:

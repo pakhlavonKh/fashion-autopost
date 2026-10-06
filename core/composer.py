@@ -27,6 +27,7 @@ class ComposedPost:
     photo_urls: list[str] = field(default_factory=list)
     # Public t.me links of this post once Telegram has published it.
     telegram_links: tuple[str, ...] = ()
+    is_custom_description: bool = False
 
 
 def compose_post(
@@ -36,40 +37,47 @@ def compose_post(
     target_currency: str = "USD",
     include_link: bool = True,
     outfit_info: str | None = None,
+    is_custom_description: bool = False,
 ) -> ComposedPost:
     """Compose a clean, platform-agnostic post text from product details and AI copy."""
-    # Apply reusable description enrichment rules (e.g. high-heel footwear heel height)
-    enriched_desc = apply_description_rules(product, description)
-    clean_desc = enriched_desc.strip()
     clean_title = product.title.strip()
     brand = product.source.upper()
-
-    # Sale price is always an even whole unit floored down to the closest even number.
     shown_price = whole_price(price)
-    symbol = "$" if target_currency.upper() == "USD" else f"{target_currency.upper()} "
-    price_str = f"{symbol}{int(shown_price)}"
 
-    lines = [
-        f"✨ {clean_title} | {brand}",
-    ]
-    if outfit_info:
-        lines.append(f"👗 Образ дня: {outfit_info}")
-    lines.extend([
-        "",
-        clean_desc,
-        "",
-        f"🏷 Цена: {price_str}",
-    ])
+    if is_custom_description:
+        text = description.strip()
+    else:
+        # Apply reusable description enrichment rules (e.g. high-heel footwear heel height)
+        enriched_desc = apply_description_rules(product, description)
+        clean_desc = enriched_desc.strip()
 
-    link_to_include = product.product_url if (include_link and product.product_url) else None
-    if link_to_include:
-        lines.extend(["", f"🔗 Ссылка на товар: {link_to_include}"])
+        # Sale price is always an even whole unit floored down to the closest even number.
+        symbol = "$" if target_currency.upper() == "USD" else f"{target_currency.upper()} "
+        price_str = f"{symbol}{int(shown_price)}"
 
-    text = "\n".join(lines)
+        lines = [
+            f"✨ {clean_title} | {brand}",
+        ]
+        if outfit_info:
+            lines.append(f"👗 Образ дня: {outfit_info}")
+        lines.extend([
+            "",
+            clean_desc,
+            "",
+            f"🏷 Цена: {price_str}",
+        ])
+
+        link_to_include = product.product_url if (include_link and product.product_url) else None
+        if link_to_include:
+            lines.extend(["", f"🔗 Ссылка на товар: {link_to_include}"])
+
+        text = "\n".join(lines)
 
     photos = list(product.photo_urls) if getattr(product, "photo_urls", None) else []
     if not photos and product.photo_url:
         photos = [product.photo_url]
+
+    link_to_include = product.product_url if (include_link and product.product_url) else None
 
     return ComposedPost(
         photo_url=product.photo_url,
@@ -81,4 +89,5 @@ def compose_post(
         source=product.source,
         product_id=product.external_id,
         photo_urls=photos,
+        is_custom_description=is_custom_description,
     )

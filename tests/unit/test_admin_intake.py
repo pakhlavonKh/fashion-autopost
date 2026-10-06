@@ -489,6 +489,59 @@ def test_manual_publish_keeps_admin_caption_and_appends_footer(
     assert caption.index(part1) < caption.index("Европейское качество")
 
 
+def test_manual_publish_with_unstructured_first_line_does_not_prepend_auto_header(tmp_path: Path, monkeypatch) -> None:
+    from publishers.telegram_publisher import TelegramPublisher
+
+    photo = tmp_path / "bag.jpg"
+    photo.write_bytes(b"local-photo")
+    # First line does NOT match header pattern (starts with Например: as user did)
+    part1 = (
+        "Например:\n"
+        "Слингбэки с вышивкой-98$\n"
+        "Размеры с 35 по 42.\n"
+        "Высота каблука 4,5 см.\n"
+        "Цвет: черный."
+    )
+    product = RawProduct(
+        external_id="next-c53786",
+        source="next",
+        title="Плетёная сумка с короткой ручкой",
+        price=Decimal("450.00"),
+        currency="EUR",
+        photo_url=str(photo),
+        product_url="https://www.next.sa/en/style/sv184874/c53786",
+        in_stock=True,
+        photo_urls=[str(photo)],
+    )
+    monkeypatch.setattr("core.pipeline.fetch_product_page", lambda url, headless=True: product)
+
+    repo = FakeProductRepository()
+    telegram = FakePublisher("telegram")
+    runner = PipelineRunner(
+        source=None,  # type: ignore[arg-type]
+        repo=repo,
+        llm=FakeLLMProvider(select_count=1),
+        fx=FixedRateConverter(fixed_rate=Decimal("1.08")),
+        publishers=[telegram],
+        config=AppConfig(),
+        prompt_loader=type("Prompt", (), {"load_prompt": lambda self: "unused"})(),
+    )
+
+    ok, _message = runner.publish_manual_url(
+        product.product_url,
+        custom_description=part1,
+        publishers_filter="telegram",
+    )
+    assert ok is True
+    assert len(telegram.published_posts) == 1
+    caption = TelegramPublisher(bot_token="test")._format_caption(telegram.published_posts[0])
+    # Must NOT prepend "Плетёная сумка с короткой ручкой-..." over user's custom description!
+    assert not caption.startswith("Плетёная сумка")
+    assert caption.startswith("Например:\nСлингбэки с вышивкой-98$")
+    assert "Европейское качество" in caption
+
+
+
 def test_parse_product_html_non_euro_currencies() -> None:
     # Turkish Lira from Turkey storefront
     tr_html = """
