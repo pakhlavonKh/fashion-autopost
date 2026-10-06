@@ -1034,12 +1034,16 @@ class PipelineRunner:
 
         # Collect all gallery photos for the product card. Related products on the
         # same page (complete the look, other colourways) are not part of this post.
-        from core.gallery import arrange_carousel, extract_gallery_photos, keep_single_product
+        from core.gallery import MAX_PRODUCT_PHOTOS, arrange_carousel, extract_gallery_photos, keep_single_product
 
         photo_urls = list(product.photo_urls) if getattr(product, "photo_urls", None) else []
         if len(photo_urls) <= 1 and product.product_url:
             try:
-                gallery = extract_gallery_photos(product.product_url, brand=product.source, max_photos=10)
+                gallery = extract_gallery_photos(
+                    product.product_url,
+                    brand=product.source,
+                    max_photos=MAX_PRODUCT_PHOTOS,
+                )
                 if gallery:
                     photo_urls = gallery
             except Exception as exc:
@@ -1054,7 +1058,7 @@ class PipelineRunner:
                 product.product_url or "",
                 anchor_url=product.photo_url or "",
             )
-        photo_urls = arrange_carousel(photo_urls, max_photos=10)
+        photo_urls = arrange_carousel(photo_urls, max_photos=MAX_PRODUCT_PHOTOS)
 
         # Download all photos locally for binary posting & multi-photo albums
         downloaded_paths = []

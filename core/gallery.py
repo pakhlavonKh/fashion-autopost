@@ -26,6 +26,9 @@ _INDITEX_HOSTS = ("zara.net", "stradivarius.net", "massimodutti.net", "bershka.n
 _ZARA_SHOT = re.compile(r"_(\d+)_(\d+)_\d+$")
 _ZARA_KIND = re.compile(r'"kind"\s*:\s*"(full|plain|other|colorcut)"', re.IGNORECASE)
 _TAIL_ROLES = ("front", "back", "close")
+# A colourway rarely has more than this. The cap only stops a broken page
+# from pulling the whole catalog. Telegram sends anything past 10 as extra albums.
+MAX_PRODUCT_PHOTOS = 30
 _INDITEX_BRANDS = ("stradivarius", "massimodutti", "bershka", "pullandbear", "oysho")
 _PDP_MAIN_IMAGE = re.compile(r"<img\b[^>]*data-qa-anchor=[\"']pdpMainImage[\"'][^>]*>", re.IGNORECASE)
 _ZARA_COLORS_START = re.compile(r'"colors"\s*:\s*\[')
@@ -204,9 +207,13 @@ def arrange_carousel(
     urls: list[str],
     *,
     roles: dict[str, str] | None = None,
-    max_photos: int = 10,
+    max_photos: int = MAX_PRODUCT_PHOTOS,
 ) -> list[str]:
-    """One copy of each photo: looks first, then front, back and close-up."""
+    """One copy of each photo: looks first, then every front, back and close-up.
+
+    Nothing is cropped out of the set until max_photos. Extra looks are dropped
+    before extra product angles when the cap is hit.
+    """
     assigned_roles = roles or {}
     chosen: dict[str, str] = {}
     role_of: dict[str, str] = {}
@@ -241,15 +248,24 @@ def arrange_carousel(
         else:
             looks.append(url)
 
+    unplaced: list[str] = []
     for url in plain:
+        placed = False
         for name in _TAIL_ROLES:
             if not tail_slots[name]:
                 tail_slots[name].append(url)
+                placed = True
                 break
+        if not placed:
+            unplaced.append(url)
 
-    tail = [tail_slots[name][0] for name in ("front", "back") if tail_slots[name]]
-    tail += tail_slots["close"][: len(_TAIL_ROLES) - len(tail)]
-    room = max(0, max_photos - len(tail))
+    tail: list[str] = []
+    for name in _TAIL_ROLES:
+        tail.extend(tail_slots[name])
+    tail.extend(unplaced)
+    if len(tail) >= max_photos:
+        return tail[:max_photos]
+    room = max_photos - len(tail)
     return looks[:room] + tail
 
 
@@ -300,7 +316,7 @@ def ordered_photos(
     brand: str,
     page_url: str,
     fallback: list[str] | None = None,
-    max_photos: int = 10,
+    max_photos: int = MAX_PRODUCT_PHOTOS,
 ) -> list[str]:
     """Build the carousel list from a product page, keeping product angles last."""
     brand_lower = (brand or "").lower()
@@ -383,7 +399,7 @@ def ordered_photos(
 def extract_gallery_photos(
     product_url: str,
     brand: str = "",
-    max_photos: int = 10,
+    max_photos: int = MAX_PRODUCT_PHOTOS,
     timeout_seconds: float = 12.0,
 ) -> list[str]:
     """Retrieve all high-resolution product photos from the product detail page (card)."""

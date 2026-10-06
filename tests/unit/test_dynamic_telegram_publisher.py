@@ -14,6 +14,40 @@ from publishers.telegram_publisher import TelegramPublisher
 from storage.repository import SqlAlchemyProductRepository
 
 
+def test_telegram_sends_every_photo_in_albums_of_ten(tmp_path: Path) -> None:
+    """Twelve store photos become two albums. The caption is only on the first."""
+    from PIL import Image
+
+    photos = []
+    for index in range(12):
+        path = tmp_path / f"shot-{index}.jpg"
+        Image.new("RGB", (40, 80), (index, index, index)).save(path)
+        photos.append(str(path))
+
+    pub = TelegramPublisher(bot_token="test_token", channel_id="-100111")
+    groups: list[tuple[int, str]] = []
+    singles: list[str] = []
+
+    def mock_group(batch, caption, chat_id=None):
+        groups.append((len(batch), caption))
+        return "10"
+
+    def mock_photo(photo, caption, chat_id=None):
+        singles.append(caption)
+        return "11"
+
+    with patch.object(pub, "_canonical_chat_id", side_effect=lambda chat_id: chat_id):
+        with patch.object(pub, "_send_media_group_with_retry", side_effect=mock_group):
+            with patch.object(pub, "_send_photo_with_retry", side_effect=mock_photo):
+                msg_id = pub._send_all_photos(photos, "Слингбэки-98$", "-100111")
+
+    assert msg_id == "10"
+    assert [size for size, _caption in groups] == [10, 2]
+    assert groups[0][1] == "Слингбэки-98$"
+    assert groups[1][1] == ""
+    assert singles == []
+
+
 def test_telegram_publisher_multi_channel_broadcast(tmp_path: Path) -> None:
     """TelegramPublisher dynamically broadcasts to all active channels in the database."""
     db_url = f"sqlite:///{tmp_path / 'tg_pub.db'}"

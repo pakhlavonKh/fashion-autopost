@@ -68,6 +68,15 @@ def test_mango_front_then_detail_close_ups_close_the_carousel() -> None:
     assert [url.rsplit("-", 1)[-1] for url in full[-3:]] == ["900", "023", "030"]
 
 
+def test_every_look_is_kept_when_the_colourway_has_more_than_ten() -> None:
+    from core.gallery import MAX_PRODUCT_PHOTOS
+
+    urls = [f"https://media.mango.com/is/image/punto/10-99-{index:03d}" for index in range(1, 16)]
+    ordered = arrange_carousel(urls)
+    assert len(ordered) == 15
+    assert len(ordered) <= MAX_PRODUCT_PHOTOS
+
+
 def test_pale_product_still_life_is_not_dropped_as_a_swatch() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp)

@@ -38,6 +38,7 @@ class AdminIntakeBot:
         scheduler: Any | None = None,
         sender: Callable[[str, str], None] | None = None,
         discovery: TelegramChatDiscoveryService | None = None,
+        instagram_enabled: bool = True,
     ) -> None:
         self.bot_token = bot_token
         self.admin_user_ids = {int(user_id) for user_id in admin_user_ids}
@@ -46,6 +47,7 @@ class AdminIntakeBot:
         self.timezone_name = timezone_name or "UTC"
         self.scheduler = scheduler
         self._sender = sender
+        self.instagram_enabled = instagram_enabled
         self.discovery = discovery or TelegramChatDiscoveryService(
             bot_token=bot_token,
             repo=repo,
@@ -56,6 +58,15 @@ class AdminIntakeBot:
         self._thread: threading.Thread | None = None
         self._owns_scheduler = False
         self._fire_lock = threading.Lock()
+
+    def _instagram_on(self) -> bool:
+        """Live flag. The admin panel can turn Instagram back on without a code change."""
+        config = getattr(self.runner, "config", None)
+        instagram = getattr(config, "instagram", None)
+        enabled = getattr(instagram, "enabled", None)
+        if enabled is not None:
+            return bool(enabled)
+        return self.instagram_enabled
 
     def start(self) -> None:
         """Drop the old update backlog, restore scheduled posts, and poll for new messages."""
@@ -178,6 +189,8 @@ class AdminIntakeBot:
                 post_id = int(parts[2])
             except (ValueError, IndexError):
                 return
+            if not self._instagram_on():
+                destination = "telegram"
             self.repo.set_manual_post_destination(post_id, destination, next_status="awaiting_approval")
             self._send_prerender(chat_id, post_id)
 
@@ -257,9 +270,16 @@ class AdminIntakeBot:
     def _reply_to_admin(self, user_id: int, chat_id: str, text: str) -> str:
         command = _command_name(text)
         if command in {"/start", "/help"}:
+            if self._instagram_on():
+                return (
+                    "Пришлите ссылку на товар. Можно сразу следом написать свою первую часть описания. "
+                    "Я спрошу время и канал, покажу предпросмотр и запланирую отправку. "
+                    "Контакты добавятся сами."
+                )
             return (
-                "Пришлите ссылку на товар. Я сформирую описание, спрошу время и канал, "
-                "покажу предпросмотр перед публикацией и запланирую отправку."
+                "Пришлите ссылку на товар. Можно сразу следом написать свою первую часть описания. "
+                "Я спрошу время, покажу предпросмотр и запланирую отправку в Telegram. "
+                "Контакты добавятся сами. Instagram сейчас выключен."
             )
         if command == "/cancel":
             cancelled = self.repo.cancel_awaiting_manual(str(user_id))
@@ -269,7 +289,12 @@ class AdminIntakeBot:
 
         product_url = extract_product_url(text)
         if product_url:
-            return self._accept_link(user_id, chat_id, product_url)
+            return self._accept_link(
+                user_id,
+                chat_id,
+                product_url,
+                caption=caption_after_url(text, product_url),
+            )
         if not text.strip():
             return "Пришлите ссылку на товар."
 
@@ -300,7 +325,7 @@ class AdminIntakeBot:
             return self._accept_time(user_id, chat_id, text)
 
         if draft.status == "awaiting_destination":
-            dest = _parse_destination(text)
+            dest = "telegram" if not self._instagram_on() else _parse_destination(text)
             if dest:
                 self.repo.set_manual_post_destination(draft.id, dest, next_status="awaiting_approval")
                 self._send_prerender(chat_id, draft.id)
@@ -319,7 +344,7 @@ class AdminIntakeBot:
 
         return self._accept_time(user_id, chat_id, text)
 
-    def _accept_link(self, user_id: int, chat_id: str, product_url: str) -> str:
+    def _accept_link(self, user_id: int, chat_id: str, product_url: str, caption: str = "") -> str:
         from core.dedup import extract_duplicate_signatures
         from adapters.playwright_url_processor import process_product_url_with_playwright
 
@@ -365,6 +390,9 @@ class AdminIntakeBot:
 
         auto_desc = (draft_data.get("description") or "").strip() if draft_data else ""
         photo_url = draft_data.get("photo_url") if draft_data else None
+        own_caption = caption.strip()
+        if own_caption:
+            auto_desc = ""
 
         draft = self.repo.create_manual_draft(
             str(user_id),
@@ -374,6 +402,16 @@ class AdminIntakeBot:
             custom_description=auto_desc if auto_desc else None,
             photo_url=photo_url,
         )
+
+        if own_caption:
+            self.repo.set_manual_post_description(draft.id, own_caption, next_status="awaiting_time")
+            return (
+                "Ссылку и описание принял.\n"
+                "В какое время выложить пост?\n"
+                "Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
+                f"Часовой пояс: {self.timezone_name}.\n\n"
+                "Контакты и ссылки добавятся автоматически во 2-й части."
+            )
 
         if auto_desc:
             text = (
@@ -471,17 +509,18 @@ class AdminIntakeBot:
             f"Проверьте правильность и подтвердите публикацию:"
         )
 
+        row_edit = [
+            {"text": "✏️ Изменить описание", "callback_data": f"edit:desc:{post.id}"},
+            {"text": "⏰ Изменить время", "callback_data": f"edit:time:{post.id}"},
+        ]
+        row_last = [{"text": "❌ Отмена", "callback_data": f"cancel:{post.id}"}]
+        if self._instagram_on():
+            row_last.insert(0, {"text": "🌐 Изменить канал", "callback_data": f"edit:dest:{post.id}"})
         keyboard = {
             "inline_keyboard": [
                 [{"text": "✅ Подтвердить и запланировать", "callback_data": f"approve:{post.id}"}],
-                [
-                    {"text": "✏️ Изменить описание", "callback_data": f"edit:desc:{post.id}"},
-                    {"text": "⏰ Изменить время", "callback_data": f"edit:time:{post.id}"},
-                ],
-                [
-                    {"text": "🌐 Изменить канал", "callback_data": f"edit:dest:{post.id}"},
-                    {"text": "❌ Отмена", "callback_data": f"cancel:{post.id}"},
-                ],
+                row_edit,
+                row_last,
             ]
         }
         if getattr(post, "photo_url", None):
@@ -531,7 +570,7 @@ class AdminIntakeBot:
             return "Сначала пришлите ссылку на товар."
 
         if draft.status == "awaiting_destination":
-            dest = _parse_destination(text)
+            dest = "telegram" if not self._instagram_on() else _parse_destination(text)
             if dest:
                 self.repo.set_manual_post_destination(draft.id, dest, next_status="awaiting_approval")
                 self._send_prerender(chat_id, draft.id)
@@ -567,6 +606,9 @@ class AdminIntakeBot:
         time_val = parsed.when
         if parsed.note == "сейчас":
             time_val = datetime.now(timezone.utc)
+
+        if not self._instagram_on():
+            dest_override = "telegram"
 
         if dest_override:
             self.repo.set_manual_post_time(draft.id, time_val, next_status="awaiting_approval")
@@ -763,6 +805,17 @@ def _platform_notice(platform: str, success: bool, detail: str) -> str:
         return f"Опубликован в {label}"
     reason = (detail or "неизвестная ошибка").strip()
     return f"Не удалось опубликовать в {label}: {reason}"
+
+
+def caption_after_url(text: str, url: str) -> str:
+    """The admin's own part 1, written in the same message after the product link."""
+    if not text or not url:
+        return ""
+    idx = text.lower().find(url.lower())
+    if idx < 0:
+        return ""
+    rest = text[idx + len(url):]
+    return rest.strip().lstrip(").,]>\"'").strip()
 
 
 def extract_product_url(text: str) -> str | None:

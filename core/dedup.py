@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 from adapters.base import RawProduct
 
 if TYPE_CHECKING:
@@ -12,16 +12,60 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Zara puts the colourway in ?v1=. Tracking tags are still dropped.
+_COLOR_QUERY_KEYS = {"v1"}
+_MANGO_COLOR_IN_PATH = re.compile(r"/(\d{7,10})/([0-9a-z]{2,3})(?:/|$)", re.IGNORECASE)
+_ZARA_PRODUCT_IN_PATH = re.compile(r"-p(\d{6,})(?:\.html|[/?#]|$)", re.IGNORECASE)
+
+
 def normalize_url(url: str | None) -> str:
-    """Normalize a product URL by removing query strings, fragments, and trailing slashes."""
+    """Canonical product URL: no fragment, no tracking, colour query kept.
+
+    Two colours of one Zara model differ only by ?v1=. That parameter stays,
+    so the links are not treated as the same post. utm and similar tags go.
+    """
     if not url:
         return ""
     try:
         parsed = urlparse(url)
-        clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/").lower()
+        kept = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=False)
+            if key.lower() in _COLOR_QUERY_KEYS and value
+        ]
+        path = parsed.path.rstrip("/")
+        clean = f"{parsed.scheme}://{parsed.netloc}{path}".lower()
+        if kept:
+            clean += "?" + urlencode(kept).lower()
         return clean
     except Exception:
-        return url.split("?")[0].rstrip("/").lower()
+        return url.split("#")[0].rstrip("/").lower()
+
+
+def variant_parts(url: str | None) -> tuple[str, str]:
+    """(product id, colour token). Colour is empty when the link does not name one.
+
+    Mango keeps the colour in the path (/37016751/99). Zara keeps it in ?v1=.
+    """
+    if not url:
+        return "", ""
+    parsed = urlparse(url)
+    mango = _MANGO_COLOR_IN_PATH.search(parsed.path or "")
+    if mango:
+        return mango.group(1), mango.group(2).lower()
+    product_id = ""
+    zara = _ZARA_PRODUCT_IN_PATH.search(parsed.path or "")
+    if zara:
+        product_id = zara.group(1)
+    else:
+        skus = extract_skus(url, None)
+        product_id = max(skus, key=len) if skus else ""
+    color = ""
+    for key, value in parse_qsl(parsed.query, keep_blank_values=False):
+        if key.lower() in _COLOR_QUERY_KEYS and value.strip():
+            color = value.strip().lower()
+            break
+    return product_id, color
 
 
 def extract_skus(url: str | None, external_id: str | None = None) -> set[str]:
@@ -77,9 +121,16 @@ def extract_duplicate_signatures(
         if canon_url:
             sigs.add(f"url:{canon_url}")
 
-    for sku in extract_skus(product_url, external_id):
-        if sku:
-            sigs.add(f"sku:{clean_src}:{sku}" if clean_src else f"sku:{sku}")
+    product_id, color = variant_parts(product_url)
+    # A colour token makes this one colourway. The bare article number is not
+    # added in that case, or black and beige of the same model collide.
+    if product_id and color:
+        qualified = f"{product_id}:{color}"
+        sigs.add(f"sku:{clean_src}:{qualified}" if clean_src else f"sku:{qualified}")
+    else:
+        for sku in extract_skus(product_url, external_id):
+            if sku:
+                sigs.add(f"sku:{clean_src}:{sku}" if clean_src else f"sku:{sku}")
 
     return sigs
 

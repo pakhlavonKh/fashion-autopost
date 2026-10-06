@@ -15,6 +15,21 @@ from decimal import Decimal
 from publishers.telegram_publisher import TelegramPublisher
 
 
+def test_telegram_jpeg_keeps_the_original_frame() -> None:
+    """Telegram must not cover-crop a tall store photo into a 4:5 frame."""
+    from PIL import Image
+
+    from core.image_downloader import prepare_original_jpeg
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        source = folder / "shoe.jpg"
+        Image.new("RGB", (800, 1600), (20, 20, 20)).save(source, quality=95)
+        dest = prepare_original_jpeg(source, folder / "shoe_tg.jpg")
+        with Image.open(dest) as image:
+            assert image.size == (800, 1600)
+
+
 def test_image_downloader_local_file_passthrough() -> None:
     """Verify local files that exist are returned immediately without network call."""
     with tempfile.NamedTemporaryFile("wb", suffix=".jpg", delete=False) as f:

@@ -21,7 +21,7 @@ import httpx
 
 from adapters.base import RawProduct
 from adapters.scrapers.base import generate_deterministic_id, parse_price
-from core.gallery import ordered_photos, page_gallery_is_authoritative
+from core.gallery import MAX_PRODUCT_PHOTOS, ordered_photos, page_gallery_is_authoritative
 from core.product_facts import extract_heel_height, extract_site_facts, is_heeled_footwear
 
 logger = logging.getLogger(__name__)
@@ -127,7 +127,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
         images = chosen.images
     if not images:
         return None
-    images = ordered_photos(html_text, brand, url, images, max_photos=10)
+    images = ordered_photos(html_text, brand, url, images, max_photos=MAX_PRODUCT_PHOTOS)
     external_id = generate_deterministic_id(brand, raw_id=chosen.raw_id or None, url=url)
     title = " ".join(chosen.title.split("|")[0].split())
     color, sizes = extract_site_facts(html_text, url)
@@ -141,7 +141,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
         photo_url=images[0],
         product_url=url,
         in_stock=chosen.in_stock,
-        photo_urls=images[:10],
+        photo_urls=images[:MAX_PRODUCT_PHOTOS],
         heel_height=heel,
         color=color,
         sizes=sizes,

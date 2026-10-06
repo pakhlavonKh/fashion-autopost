@@ -177,32 +177,46 @@ def generate_deterministic_id(brand: str, raw_id: str | None = None, url: str = 
     import hashlib
 
     clean_brand = brand.strip().lower()
+    base_id = ""
     if raw_id:
         clean_raw = str(raw_id).strip()
         if clean_raw.lower().startswith(f"{clean_brand}-"):
-            return clean_raw
-        return f"{clean_brand}-{clean_raw}"
+            base_id = clean_raw
+        else:
+            base_id = f"{clean_brand}-{clean_raw}"
 
-    if url:
+    if not base_id and url:
         # Pattern 1: Mango style (/37016751/)
         match = re.search(r"/(\d{7,10})(?:/|$)", url)
         if match:
-            return f"{clean_brand}-{match.group(1)}"
+            base_id = f"{clean_brand}-{match.group(1)}"
         # Pattern 2: Zara style (-p01234567.html or p12345)
-        match = re.search(r"-p([0-9A-Za-z]+)\.html", url) or re.search(r"p(\d{5,})", url)
-        if match:
-            return f"{clean_brand}-{match.group(1)}"
+        if not base_id:
+            match = re.search(r"-p([0-9A-Za-z]+)\.html", url) or re.search(r"p(\d{5,})", url)
+            if match:
+                base_id = f"{clean_brand}-{match.group(1)}"
         # Pattern 3: Any 6+ digits in path
-        match = re.search(r"[-_/](\d{6,})", url)
-        if match:
-            return f"{clean_brand}-{match.group(1)}"
+        if not base_id:
+            match = re.search(r"[-_/](\d{6,})", url)
+            if match:
+                base_id = f"{clean_brand}-{match.group(1)}"
 
         # Deterministic SHA-256 fallback from canonical URL
-        canon = url.split("?")[0].rstrip("/").lower()
-        sha = hashlib.sha256(canon.encode("utf-8")).hexdigest()[:10]
-        return f"{clean_brand}-{sha}"
+        if not base_id:
+            canon = url.split("?")[0].rstrip("/").lower()
+            sha = hashlib.sha256(canon.encode("utf-8")).hexdigest()[:10]
+            base_id = f"{clean_brand}-{sha}"
 
-    return f"{clean_brand}-item"
+    if not base_id:
+        base_id = f"{clean_brand}-item"
+
+    # Colour in the link makes a separate product, so beige is not "the same" as black.
+    from core.dedup import variant_parts
+
+    _product_id, color = variant_parts(url)
+    if color and not base_id.lower().endswith(f"-{color}"):
+        return f"{base_id}-{color}"
+    return base_id
 
 
 @runtime_checkable

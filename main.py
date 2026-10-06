@@ -56,6 +56,7 @@ def start_admin_intake(config: AppConfig, runner: PipelineRunner, scheduler):
         runner=runner,
         timezone_name=config.schedule.timezone,
         scheduler=scheduler,
+        instagram_enabled=config.instagram.enabled,
     )
     bot.start()
     return bot

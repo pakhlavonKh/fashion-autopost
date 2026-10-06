@@ -44,7 +44,7 @@ instagram:
     https://t.me/fashionalleyb
 
     '
-  enabled: true
+  enabled: false
   username: invito.live
 markup: 10.0
 max_products_per_run: 1

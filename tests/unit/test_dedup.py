@@ -149,3 +149,64 @@ def test_filter_unseen_in_batch_duplicates(fake_repo: FakeProductRepository) -> 
     assert len(result) == 2
     assert [p.external_id for p in result] == ["mango-37016751", "mango-9999999"]
 
+
+def test_another_colour_of_the_same_model_is_a_new_post(fake_repo: FakeProductRepository) -> None:
+    """Black and beige are different links. The beige one must not be called a repeat."""
+    from core.dedup import extract_duplicate_signatures
+    from adapters.scrapers.base import generate_deterministic_id
+
+    black_url = "https://shop.mango.com/es/es/p/mujer/zapatos/slingback/37016751/99"
+    beige_url = "https://shop.mango.com/es/es/p/mujer/zapatos/slingback/37016751/01"
+    assert generate_deterministic_id("mango", url=black_url) == "mango-37016751-99"
+    assert generate_deterministic_id("mango", url=beige_url) == "mango-37016751-01"
+    assert not (
+        extract_duplicate_signatures("mango", "mango-37016751-99", black_url, "Slingback")
+        & extract_duplicate_signatures("mango", "mango-37016751-01", beige_url, "Slingback")
+    )
+
+    published = RawProduct(
+        external_id="mango-37016751-99",
+        source="mango",
+        title="Slingback black",
+        price=Decimal("49.99"),
+        currency="EUR",
+        photo_url="https://media.mango.com/is/image/punto/37016751-99-001",
+        product_url=black_url,
+        in_stock=True,
+    )
+    beige = RawProduct(
+        external_id="mango-37016751-01",
+        source="mango",
+        title="Slingback beige",
+        price=Decimal("49.99"),
+        currency="EUR",
+        photo_url="https://media.mango.com/is/image/punto/37016751-01-001",
+        product_url=beige_url,
+        in_stock=True,
+    )
+    fake_repo.upsert_new(published)
+    fake_repo.mark_published("mango-37016751-99", "tg-1", None)
+    assert [item.external_id for item in filter_unseen([beige], fake_repo)] == ["mango-37016751-01"]
+
+
+def test_same_colour_is_still_a_duplicate_including_zara_v1() -> None:
+    from core.dedup import extract_duplicate_signatures, normalize_url
+
+    black = "https://shop.mango.com/es/es/p/mujer/zapatos/slingback/37016751/99?c=99"
+    black_again = "https://shop.mango.com/es/es/p/mujer/zapatos/slingback/37016751/99/00"
+    assert extract_duplicate_signatures("mango", "mango-37016751-99", black, "") & extract_duplicate_signatures(
+        "mango", "mango-37016751-99", black_again, ""
+    )
+
+    red = "https://www.zara.com/es/es/slingback-p02756113.html?v1=111&utm_source=ig"
+    red_clean = "https://www.zara.com/es/es/slingback-p02756113.html?v1=111"
+    blue = "https://www.zara.com/es/es/slingback-p02756113.html?v1=222"
+    assert normalize_url(red) == normalize_url(red_clean)
+    assert not (
+        extract_duplicate_signatures("zara", "zara-02756113-111", red, "")
+        & extract_duplicate_signatures("zara", "zara-02756113-222", blue, "")
+    )
+    assert extract_duplicate_signatures("zara", "zara-02756113-111", red, "") & extract_duplicate_signatures(
+        "zara", "zara-02756113-111", red_clean, ""
+    )
+

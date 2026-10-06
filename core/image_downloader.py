@@ -195,6 +195,58 @@ def is_material_or_color_swatch(image_path: Path) -> bool:
     return False
 
 
+# Telegram accepts a photo up to 10 MB. Scale the long edge only when the file
+# would not fit; never cover-crop, so the garment stays in frame.
+TELEGRAM_MAX_EDGE = 2560
+TELEGRAM_MAX_BYTES = 9_500_000
+
+
+def prepare_original_jpeg(source: Path, dest: Path) -> Path:
+    """Write a high-quality JPEG of the original frame. Aspect ratio stays intact."""
+    from PIL import Image, ImageOps
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(source) as image:
+        image = ImageOps.exif_transpose(image)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        image = _fit_long_edge(image, TELEGRAM_MAX_EDGE)
+        _save_under_limit(image, dest, TELEGRAM_MAX_BYTES)
+    return dest
+
+
+def _fit_long_edge(image, max_edge: int):
+    from PIL import Image
+
+    width, height = image.size
+    longest = max(width, height)
+    if longest <= max_edge:
+        return image
+    scale = max_edge / longest
+    resized = image.resize(
+        (max(1, int(width * scale)), max(1, int(height * scale))),
+        Image.Resampling.LANCZOS,
+    )
+    return resized
+
+
+def _save_under_limit(image, dest: Path, max_bytes: int) -> None:
+    """Save JPEG, lowering quality and then scale only if the file is still too large."""
+    from PIL import Image
+
+    current = image
+    for quality in (95, 90, 85, 80):
+        current.save(dest, format="JPEG", quality=quality, optimize=True, subsampling=0)
+        if dest.stat().st_size <= max_bytes:
+            return
+        width, height = current.size
+        current = current.resize(
+            (max(1, int(width * 0.85)), max(1, int(height * 0.85))),
+            Image.Resampling.LANCZOS,
+        )
+    current.save(dest, format="JPEG", quality=80, optimize=True)
+
+
 class ImageDownloader:
     """Downloads remote product photos to local disk storage."""
 

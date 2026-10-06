@@ -13,9 +13,7 @@ import httpx
 
 from core.composer import ComposedPost
 from core.pricing import whole_price
-from core.image_downloader import ImageDownloader, unique_images
-from core.product_facts import is_footwear
-from publishers.instagram_media import prepare_feed_jpeg
+from core.image_downloader import ImageDownloader, prepare_original_jpeg, unique_images
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
 
@@ -23,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 # Telegram captions allow maximum 1024 characters
 MAX_TELEGRAM_CAPTION_LEN = 1024
+# sendMediaGroup accepts at most 10 photos. Further shots go out as the next album.
+TELEGRAM_ALBUM_SIZE = 10
 
 DEFAULT_BIO_FOOTER = (
     "Европейское качество\n"
@@ -102,7 +102,7 @@ class TelegramPublisher:
             candidate_urls = [post.photo_url]
 
         downloaded_paths: list[str] = []
-        for i, u in enumerate(candidate_urls[:10]):
+        for i, u in enumerate(candidate_urls):
             local_cand = Path(u)
             if local_cand.is_file():
                 downloaded_paths.append(str(local_cand))
@@ -116,23 +116,11 @@ class TelegramPublisher:
 
         if not downloaded_paths and post.photo_url:
             downloaded_paths = [post.photo_url]
-        anchor = "bottom" if is_footwear(post.title, post.product_url or "") else "top"
-        downloaded_paths = self._uniform_slides(downloaded_paths, anchor=anchor)
+        downloaded_paths = self._uniform_slides(downloaded_paths)
 
         for chat_id in target_ids:
             try:
-                if len(downloaded_paths) > 1:
-                    msg_id = self._send_media_group_with_retry(
-                        downloaded_paths[:10],
-                        caption,
-                        chat_id=chat_id,
-                    )
-                else:
-                    msg_id = self._send_photo_with_retry(
-                        downloaded_paths[0],
-                        caption,
-                        chat_id=chat_id,
-                    )
+                msg_id = self._send_all_photos(downloaded_paths, caption, chat_id)
                 successful_ids.append(f"{chat_id}:{msg_id}" if len(target_ids) > 1 else str(msg_id))
                 username = self._public_usernames.get(chat_id) or (
                     chat_id[1:] if chat_id.startswith("@") else None
@@ -242,8 +230,8 @@ class TelegramPublisher:
             return self._ids_by_username.get(canonical[1:].casefold())
         return None
 
-    def _uniform_slides(self, photos: list[str], anchor: str = "top") -> list[str]:
-        """Same 4:5 JPEG for every slide, with duplicate pictures removed."""
+    def _uniform_slides(self, photos: list[str]) -> list[str]:
+        """High-resolution JPEGs in the store's own frame. Duplicate pictures are removed."""
         local_paths = [Path(photo) for photo in photos if Path(photo).is_file()]
         kept = {str(path.resolve()) for path in unique_images(local_paths)} if local_paths else set()
         slides: list[str] = []
@@ -255,9 +243,9 @@ class TelegramPublisher:
                 if resolved not in kept or resolved in seen:
                     continue
                 seen.add(resolved)
-                dest = path.with_name(f"{path.stem}_feed.jpg")
+                dest = path.with_name(f"{path.stem}_tg.jpg")
                 try:
-                    slides.append(str(prepare_feed_jpeg(path, dest, anchor=anchor)))
+                    slides.append(str(prepare_original_jpeg(path, dest)))
                 except Exception as exc:
                     logger.debug("Sending the original file for Telegram, prepare failed: %s", exc)
                     slides.append(photo)
@@ -265,6 +253,25 @@ class TelegramPublisher:
                 seen.add(photo)
                 slides.append(photo)
         return slides
+
+    def _send_all_photos(self, photos: list[str], caption: str, chat_id: str) -> str:
+        """Send every photo. Telegram albums hold 10, so the rest follow as further albums.
+
+        The sales caption is on the first album only.
+        """
+        if not photos:
+            raise RuntimeError("No photos to send")
+        first_id = ""
+        for index in range(0, len(photos), TELEGRAM_ALBUM_SIZE):
+            batch = photos[index:index + TELEGRAM_ALBUM_SIZE]
+            batch_caption = caption if index == 0 else ""
+            if len(batch) > 1:
+                msg_id = self._send_media_group_with_retry(batch, batch_caption, chat_id=chat_id)
+            else:
+                msg_id = self._send_photo_with_retry(batch[0], batch_caption, chat_id=chat_id)
+            if not first_id:
+                first_id = msg_id
+        return first_id
 
     @retry_with_backoff(max_attempts=3, base_delay=2.0, max_delay=10.0, exceptions=(httpx.HTTPError,))
     def _send_media_group_with_retry(
@@ -305,7 +312,7 @@ class TelegramPublisher:
                     "media": photo_path_or_url,
                 }
 
-            if idx == 0:
+            if idx == 0 and caption:
                 media_item["caption"] = caption
                 media_item["parse_mode"] = "HTML"
 
@@ -356,19 +363,19 @@ class TelegramPublisher:
                         filename = f"{local_candidate.stem}.png"
 
                 files = {"photo": (filename, photo_bytes, mime_type)}
-                data = {
-                    "chat_id": str(target_chat),
-                    "caption": caption,
-                    "parse_mode": "HTML",
-                }
+                data = {"chat_id": str(target_chat)}
+                if caption:
+                    data["caption"] = caption
+                    data["parse_mode"] = "HTML"
                 resp = client.post(url, data=data, files=files)
             else:
                 payload = {
                     "chat_id": str(target_chat),
                     "photo": photo_url,
-                    "caption": caption,
-                    "parse_mode": "HTML",
                 }
+                if caption:
+                    payload["caption"] = caption
+                    payload["parse_mode"] = "HTML"
                 resp = client.post(url, json=payload)
 
             data = resp.json()

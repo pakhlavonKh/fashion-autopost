@@ -219,7 +219,11 @@ def _callback(user_id: int, data: str, update_id: int = 100) -> dict:
     }
 
 
-def _bot(tmp_path: Path, runner: _Runner | None = None) -> tuple[AdminIntakeBot, list[tuple[str, str]], _Scheduler, _Runner]:
+def _bot(
+    tmp_path: Path,
+    runner: _Runner | None = None,
+    instagram_enabled: bool = True,
+) -> tuple[AdminIntakeBot, list[tuple[str, str]], _Scheduler, _Runner]:
     repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / 'manual.db'}")
     scheduler = _Scheduler()
     runner = runner or _Runner()
@@ -232,6 +236,7 @@ def _bot(tmp_path: Path, runner: _Runner | None = None) -> tuple[AdminIntakeBot,
         timezone_name=TASHKENT,
         scheduler=scheduler,
         sender=lambda chat_id, text: sent.append((chat_id, text)),
+        instagram_enabled=instagram_enabled,
     )
     return bot, sent, scheduler, runner
 
@@ -646,6 +651,64 @@ def test_admin_destination_text_fallback_and_combined(tmp_path: Path) -> None:
     draft2 = bot.repo.get_awaiting_manual(str(ADMIN_ID))
     bot.handle_update(_callback(ADMIN_ID, f"approve:{draft2.id}", update_id=9))
     assert "публикую сейчас в instagram" in sent[-1][1].lower()
+
+
+def test_link_and_caption_in_one_message_skip_the_description_step(tmp_path: Path) -> None:
+    bot, sent, _scheduler, _runner = _bot(tmp_path)
+    link = "https://www.zara.com/es/es/wool-coat-p12345678.html"
+    part1 = (
+        "Слингбэки с вышивкой-98$\n"
+        "Размеры с 35 по 42.\n"
+        "Высота каблука 4,5 см.\n"
+        "Цвет: черный."
+    )
+    bot.handle_update(_message(ADMIN_ID, f"{link}\n{part1}", update_id=1))
+    assert "какое время" in sent[-1][1].lower()
+    draft = bot.repo.get_awaiting_manual(str(ADMIN_ID))
+    assert draft is not None
+    assert draft.status == "awaiting_time"
+    assert draft.custom_description == part1
+
+
+def test_a_different_colour_link_is_not_called_a_repeat(tmp_path: Path) -> None:
+    bot, sent, _scheduler, _runner = _bot(tmp_path)
+    black = "https://shop.mango.com/es/es/p/mujer/zapatos/slingback/37016751/99"
+    beige = "https://shop.mango.com/es/es/p/mujer/zapatos/slingback/37016751/01"
+    bot.repo.upsert_new(
+        RawProduct(
+            external_id="mango-37016751-99",
+            source="mango",
+            title="Slingback",
+            price=Decimal("49.99"),
+            currency="EUR",
+            photo_url="https://example.com/black.jpg",
+            product_url=black,
+            in_stock=True,
+        )
+    )
+    bot.repo.mark_published("mango-37016751-99", "tg-1", None)
+    bot.handle_update(_message(ADMIN_ID, beige))
+    assert "уже публиковался" not in sent[-1][1].lower()
+    assert bot.repo.get_awaiting_manual(str(ADMIN_ID)) is not None
+
+
+def test_instagram_off_schedules_telegram_without_asking(tmp_path: Path) -> None:
+    bot, sent, scheduler, runner = _bot(tmp_path, instagram_enabled=False)
+    link = "https://www.zara.com/es/es/wool-coat-p12345678.html"
+    bot.handle_update(_message(ADMIN_ID, link, update_id=1))
+    bot.handle_update(_message(ADMIN_ID, "Пальто-78$", update_id=2))
+    bot.handle_update(_message(ADMIN_ID, "18:30", update_id=3))
+    assert "предпросмотр" in sent[-1][1].lower()
+    assert "telegram" in sent[-1][1].lower()
+    draft = bot.repo.get_awaiting_manual(str(ADMIN_ID))
+    assert draft is not None
+    assert draft.target_channel == "telegram"
+    bot.handle_update(_callback(ADMIN_ID, f"approve:{draft.id}", update_id=4))
+    assert "telegram" in sent[-1][1].lower()
+    assert "instagram" not in sent[-1][1].lower()
+    job = scheduler.jobs[0]
+    job["func"](*job["args"])
+    assert runner.filters == ["telegram"]
 
 
 def test_admin_accepts_auto_description(tmp_path: Path) -> None:
