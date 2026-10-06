@@ -424,6 +424,66 @@ def test_publish_manual_url_uses_the_regular_publishers(tmp_path: Path, monkeypa
     assert repo.get_unposted_products() == []
 
 
+def test_manual_publish_keeps_admin_caption_and_appends_footer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The admin's own part 1 must publish as written, with the shop footer after it."""
+    from publishers.telegram_publisher import TelegramPublisher
+
+    photo = tmp_path / "shoe.jpg"
+    photo.write_bytes(b"local-photo")
+    part1 = (
+        "Слингбэки с вышивкой-98$\n"
+        "Размеры с 35 по 42.\n"
+        "Высота каблука 4,5 см.\n"
+        "Цвет: черный."
+    )
+    product = RawProduct(
+        external_id="mango-37016751",
+        source="mango",
+        title="Slingback heels",
+        price=Decimal("49.99"),
+        currency="EUR",
+        photo_url=str(photo),
+        product_url="https://shop.mango.com/es/es/p/mujer/zapatos/slingback/37016751/99",
+        in_stock=True,
+        photo_urls=[str(photo)],
+        color="black",
+        sizes=("35", "36", "37", "38", "39", "40", "41", "42"),
+    )
+    monkeypatch.setattr("core.pipeline.fetch_product_page", lambda url, headless=True: product)
+
+    repo = FakeProductRepository()
+    telegram = FakePublisher("telegram")
+    runner = PipelineRunner(
+        source=None,  # type: ignore[arg-type]
+        repo=repo,
+        llm=FakeLLMProvider(select_count=1),
+        fx=FixedRateConverter(fixed_rate=Decimal("1.08")),
+        publishers=[telegram],
+        config=AppConfig(),
+        prompt_loader=type("Prompt", (), {"load_prompt": lambda self: "unused"})(),
+    )
+
+    ok, _message = runner.publish_manual_url(
+        product.product_url,
+        custom_description=part1,
+        publishers_filter="telegram",
+    )
+    assert ok is True
+    assert len(telegram.published_posts) == 1
+    caption = TelegramPublisher(bot_token="test")._format_caption(telegram.published_posts[0])
+    assert caption.startswith(part1)
+    assert "Европейское качество" in caption
+    assert "Обращаться: @nigora_7" in caption
+    assert "Тел:+998998484044" in caption
+    assert "@otzivi_fashbou" in caption
+    assert "@vnalichiifash" in caption
+    assert "https://www.instagram.com/fashionnestboutique" in caption
+    assert "https://t.me/fashionalleyb" in caption
+    assert caption.index(part1) < caption.index("Европейское качество")
+
+
 def test_parse_product_html_non_euro_currencies() -> None:
     # Turkish Lira from Turkey storefront
     tr_html = """

@@ -996,11 +996,13 @@ class PipelineRunner:
         external_id = product.external_id
         product = attach_site_facts(product)
         product_title = self._russian_title(product, title_override)
+        # Resolved even when the admin wrote part 1 herself: the composed record
+        # still stores the site color, and skipping this assignment crashes that path.
+        product_color = self._resolve_color(product.color)
         if custom_description:
             description = custom_description
         else:
             # Size, color, and heel height are copied from the product page. The model must not fill them in.
-            product_color = self._resolve_color(product.color)
             heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
             description = site_description(product_color or product.color, product.sizes, heel_height=heel)
             if not order_sizes(product.sizes):
