@@ -12,8 +12,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Zara puts the colourway in ?v1=. Tracking tags are still dropped.
-_COLOR_QUERY_KEYS = {"v1"}
+# The colourway rides in the query: Zara ?v1=, Mango ?c=, Bershka and the
+# other Inditex stores ?colorId=. Tracking tags are still dropped.
+_COLOR_QUERY_KEYS = {"v1", "c", "colorid", "color", "colour"}
 _MANGO_COLOR_IN_PATH = re.compile(r"/(\d{7,10})/([0-9a-z]{2,3})(?:/|$)", re.IGNORECASE)
 _ZARA_PRODUCT_IN_PATH = re.compile(r"-p(\d{6,})(?:\.html|[/?#]|$)", re.IGNORECASE)
 
@@ -21,8 +22,9 @@ _ZARA_PRODUCT_IN_PATH = re.compile(r"-p(\d{6,})(?:\.html|[/?#]|$)", re.IGNORECAS
 def normalize_url(url: str | None) -> str:
     """Canonical product URL: no fragment, no tracking, colour query kept.
 
-    Two colours of one Zara model differ only by ?v1=. That parameter stays,
-    so the links are not treated as the same post. utm and similar tags go.
+    Two colours of one model differ only by the colour parameter (?v1=, ?c=,
+    ?colorId=). That parameter stays, so the links are not treated as the same
+    post. utm and similar tags go.
     """
     if not url:
         return ""
@@ -45,7 +47,8 @@ def normalize_url(url: str | None) -> str:
 def variant_parts(url: str | None) -> tuple[str, str]:
     """(product id, colour token). Colour is empty when the link does not name one.
 
-    Mango keeps the colour in the path (/37016751/99). Zara keeps it in ?v1=.
+    Mango keeps the colour in the path (/37016751/99) or in ?c=. Zara keeps it
+    in ?v1=, the other Inditex stores in ?colorId=.
     """
     if not url:
         return "", ""

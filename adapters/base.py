@@ -5,7 +5,7 @@ Per SDD §3.1 and SRS FR-1.
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,9 @@ class RawProduct:
     # True when photo_urls is the store's own main gallery for this product,
     # already isolated, so the reference filter must not trim it again.
     photos_verified: bool = False
+    # Every colourway the page offers (core.color_variants.ColorVariant), the
+    # one this link opens marked as selected. Empty for single-colour products.
+    color_variants: tuple[Any, ...] = ()
 
 
 @runtime_checkable

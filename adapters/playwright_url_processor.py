@@ -53,6 +53,27 @@ def clean_url_parameters(url: str) -> str:
     return cleaned.rstrip("?")
 
 
+def choose_processed_url(initial: str, current: str | None, canonical: str | None) -> str:
+    """The canonical link, unless it forgets the colour the admin's link picked.
+
+    Stores point rel=canonical at the bare model page. That page opens the
+    default colour, so a beige link must not be swapped for it.
+    """
+    from core.color_variants import color_token, link_names_color
+
+    # A short link names its colour only after the redirect.
+    named = next((url for url in (initial, current) if url and link_names_color(url)), "")
+    wanted = color_token(named) if named else ""
+    for candidate in (canonical, current):
+        if not candidate or not candidate.startswith("http"):
+            continue
+        cleaned = clean_url_parameters(candidate)
+        if wanted and color_token(cleaned).lower() != wanted.lower():
+            continue
+        return cleaned
+    return clean_url_parameters(initial)
+
+
 def process_product_url_with_playwright(
     raw_url: str,
     timeout_seconds: float = 30.0,
@@ -98,9 +119,7 @@ def process_product_url_with_playwright(
 
             browser.close()
 
-            # Prefer canonical URL if valid and matching store domain
-            final_target = canonical_href if (canonical_href and canonical_href.startswith("http")) else current_url
-            processed_url = clean_url_parameters(final_target)
+            processed_url = choose_processed_url(cleaned_initial, current_url, canonical_href)
 
             logger.info(
                 "Playwright successfully resolved URL: original='%s' -> processed='%s'",

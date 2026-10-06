@@ -20,12 +20,13 @@ from adapters.playwright_url_processor import process_product_url_with_playwrigh
 from adapters.product_page import ProductPageError, fetch_product_page
 from config.app_config import AppConfig
 from core.color_names import russian_color
+from core.color_variants import link_names_color
 from core.composer import compose_post
 from core.dedup import extract_duplicate_signatures, filter_unseen
 from core.image_downloader import ImageDownloader
 from core.moderation import ConfigurableModerationGate, ModerationGate
 from core.outfits import OutfitCoordinator
-from core.pricing import FxConverter, calculate_final_price, source_price_usd
+from core.pricing import FxConverter, calculate_final_price, source_price_usd, whole_price
 from core.product_facts import (
     attach_site_facts,
     is_heeled_footwear,
@@ -384,6 +385,13 @@ class PipelineRunner:
         if not photo_url and getattr(product, "photo_urls", None):
             photo_url = product.photo_urls[0]
 
+        colors = self._color_choices(product)
+        # A bare link opens the store's default colour. The draft keeps the link
+        # that names that colour, so the post shows what the preview showed.
+        selected = next((item for item in colors if item["selected"]), None)
+        if selected and not link_names_color(processed_url):
+            processed_url = str(selected["url"])
+
         return {
             "processed_url": processed_url,
             "title": product_title,
@@ -392,7 +400,22 @@ class PipelineRunner:
             "header": header,
             "description": part1,
             "photo_url": photo_url,
+            "photo_count": len(getattr(product, "photo_urls", None) or []),
+            "color": product_color or product.color or "",
+            "colors": colors,
         }
+
+    def _color_choices(self, product: RawProduct) -> list[dict[str, Any]]:
+        """The page's colourways for the admin, each with its Russian name and its own link."""
+        choices: list[dict[str, Any]] = []
+        for variant in getattr(product, "color_variants", ()) or ():
+            entry = variant.as_dict()
+            try:
+                entry["name_ru"] = self._resolve_color(variant.name) or variant.name
+            except Exception:
+                entry["name_ru"] = variant.name
+            choices.append(entry)
+        return choices
 
     def publish_manual_url(
         self,

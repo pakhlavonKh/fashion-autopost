@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 import httpx
 
+from core.color_variants import link_names_color
 from core.publish_time import parse_publish_time
 from publishers.telegram_discovery import TelegramChatDiscoveryService
 from publishers.telegram_publisher import DEFAULT_BIO_FOOTER
@@ -59,6 +60,10 @@ class AdminIntakeBot:
         self._thread: threading.Thread | None = None
         self._owns_scheduler = False
         self._fire_lock = threading.Lock()
+        # Hints for the dialogue only. Lost on restart, the bot then simply
+        # shows the stored text with its «use this description» button.
+        self._own_caption: dict[int, bool] = {}
+        self._photo_counts: dict[int, int] = {}
 
     def _instagram_on(self) -> bool:
         """Live flag. The admin panel can turn Instagram back on without a code change."""
@@ -165,6 +170,26 @@ class AdminIntakeBot:
                 ok, msg = False, f"Ошибка при выборе следующего товара: {exc}"
             self._send(chat_id, msg or ("Следующий товар опубликован!" if ok else "Нет доступных товаров."))
 
+        elif data.startswith("color:"):
+            try:
+                _, raw_id, choice = data.split(":", 2)
+                post_id = int(raw_id)
+            except ValueError:
+                return
+            reply = self._choose_color(chat_id, post_id, choice)
+            if reply:
+                self._send(chat_id, reply)
+
+        elif data.startswith("repeat:"):
+            try:
+                _, answer, raw_id = data.split(":", 2)
+                post_id = int(raw_id)
+            except ValueError:
+                return
+            reply = self._answer_repeat(chat_id, post_id, answer == "yes")
+            if reply:
+                self._send(chat_id, reply)
+
         elif data.startswith("desc:auto:"):
             try:
                 post_id = int(data.split(":")[2])
@@ -174,7 +199,11 @@ class AdminIntakeBot:
             if post is None:
                 self._send(chat_id, "Ошибка: черновик не найден.")
                 return
-            self.repo.set_manual_post_status(post_id, "awaiting_time")
+            if len(post.publish_urls()) > 1:
+                # Each colour gets its own sizes and colour line when it is published.
+                self.repo.update_manual_post(post_id, status="awaiting_time", clear_description=True)
+            else:
+                self.repo.set_manual_post_status(post_id, "awaiting_time")
             self._send(
                 chat_id,
                 f"Описание принято!\n"
@@ -274,12 +303,14 @@ class AdminIntakeBot:
             if self._instagram_on():
                 return (
                     "Пришлите ссылку на товар. Можно сразу следом написать свою первую часть описания. "
-                    "Я спрошу время и канал, покажу предпросмотр и запланирую отправку. "
+                    "Если у товара несколько цветов, я покажу их все и спрошу, какой публиковать (или все сразу). "
+                    "Потом спрошу время и канал, покажу предпросмотр и запланирую отправку. "
                     "Контакты добавятся сами."
                 )
             return (
                 "Пришлите ссылку на товар. Можно сразу следом написать свою первую часть описания. "
-                "Я спрошу время, покажу предпросмотр и запланирую отправку в Telegram. "
+                "Если у товара несколько цветов, я покажу их все и спрошу, какой публиковать (или все сразу). "
+                "Потом спрошу время, покажу предпросмотр и запланирую отправку в Telegram. "
                 "Контакты добавятся сами. Instagram сейчас выключен."
             )
         if command == "/cancel":
@@ -302,6 +333,21 @@ class AdminIntakeBot:
         draft = self.repo.get_awaiting_manual(str(user_id))
         if draft is None:
             return "Сначала пришлите ссылку на товар."
+
+        if draft.status == "awaiting_color":
+            choice = _parse_color_choice(text, len(draft.variants))
+            if choice is None:
+                self._send_color_menu(chat_id, draft.id)
+                return ""
+            return self._choose_color(chat_id, draft.id, choice)
+
+        if draft.status == "awaiting_repeat":
+            answer = text.strip().lower()
+            if answer in {"да", "yes", "ок", "ok", "повтор", "повторно"}:
+                return self._answer_repeat(chat_id, draft.id, True)
+            if answer in {"нет", "no"}:
+                return self._answer_repeat(chat_id, draft.id, False)
+            return "Этот товар уже публиковался. Нажмите «Да, опубликовать повторно» или «Нет» выше."
 
         if draft.status == "awaiting_description":
             is_time = False
@@ -346,95 +392,330 @@ class AdminIntakeBot:
         return self._accept_time(user_id, chat_id, text)
 
     def _accept_link(self, user_id: int, chat_id: str, product_url: str, caption: str = "") -> str:
-        from core.dedup import extract_duplicate_signatures
-        from adapters.playwright_url_processor import process_product_url_with_playwright
-
         original_url = product_url
-        try:
-            processed_url, _ = process_product_url_with_playwright(original_url)
-        except Exception as exc:
-            logger.warning("Playwright URL processing fell back to input: %s", exc)
-            processed_url = original_url
+        queued = self._queued_reply(original_url)
+        if queued:
+            return queued
 
-        open_post = self.repo.find_open_manual_by_url(processed_url) or self.repo.find_open_manual_by_url(original_url)
-        if open_post and open_post.status in {"scheduled", "publishing"} and open_post.publish_at:
-            when = self._format_local(open_post.publish_at)
-            return f"Эта ссылка уже стоит в очереди на {when} ({self.timezone_name})."
+        # Reading a store page takes a few seconds; say so at once.
+        self._send(chat_id, "⏳ Открываю страницу товара: смотрю цвета, фото и размеры…")
+        draft_data = self._prepare_draft_data(original_url)
+        processed_url = str(draft_data.get("processed_url") or original_url)
+        if processed_url != original_url:
+            queued = self._queued_reply(processed_url)
+            if queued:
+                return queued
 
-        signatures = extract_duplicate_signatures("", "", processed_url, "") | extract_duplicate_signatures("", "", original_url, "")
-        if signatures & self.repo.get_published_signatures():
-            appr_rec = None
-            if hasattr(self.repo, "create_duplicate_approval"):
-                appr_rec = self.repo.create_duplicate_approval(
-                    external_id=f"manual_{int(datetime.now(timezone.utc).timestamp())}",
-                    title=f"Товар по ссылке {processed_url[:60]}...",
-                    source="manual",
-                    telegram_url=processed_url,
-                )
-            if appr_rec:
-                self._send_duplicate_warning(
-                    chat_id=chat_id,
-                    approval_id=appr_rec.id,
-                    url=processed_url,
-                )
-            return (
-                "⚠️ Этот товар уже публиковался в Telegram-канале!\n"
-                "Выше отправлен запрос с кнопками [Опубликовать повторно] и [Отклонить]."
-            )
-
-        draft_data = None
-        if hasattr(self.runner, "prepare_manual_draft_data"):
-            try:
-                draft_data = self.runner.prepare_manual_draft_data(processed_url)
-            except Exception as exc:
-                logger.warning("prepare_manual_draft_data failed: %s", exc)
-
-        auto_desc = (draft_data.get("description") or "").strip() if draft_data else ""
-        photo_url = draft_data.get("photo_url") if draft_data else None
         own_caption = caption.strip()
-        if own_caption:
-            auto_desc = ""
+        colors = [dict(item) for item in draft_data.get("colors") or [] if item.get("url")]
+        if len(colors) >= 2:
+            for item in colors:
+                if item.get("selected"):
+                    # This colour's page is already read; picking it costs nothing.
+                    item["description"] = (draft_data.get("description") or "").strip()
+                    item["photo_url"] = draft_data.get("photo_url")
+                    item["photo_count"] = draft_data.get("photo_count")
+            draft = self.repo.create_manual_draft(
+                str(user_id),
+                chat_id,
+                processed_url,
+                original_product_url=original_url,
+                custom_description=own_caption or None,
+                photo_url=draft_data.get("photo_url"),
+                variants=colors,
+                status="awaiting_color",
+            )
+            self._send_color_menu(chat_id, draft.id)
+            return ""
 
         draft = self.repo.create_manual_draft(
             str(user_id),
             chat_id,
             processed_url,
             original_product_url=original_url,
-            custom_description=auto_desc if auto_desc else None,
-            photo_url=photo_url,
+            custom_description=own_caption or None,
+            photo_url=draft_data.get("photo_url"),
+            status="awaiting_description",
+        )
+        return self._after_color_chosen(
+            chat_id,
+            draft.id,
+            auto_desc=(draft_data.get("description") or "").strip(),
+            photo_url=draft_data.get("photo_url"),
+            photo_count=draft_data.get("photo_count"),
+            also_check=[original_url],
         )
 
+    def _queued_reply(self, url: str) -> str:
+        open_post = self.repo.find_open_manual_by_url(url)
+        if open_post and open_post.status in {"scheduled", "publishing"} and open_post.publish_at:
+            when = self._format_local(open_post.publish_at)
+            return f"Эта ссылка уже стоит в очереди на {when} ({self.timezone_name})."
+        return ""
+
+    def _prepare_draft_data(self, url: str) -> dict[str, Any]:
+        if not hasattr(self.runner, "prepare_manual_draft_data"):
+            return {}
+        try:
+            return self.runner.prepare_manual_draft_data(url) or {}
+        except Exception as exc:
+            logger.warning("prepare_manual_draft_data failed for %s: %s", url, exc)
+            return {}
+
+    def _is_published(self, *urls: str, published: set[str] | None = None) -> bool:
+        from core.dedup import extract_duplicate_signatures
+
+        signatures: set[str] = set()
+        for url in urls:
+            if url:
+                signatures |= extract_duplicate_signatures("", "", url, "")
+        if published is None:
+            published = self.repo.get_published_signatures()
+        return bool(signatures & published)
+
+    def _color_states(self, post: Any) -> list[dict[str, Any]]:
+        """Each colour of the draft with whether it is in the channel or in the queue already."""
+        states: list[dict[str, Any]] = []
+        bare_link = post.original_product_url or ""
+        published = self.repo.get_published_signatures()
+        for item in post.variants:
+            url = str(item.get("url") or "")
+            # A bare link opened this colour, and older posts were saved under the bare link.
+            extra = bare_link if item.get("selected") and not link_names_color(bare_link) else ""
+            queued = self.repo.find_open_manual_by_url(url)
+            states.append({
+                **item,
+                "published": self._is_published(url, extra, published=published),
+                "queued": bool(queued and queued.status in {"scheduled", "publishing"} and queued.id != post.id),
+            })
+        return states
+
+    def _send_color_menu(self, chat_id: str, post_id: int) -> None:
+        post = self.repo.get_manual_post(post_id)
+        if post is None or not post.variants:
+            self._send(chat_id, "Ошибка: черновик не найден. Пришлите ссылку ещё раз.")
+            return
+        states = self._color_states(post)
+        lines = [f"🎨 <b>У товара {len(states)} {_plural_colors(len(states))}:</b>", ""]
+        buttons: list[list[dict[str, str]]] = []
+        for index, item in enumerate(states):
+            name = _color_label(item)
+            marks: list[str] = []
+            if item.get("selected"):
+                marks.append("по вашей ссылке")
+            if item.get("published"):
+                marks.append("✅ уже публиковался")
+            if item.get("queued"):
+                marks.append("⏳ уже в очереди")
+            suffix = f" — {', '.join(marks)}" if marks else ""
+            lines.append(f"{index + 1}. {html.escape(name)}{suffix}")
+            button = name
+            if item.get("selected"):
+                button = f"👉 {button}"
+            if item.get("published"):
+                button = f"{button} · был"
+            buttons.append([{"text": button[:60], "callback_data": f"color:{post.id}:{index}"}])
+
+        fresh = [item for item in states if not item.get("published")]
+        if len(fresh) == len(states):
+            buttons.append([{"text": f"🎨 Все цвета ({len(states)}) — отдельными постами", "callback_data": f"color:{post.id}:all"}])
+        else:
+            if len(fresh) >= 2:
+                buttons.append([{"text": f"🎨 Все новые цвета ({len(fresh)} из {len(states)})", "callback_data": f"color:{post.id}:all"}])
+            buttons.append([{"text": f"🔁 Все {len(states)}, включая опубликованные", "callback_data": f"color:{post.id}:allrep"}])
+        buttons.append([{"text": "❌ Отмена", "callback_data": f"cancel:{post.id}"}])
+
+        lines += ["", "Какой цвет опубликовать? Можно ответить номером или словом «все»."]
+        if post.photo_url:
+            self._send_photo(chat_id, post.photo_url)
+        self._send(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": buttons})
+
+    def _choose_color(self, chat_id: str, post_id: int, choice: str) -> str:
+        post = self.repo.get_manual_post(post_id)
+        if post is None or not post.variants:
+            return "Ошибка: черновик не найден. Пришлите ссылку ещё раз."
+        if post.status != "awaiting_color":
+            return "Цвет для этого поста уже выбран. Чтобы начать заново, пришлите ссылку ещё раз."
+        states = self._color_states(post)
+
+        if choice in {"all", "allrep"}:
+            repeat = choice == "allrep"
+            chosen = states if repeat else [item for item in states if not item.get("published")]
+            if not chosen:
+                self._send_color_menu(chat_id, post_id)
+                return "Все цвета уже публиковались. Выберите «Все, включая опубликованные» или один цвет."
+            urls = [str(item["url"]) for item in chosen]
+            first = chosen[0]
+            self.repo.update_manual_post(
+                post_id,
+                product_url=urls[0],
+                variant_urls=urls,
+                allow_repeat=repeat,
+                photo_url=first.get("photo_url") or post.photo_url,
+            )
+            names = ", ".join(_color_label(item) for item in chosen)
+            self._send(chat_id, f"Беру {len(chosen)} {_plural_colors(len(chosen))}: {html.escape(names)}.\nКаждый цвет выйдет отдельным постом со своими фото.")
+            return self._offer_description(chat_id, post_id, multi=True)
+
+        try:
+            index = int(choice)
+            item = states[index]
+        except (ValueError, IndexError):
+            return "Не понял выбор цвета. Нажмите кнопку с цветом."
+        url = str(item["url"])
+        self.repo.update_manual_post(post_id, product_url=url, variant_urls=[])
+        auto_desc = (item.get("description") or "").strip()
+        photo_url = item.get("photo_url")
+        photo_count = item.get("photo_count")
+        if not auto_desc and not post.custom_description:
+            self._send(chat_id, f"⏳ Готовлю описание для цвета «{html.escape(_color_label(item))}»…")
+            data = self._prepare_draft_data(url)
+            auto_desc = (data.get("description") or "").strip()
+            photo_url = data.get("photo_url") or photo_url
+            photo_count = data.get("photo_count") or photo_count
+        extra = [post.original_product_url] if item.get("selected") and post.original_product_url else []
+        return self._after_color_chosen(
+            chat_id,
+            post_id,
+            auto_desc=auto_desc,
+            photo_url=photo_url,
+            photo_count=photo_count,
+            also_check=[u for u in extra if not link_names_color(u)],
+            color_name=_color_label(item),
+        )
+
+    def _after_color_chosen(
+        self,
+        chat_id: str,
+        post_id: int,
+        auto_desc: str = "",
+        photo_url: str | None = None,
+        photo_count: int | None = None,
+        also_check: list[str] | None = None,
+        color_name: str = "",
+    ) -> str:
+        """The colour is known: ask about a repeat if it is in the channel, then about the text."""
+        post = self.repo.get_manual_post(post_id)
+        if post is None:
+            return "Ошибка: черновик не найден. Пришлите ссылку ещё раз."
+        own_caption = bool(post.custom_description)
+        changes: dict[str, Any] = {}
+        if photo_url:
+            changes["photo_url"] = photo_url
+        if auto_desc and not own_caption:
+            changes["custom_description"] = auto_desc
+        if changes:
+            self.repo.update_manual_post(post_id, **changes)
+        self._photo_counts[post_id] = photo_count or 0
+        self._own_caption[post_id] = own_caption
+
+        if self._is_published(post.product_url, *(also_check or [])):
+            self.repo.update_manual_post(post_id, status="awaiting_repeat")
+            label = f"цвет «{html.escape(color_name)}»" if color_name else "товар"
+            self._send(
+                chat_id,
+                f"⚠️ Этот {label} уже публиковался в канале.\n"
+                f"<code>{html.escape(post.product_url)}</code>\n\n"
+                "Опубликовать его ещё раз?",
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "✅ Да, опубликовать повторно", "callback_data": f"repeat:yes:{post_id}"}],
+                        [{"text": "🎨 Выбрать другой цвет" if post.variants else "❌ Нет", "callback_data": f"repeat:no:{post_id}"}],
+                    ]
+                },
+            )
+            return "⚠️ Этот товар уже публиковался. Подтвердите повтор кнопкой выше."
+        return self._offer_description(chat_id, post_id)
+
+    def _answer_repeat(self, chat_id: str, post_id: int, approved: bool) -> str:
+        post = self.repo.get_manual_post(post_id)
+        if post is None or post.status != "awaiting_repeat":
+            return "Этот вопрос уже закрыт. Пришлите ссылку ещё раз, если нужно."
+        if approved:
+            self.repo.update_manual_post(post_id, allow_repeat=True)
+            self._send(chat_id, "🔁 Хорошо, публикуем повторно.")
+            return self._offer_description(chat_id, post_id)
+        if post.variants:
+            own = self._own_caption.get(post_id, False)
+            self.repo.update_manual_post(
+                post_id,
+                status="awaiting_color",
+                product_url=str(post.variants[0].get("url") or post.product_url),
+                clear_description=not own,
+            )
+            self._send_color_menu(chat_id, post_id)
+            return ""
+        self.repo.set_manual_post_status(post_id, "cancelled")
+        return "❌ Повтор не публикую. Пришлите другую ссылку, когда будете готовы."
+
+    def _offer_description(self, chat_id: str, post_id: int, multi: bool = False) -> str:
+        post = self.repo.get_manual_post(post_id)
+        if post is None:
+            return "Ошибка: черновик не найден. Пришлите ссылку ещё раз."
+        # Before the colour is settled the draft holds only the admin's own text.
+        # Later it may hold the auto text as well; the dialogue remembers which.
+        own_caption = bool(post.custom_description) if multi else self._own_caption.get(post_id, False)
+        photo_count = self._photo_counts.get(post_id) or 0
+        photo_line = f"📸 Фото на сайте: {photo_count}. В пост пойдут все.\n\n" if photo_count else ""
+
         if own_caption:
-            self.repo.set_manual_post_description(draft.id, own_caption, next_status="awaiting_time")
+            self.repo.update_manual_post(post_id, status="awaiting_time")
+            colour_note = (
+                "Для каждого цвета строка «Цвет: …» подставится своя.\n" if len(post.publish_urls()) > 1 else ""
+            )
             return (
-                "Ссылку и описание принял.\n"
+                f"{photo_line}Ссылку и описание принял.\n{colour_note}"
                 "В какое время выложить пост?\n"
                 "Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
                 f"Часовой пояс: {self.timezone_name}.\n\n"
                 "Контакты и ссылки добавятся автоматически во 2-й части."
             )
 
+        self.repo.update_manual_post(post_id, status="awaiting_description")
+        if len(post.publish_urls()) > 1:
+            sample = next(
+                (str(item.get("description") or "") for item in post.variants if item.get("description")),
+                "",
+            )
+            sample_block = f"Пример для одного цвета:\n\n{html.escape(sample)}\n\n" if sample else ""
+            text = (
+                "📝 <b>Описание (Часть 1)</b> соберу автоматически для каждого цвета: название, цена, размеры и цвет.\n\n"
+                f"{sample_block}"
+                "Нажмите <b>«✅ Использовать автоописание»</b> или отправьте свой текст — он пойдёт во все посты, "
+                "а строка «Цвет: …» подставится своя.\n\n"
+                "<i>(Контакты и ссылки добавятся автоматически во 2-й части)</i>"
+            )
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "✅ Использовать автоописание", "callback_data": f"desc:auto:{post_id}"}],
+                    [{"text": "❌ Отмена", "callback_data": f"cancel:{post_id}"}],
+                ]
+            }
+            self._send(chat_id, text, reply_markup=reply_markup)
+            return ""
+
+        auto_desc = (post.custom_description or "").strip()
         if auto_desc:
             text = (
-                "Ссылку принял и обработал.\n\n"
+                f"{photo_line}Ссылку принял и обработал.\n\n"
                 "📝 <b>Краткое описание товара (Часть 1):</b>\n\n"
-                f"{auto_desc}\n\n"
+                f"{html.escape(auto_desc)}\n\n"
                 "Нажмите <b>«✅ Использовать это описание»</b> или отправьте свой вариант текста в ответном сообщении.\n\n"
                 "<i>(Контакты и ссылки добавятся автоматически во 2-й части)</i>"
             )
             reply_markup = {
                 "inline_keyboard": [
-                    [{"text": "✅ Использовать это описание", "callback_data": f"desc:auto:{draft.id}"}],
-                    [{"text": "❌ Отмена", "callback_data": f"cancel:{draft.id}"}],
+                    [{"text": "✅ Использовать это описание", "callback_data": f"desc:auto:{post_id}"}],
+                    [{"text": "❌ Отмена", "callback_data": f"cancel:{post_id}"}],
                 ]
             }
-            if photo_url:
-                self._send_photo(chat_id, photo_url)
+            if post.photo_url:
+                self._send_photo(chat_id, post.photo_url)
             self._send(chat_id, text, reply_markup=reply_markup)
             return ""
 
         text = (
-            "Ссылку принял. Введите краткое описание товара (Часть 1):\n\n"
+            f"{photo_line}Ссылку принял. Введите краткое описание товара (Часть 1):\n\n"
             "Например:\n"
             "Слингбэки с вышивкой-98$\n"
             "Размеры с 35 по 42.\n"
@@ -444,37 +725,6 @@ class AdminIntakeBot:
         )
         self._send(chat_id, text)
         return ""
-
-    def _send_duplicate_warning(self, chat_id: str, approval_id: int, url: str) -> None:
-        text = (
-            f"⚠️ <b>ВНИМАНИЕ: ПОВТОРНАЯ ПУБЛИКАЦИЯ</b>\n\n"
-            f"Ссылка на товар уже встречалась среди опубликованных постов:\n"
-            f"<code>{url}</code>\n\n"
-            f"Выберите действие:"
-        )
-        reply_markup = {
-            "inline_keyboard": [
-                [
-                    {"text": "✅ Опубликовать повторно", "callback_data": f"dup_approve:{approval_id}"},
-                    {"text": "❌ Отклонить", "callback_data": f"dup_reject:{approval_id}"},
-                ]
-            ]
-        }
-        api_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        try:
-            with httpx.Client(timeout=15.0) as client:
-                client.post(
-                    api_url,
-                    json={
-                        "chat_id": chat_id,
-                        "text": text,
-                        "parse_mode": "HTML",
-                        "reply_markup": reply_markup,
-                        "disable_web_page_preview": True,
-                    },
-                )
-        except Exception as exc:
-            logger.warning("Failed to send duplicate warning inline message: %s", exc)
 
     def _send_prerender(self, chat_id: str, post_id: int) -> None:
         post = self.repo.get_manual_post(post_id)
@@ -496,6 +746,19 @@ class AdminIntakeBot:
 
         part1 = (post.custom_description or "").strip()
         part2 = DEFAULT_BIO_FOOTER.strip()
+        urls = post.publish_urls()
+        colour_line = ""
+        if len(urls) > 1:
+            names = [_color_label(item) for item in post.variants if str(item.get("url")) in urls]
+            colour_line = f"🎨 Цвета: <b>{html.escape(', '.join(names))}</b> — {len(urls)} отдельных поста\n"
+            if not part1:
+                part1 = "(описание соберётся автоматически для каждого цвета)"
+        elif post.variants:
+            chosen = next((item for item in post.variants if str(item.get("url")) == post.product_url), None)
+            if chosen:
+                colour_line = f"🎨 Цвет: <b>{html.escape(_color_label(chosen))}</b>\n"
+        if post.allow_repeat:
+            colour_line += "🔁 Повторная публикация\n"
 
         part1_esc = html.escape(part1)
         part2_esc = html.escape(part2)
@@ -507,7 +770,8 @@ class AdminIntakeBot:
         text = (
             f"🔍 <b>Предпросмотр поста перед публикацией</b>\n\n"
             f"📍 Канал: <b>{dest_esc}</b>\n"
-            f"⏰ Время: <b>{time_esc}</b> ({self.timezone_name})\n\n"
+            f"⏰ Время: <b>{time_esc}</b> ({self.timezone_name})\n"
+            f"{colour_line}\n"
             f"👇 <b>Текст поста:</b>\n"
             f"----------------------------------------\n"
             f"{preview_caption}\n"
@@ -678,28 +942,51 @@ class AdminIntakeBot:
             if post is None or post.status != "scheduled":
                 return
             self.repo.set_manual_post_status(post_id, "publishing")
-            product_url = post.product_url
             chat_id = post.chat_id
             target_channel = getattr(post, "target_channel", "both") or "both"
             custom_desc = getattr(post, "custom_description", None)
 
         publishers_filter = None if target_channel in ("both", "all") else target_channel
-        try:
-            ok, message = self.runner.publish_manual_url(
-                product_url,
-                on_platform=lambda platform, success, detail: self._send(
-                    chat_id,
-                    _platform_notice(platform, success, detail),
-                ),
-                publishers_filter=publishers_filter,
-                custom_description=custom_desc,
-            )
-        except Exception as exc:
-            logger.error("Scheduled manual post %s failed: %s", post_id, exc, exc_info=True)
-            ok, message = False, f"Не удалось опубликовать: {exc}"
-        self.repo.set_manual_post_status(post_id, "published" if ok else "failed", None if ok else message)
-        if message:
-            self._send(chat_id, message)
+        urls = post.publish_urls()
+        names = {str(item.get("url")): _color_label(item) for item in post.variants}
+        failures: list[str] = []
+        for url in urls:
+            color = names.get(url, "") if len(urls) > 1 else ""
+            prefix = f"🎨 {color}: " if color else ""
+            description = custom_desc
+            if len(urls) > 1:
+                if custom_desc:
+                    russian = next((str(item.get("name_ru") or "") for item in post.variants if str(item.get("url")) == url), "")
+                    description = swap_color_line(custom_desc, russian or color)
+                else:
+                    # The same text the single-colour preview offers, read from this colour's page.
+                    description = (self._prepare_draft_data(url).get("description") or "").strip() or None
+            try:
+                ok, message = self.runner.publish_manual_url(
+                    url,
+                    on_platform=lambda platform, success, detail, prefix=prefix: self._send(
+                        chat_id,
+                        prefix + _platform_notice(platform, success, detail),
+                    ),
+                    publishers_filter=publishers_filter,
+                    custom_description=description,
+                    bypass_duplicate_gate=bool(post.allow_repeat),
+                )
+            except Exception as exc:
+                logger.error("Scheduled manual post %s (%s) failed: %s", post_id, url, exc, exc_info=True)
+                ok, message = False, f"Не удалось опубликовать: {exc}"
+            if not ok:
+                failures.append(f"{color or url}: {message}" if message else (color or url))
+            if message:
+                self._send(chat_id, prefix + message)
+
+        if failures:
+            self.repo.set_manual_post_status(post_id, "failed", "; ".join(failures)[:2000])
+        else:
+            self.repo.set_manual_post_status(post_id, "published")
+        if len(urls) > 1:
+            done = len(urls) - len(failures)
+            self._send(chat_id, f"Готово: опубликовано {done} из {len(urls)} цветов.")
 
     def _format_local(self, when: datetime) -> str:
         try:
@@ -848,3 +1135,38 @@ def _command_name(text: str) -> str | None:
         return None
     first = stripped.split()[0].lower()
     return first.split("@", 1)[0]
+
+
+_COLOR_LINE = re.compile(r"^\s*цвет\s*:.*$", re.IGNORECASE | re.MULTILINE)
+
+
+def swap_color_line(text: str, color: str) -> str:
+    """The admin's text for one colour of many: its «Цвет:» line names that colour."""
+    if not color:
+        return text
+    line = f"Цвет: {color.strip().rstrip('.')}."
+    if _COLOR_LINE.search(text):
+        return _COLOR_LINE.sub(line, text, count=1)
+    return f"{text.rstrip()}\n{line}"
+
+
+def _color_label(item: dict[str, Any]) -> str:
+    name = str(item.get("name_ru") or item.get("name") or "").strip()
+    return name[:1].upper() + name[1:] if name else "Без названия"
+
+
+def _plural_colors(count: int) -> str:
+    if count % 10 == 1 and count % 100 != 11:
+        return "цвет"
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return "цвета"
+    return "цветов"
+
+
+def _parse_color_choice(text: str, count: int) -> str | None:
+    answer = (text or "").strip().lower()
+    if answer in {"все", "всё", "all", "все цвета", "всё цвета"}:
+        return "all"
+    if answer.isdigit() and 1 <= int(answer) <= count:
+        return str(int(answer) - 1)
+    return None
