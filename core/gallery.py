@@ -177,14 +177,17 @@ def keep_single_product(urls: list[str], page_url: str = "", anchor_url: str = "
     # For non-Mango stores: filter by anchor photo stem if provided
     if anchor_url:
         anchor_name = canonical_photo_key(anchor_url).lower()
-        anchor_tokens = [t for t in re.split(r"[-_0-9]+", anchor_name) if len(t) >= 4]
-        if anchor_tokens:
-            same_anchor = [
-                u for u in cleaned_urls
-                if any(tok in canonical_photo_key(u).lower() for tok in anchor_tokens)
-            ]
-            if same_anchor and len(same_anchor) < len(cleaned_urls):
-                return same_anchor
+        # Opaque hashes (e.g. 24+ hex digits, or image.hm.com) do not contain model-name word tokens
+        is_hash = bool(re.fullmatch(r"[0-9a-f]{24,}", anchor_name)) or "image.hm.com" in anchor_url
+        if not is_hash:
+            anchor_tokens = [t for t in re.split(r"[-_0-9]+", anchor_name) if len(t) >= 4]
+            if anchor_tokens:
+                same_anchor = [
+                    u for u in cleaned_urls
+                    if any(tok in canonical_photo_key(u).lower() for tok in anchor_tokens)
+                ]
+                if same_anchor and len(same_anchor) < len(cleaned_urls):
+                    return same_anchor
 
     # Filter by page URL product slug (e.g. /products/schedule-mocha -> 'schedule', 'mocha')
     if page_url:
@@ -352,7 +355,7 @@ def ordered_photos(
             inditex_found = _inditex_urls(html_text)
             urls.extend(inditex_found)
         elif "hm" in brand_lower or "hm.com" in page:
-            hm_found = _hm_urls(html_text)
+            hm_found = _hm_urls(html_text, page)
             urls.extend(hm_found)
         elif "cdn/shop" in html_text or "shopify" in html_text or "linzi" in brand_lower:
             shopify_found = _shopify_urls(html_text, page)
@@ -563,9 +566,77 @@ def _inditex_urls(html_text: str) -> list[str]:
     return urls
 
 
-def _hm_urls(html_text: str) -> list[str]:
-    found = re.findall(r"https://image\.hm\.com/assets/hm/[^\s\"'<>]+", html_text)
+def _hm_urls(html_text: str, page_url: str = "") -> list[str]:
+    """Extract product gallery photos for H&M without recommendations/related items."""
     urls: list[str] = []
+    if not html_text:
+        return urls
+
+    # 1. Try extracting from productArticleDetails embedded JSON (exact current color/article)
+    article = ""
+    if page_url:
+        m = re.search(r"productpage\.(\d{6,})", page_url, re.IGNORECASE)
+        if m:
+            article = m.group(1)
+
+    marker = '"productArticleDetails":'
+    start = html_text.find(marker)
+    if start >= 0:
+        try:
+            from adapters.product_page import _extract_json_object_after
+
+            details = _extract_json_object_after(html_text, marker)
+            if isinstance(details, dict):
+                variations = details.get("variations") or {}
+                current = variations.get(article)
+                if not isinstance(current, dict) and variations:
+                    for k, v in variations.items():
+                        if article and article in str(k) and isinstance(v, dict) and v.get("images"):
+                            current = v
+                            break
+                    if not isinstance(current, dict):
+                        current = next((v for v in variations.values() if isinstance(v, dict) and v.get("images")), None)
+                if isinstance(current, dict):
+                    for item in current.get("images") or []:
+                        if not isinstance(item, dict):
+                            continue
+                        if "swatch" in str(item.get("assetType", "")).lower():
+                            continue
+                        raw = str(item.get("baseUrl") or item.get("image") or "")
+                        if raw:
+                            if raw.startswith("//"):
+                                raw = "https:" + raw
+                            cleaned = raw.split("?")[0].rstrip(".,;\"'")
+                            if cleaned.lower().endswith((".jpg", ".jpeg", ".webp", ".png")) and cleaned not in urls:
+                                urls.append(cleaned)
+                    if urls:
+                        return urls
+        except Exception:
+            pass
+
+    # 2. Extract from primary product media containers in the DOM
+    for match in re.finditer(
+        r'<[a-z0-9-]+[^>]+(?:class|data-testid)=[\'"][^\'"]*(?:product__gallery|product-detail-images|product-gallery)[^\'"]*[\'"][^>]*>[\s\S]*?</[a-z0-9-]+>',
+        html_text,
+        flags=re.IGNORECASE,
+    ):
+        container_html = match.group(0)
+        for img_url in re.findall(r"https://image\.hm\.com/assets/hm/[^\s\"'<>]+", container_html):
+            if "swatch" in img_url.lower():
+                continue
+            cleaned = img_url.split("?")[0].rstrip(".,;\"'")
+            if cleaned.lower().endswith((".jpg", ".jpeg", ".webp", ".png")) and cleaned not in urls:
+                urls.append(cleaned)
+        if urls:
+            return urls
+
+    # 3. Strip recommendation containers before global regex fallback
+    exclude_hm = re.compile(
+        r'<(?:section|div|aside|nav|footer)[^>]+(?:class|id|data-testid)=[\'"][^\'"]*(?:recommend|related|styled|complete-the-look|looks|also-like|you-may|similar|carousel|slider)[^\'"]*[\'"][^>]*>[\s\S]*?</(?:section|div|aside|nav|footer)>',
+        re.IGNORECASE,
+    )
+    clean_html = exclude_hm.sub("", html_text)
+    found = re.findall(r"https://image\.hm\.com/assets/hm/[^\s\"'<>]+", clean_html)
     for url in found:
         if "swatch" in url.lower():
             continue
@@ -615,7 +686,7 @@ def _shopify_urls(html_text: str, page_url: str = "") -> list[str]:
 
 
 _EXCLUDE_CONTAINERS_RE = re.compile(
-    r'<(?:section|div|aside|nav|header|footer)[^>]+(?:class|id)=[\'"][^\'"]*(?:predictive-search|recommend|related|upsell|cross-sell|also-like|you-may|recently-viewed|collection-slider|cart-drawer)[^\'"]*[\'"][^>]*>[\s\S]*?</(?:section|div|aside|nav|header|footer)>',
+    r'<(?:section|div|aside|nav|header|footer)[^>]+(?:class|id)=[\'"][^\'"]*(?:predictive-search|recommend|related|upsell|cross-sell|also-like|you-may|recently-viewed|collection-slider|cart-drawer|styled|complete-the-look|looks|similar)[^\'"]*[\'"][^>]*>[\s\S]*?</(?:section|div|aside|nav|header|footer)>',
     re.IGNORECASE,
 )
 

@@ -319,3 +319,44 @@ def test_zara_color_code_on_the_page_wins_over_list_order() -> None:
     ordered = ordered_photos(html, "zara", page)
     assert all("04174878632-" in url for url in ordered)
 
+
+def test_hm_gallery_extracts_only_own_product_and_drops_recommendations() -> None:
+    html = """
+    <html><body>
+    <script>{"productArticleDetails":{"articleCode":"1309848015","productName":"Barrel Jeans","variations":{
+      "1309848015":{"name":"Gris denim","images":[
+        {"baseUrl":"https://image.hm.com/assets/hm/ea/97/ea977824fd12.jpg","assetType":"LOOKBOOK"},
+        {"baseUrl":"https://image.hm.com/assets/hm/cc/86/cc864540e495.jpg","assetType":"LOOKBOOK"},
+        {"baseUrl":"https://image.hm.com/assets/hm/sw/at/swatch12345.jpg","assetType":"SWATCH"}
+      ]}
+    }}}</script>
+    <section class="complete-the-look">
+      <img src="https://image.hm.com/assets/hm/a1/5a/a15ad3b73e39_yellow_top.jpg" />
+      <img src="https://image.hm.com/assets/hm/a2/42/a2422d953406_red_pants.jpg" />
+    </section>
+    </body></html>
+    """
+    page = "https://www2.hm.com/es_es/productpage.1309848015.html"
+    photos = ordered_photos(html, brand="hm", page_url=page)
+    assert len(photos) == 2
+    assert "https://image.hm.com/assets/hm/ea/97/ea977824fd12.jpg" in photos
+    assert "https://image.hm.com/assets/hm/cc/86/cc864540e495.jpg" in photos
+    assert not any("yellow_top" in p for p in photos)
+    assert not any("red_pants" in p for p in photos)
+    assert not any("swatch" in p for p in photos)
+
+
+def test_hm_opaque_hex_hashes_not_collapsed_to_single_photo() -> None:
+    from core.gallery import keep_single_product
+
+    # Anchor URL has letters that form a 4-letter sequence (e.g. 'fade')
+    anchor = "https://image.hm.com/assets/hm/3d/0e/3d0ebe16551b8c2c8f654fadeb7410eb7f33db3d.jpg"
+    urls = [
+        anchor,
+        "https://image.hm.com/assets/hm/91/ab/91ab20df206584c679a9f24faea906666ba47726.jpg",
+        "https://image.hm.com/assets/hm/55/cc/55cc99887766554433221100aabbccddeeff0011.jpg",
+    ]
+    kept = keep_single_product(urls, page_url="https://www2.hm.com/es_es/productpage.1369399001.html", anchor_url=anchor)
+    assert len(kept) == 3
+
+

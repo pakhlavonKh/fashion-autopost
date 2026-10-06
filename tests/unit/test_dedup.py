@@ -210,3 +210,42 @@ def test_same_colour_is_still_a_duplicate_including_zara_v1() -> None:
         "zara", "zara-02756113-111", red_clean, ""
     )
 
+
+def test_hm_productpage_sku_extracted_and_deduplicated(fake_repo: FakeProductRepository) -> None:
+    from core.dedup import extract_skus, extract_duplicate_signatures
+
+    url = "https://www2.hm.com/es_es/productpage.1309848015.html"
+    skus = extract_skus(url, "hm-3f99b760b7")
+    assert "1309848015" in skus
+
+    sigs = extract_duplicate_signatures("hm", "hm-3f99b760b7", url, "Джинсы")
+    assert "sku:hm:1309848015" in sigs
+
+    # Simulate previously published product in database
+    p_published = RawProduct(
+        external_id="hm-3f99b760b7",
+        source="hm",
+        title="Джинсы баррел",
+        price=Decimal("70.00"),
+        currency="USD",
+        photo_url="https://image.hm.com/1.jpg",
+        product_url=url,
+        in_stock=True,
+    )
+    fake_repo.upsert_new(p_published)
+    fake_repo.mark_published("hm-3f99b760b7", "tg-100", None)
+
+    # Next day candidate with different hash or tracking query params
+    candidate_next_day = RawProduct(
+        external_id="hm-999different",
+        source="hm",
+        title="Джинсы-баррел с высокой талией",
+        price=Decimal("70.00"),
+        currency="USD",
+        photo_url="https://image.hm.com/2.jpg",
+        product_url="https://www2.hm.com/es_es/productpage.1309848015.html?utm_campaign=october",
+        in_stock=True,
+    )
+    unseen = filter_unseen([candidate_next_day], fake_repo)
+    assert len(unseen) == 0, "H&M candidate with matching 10-digit productpage SKU must be discarded!"
+

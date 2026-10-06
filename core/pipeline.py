@@ -675,6 +675,15 @@ class PipelineRunner:
             logger.warning("Channel similarity ranking skipped due to error: %s", exc)
             ranked_candidates = unseen_products
 
+        # 5. Persist newly discovered products in status 'new'
+        product_map: dict[str, RawProduct] = {}
+        for p in ranked_candidates:
+            product_map[p.external_id] = p
+            try:
+                self.repo.upsert_new(p)
+            except Exception as exc:
+                logger.warning("Failed to upsert new product %s: %s", p.external_id, exc)
+
         # Feature 9: Check if outfit mode is enabled to publish 2-3 consecutive posts as a coordinated look
         outfit_mode = False
         if hasattr(self.repo, "get_system_setting"):
@@ -705,15 +714,6 @@ class PipelineRunner:
                     except SiteFactsUnavailable as exc:
                         self._shelve_without_site_facts(exc)
                 return summary
-
-        # 5. Persist newly discovered products in status 'new'
-        product_map: dict[str, RawProduct] = {}
-        for p in ranked_candidates:
-            product_map[p.external_id] = p
-            try:
-                self.repo.upsert_new(p)
-            except Exception as exc:
-                logger.warning("Failed to upsert new product %s: %s", p.external_id, exc)
 
         # 6. GPT selection and description generation (FR-2)
         prompt_text = self.prompt_loader.load_prompt()
@@ -994,6 +994,10 @@ class PipelineRunner:
     ) -> bool:
         """Process price calculation, moderation, composition, and publishing for one item."""
         external_id = product.external_id
+        try:
+            self.repo.upsert_new(product)
+        except Exception as exc:
+            logger.debug("Could not pre-upsert product %s: %s", external_id, exc)
         product = attach_site_facts(product)
         product_title = self._russian_title(product, title_override)
         # Resolved even when the admin wrote part 1 herself: the composed record

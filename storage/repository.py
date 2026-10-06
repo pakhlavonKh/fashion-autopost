@@ -451,6 +451,19 @@ class SqlAlchemyProductRepository:
                 select(ProductRecord).where(ProductRecord.external_id == external_id)
             )
             if record is None:
+                record = ProductRecord(
+                    external_id=external_id,
+                    source=external_id.split("-")[0] if "-" in external_id else "",
+                    title=external_id,
+                    price_original=Decimal("0"),
+                    currency_original="EUR",
+                    status="published",
+                    telegram_post_id=telegram_id,
+                    instagram_post_id=instagram_id,
+                    published_at=datetime.now(timezone.utc),
+                )
+                session.add(record)
+                session.commit()
                 return
             if telegram_id:
                 record.telegram_post_id = telegram_id

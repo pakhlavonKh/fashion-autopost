@@ -87,8 +87,13 @@ def extract_skus(url: str | None, external_id: str | None = None) -> set[str]:
         if m2:
             skus.add(m2.group(1))
 
-        # Pattern 3: Any generic 6-10 digits in URL path
-        m3 = re.search(r"[-_/](\d{6,10})", url)
+        # Pattern 3: H&M style (productpage.1309848015.html)
+        m_hm = re.search(r"productpage\.(\d{6,10})", url)
+        if m_hm:
+            skus.add(m_hm.group(1))
+
+        # Pattern 4: Any generic 6-10 digits in URL path
+        m3 = re.search(r"[-_/\.](\d{6,10})", url)
         if m3:
             skus.add(m3.group(1))
 
