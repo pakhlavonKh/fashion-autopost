@@ -279,7 +279,21 @@ def main() -> None:
         help="Disable background APScheduler publisher when running dashboard",
     )
 
+    parser.add_argument(
+        "--inspect-url",
+        dest="inspect_url",
+        metavar="URL",
+        help="Show what the bot reads from one product link (colours, sizes, photos) and exit",
+    )
+
     args = parser.parse_args()
+
+    if args.inspect_url:
+        from core.diagnostics import inspect_product_url
+
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+        print(inspect_product_url(args.inspect_url))
+        sys.exit(0)
 
     # Load configuration
     try:
