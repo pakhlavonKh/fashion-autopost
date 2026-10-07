@@ -935,17 +935,25 @@ _DOM_SIZE_INPUT_ALT = re.compile(
 )
 
 
+# A page script's own markup template (${s}, {{ size }}) is not a size.
+_TEMPLATE_PLACEHOLDER = re.compile(r"\$\{|\{\{")
+
+
 def _sizes_from_dom(html_text: str) -> tuple[str, ...]:
     labels: list[str] = []
     for match in _DOM_SIZE.finditer(html_text):
         attrs = match.group(1).lower()
         if not any(token in attrs for token in ("size", "talla", "taille", "taglia", "größe", "grosse", "rozmiar")):
             continue
+        if _TEMPLATE_PLACEHOLDER.search(match.group(2)):
+            continue
         label = clean_size(match.group(2))
         if label and label not in labels:
             labels.append(label)
     for pattern in (_DOM_SIZE_INPUT, _DOM_SIZE_INPUT_ALT):
         for match in pattern.finditer(html_text):
+            if _TEMPLATE_PLACEHOLDER.search(match.group(1)):
+                continue
             label = clean_size(match.group(1))
             if label and label not in labels:
                 labels.append(label)
