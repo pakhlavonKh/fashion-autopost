@@ -82,7 +82,14 @@ def test_pale_product_still_life_is_not_dropped_as_a_swatch() -> None:
         folder = Path(tmp)
         still = folder / "still.jpg"
         flat = folder / "flat.jpg"
-        Image.new("RGB", (733, 1024), (236, 234, 230)).save(still)
+        # A pale garment on a pale backdrop: low contrast, but a product is there.
+        pale = Image.new("RGB", (733, 1024), (236, 234, 230))
+        ImageDraw.Draw(pale).polygon(
+            [(250, 150), (480, 150), (560, 400), (520, 900), (210, 900), (170, 400)],
+            fill=(228, 225, 220),
+            outline=(205, 200, 194),
+        )
+        pale.save(still)
         Image.new("RGB", (733, 1024), (150, 140, 130)).save(flat)
         urls = {
             "https://media.mango.com/is/image/punto/37007813-05-900": still,

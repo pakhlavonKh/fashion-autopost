@@ -15,6 +15,19 @@ from decimal import Decimal
 from publishers.telegram_publisher import TelegramPublisher
 
 
+def _photo_bytes() -> bytes:
+    """A real JPEG: the downloader keeps only content that decodes as a picture."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (300, 400), (240, 240, 240))
+    ImageDraw.Draw(image).rectangle((80, 100, 220, 320), fill=(40, 40, 40))
+    buffer = io.BytesIO()
+    image.save(buffer, "JPEG", quality=90)
+    return buffer.getvalue()
+
+
 def test_telegram_jpeg_keeps_the_original_frame() -> None:
     """Telegram must not cover-crop a tall store photo into a 4:5 frame."""
     from PIL import Image
@@ -50,7 +63,7 @@ def test_image_downloader_http_success() -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         downloader = ImageDownloader(dest_dir=tmp_dir)
 
-        fake_bytes = b"fake-jpeg-image-bytes-1234567890" * 20
+        fake_bytes = _photo_bytes()
 
         with patch("httpx.Client") as mock_client_cls:
             mock_client = MagicMock()
@@ -101,7 +114,7 @@ def test_high_resolution_image_url_rewrites_store_thumbnails() -> None:
 def test_downloader_falls_back_when_high_resolution_url_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         downloader = ImageDownloader(dest_dir=tmp_dir)
-        fake_bytes = b"fake-jpeg-image-bytes-1234567890" * 20
+        fake_bytes = _photo_bytes()
         source = "https://static.zara.net/photos/2/w/750/coat.jpg"
 
         with patch("httpx.Client") as mock_client_cls:

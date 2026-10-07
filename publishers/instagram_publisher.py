@@ -21,7 +21,7 @@ import httpx
 from config.app_config import DEFAULT_INSTAGRAM_CAPTION_FOOTER
 from core.composer import ComposedPost
 from core.pricing import whole_price
-from core.image_downloader import ImageDownloader, unique_images
+from core.image_downloader import ImageDownloader, is_blank_image, unique_images
 from core.product_facts import is_footwear
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
@@ -356,15 +356,20 @@ class InstagramPublisher:
         return originals, prepared
 
     def _resolve_local_image(self, source: str, title: str, index: int) -> Path | None:
+        found: Path | None = None
         local = Path(source)
         if local.is_file():
-            return local
-        if source.startswith("http://") or source.startswith("https://"):
+            found = local
+        elif source.startswith("http://") or source.startswith("https://"):
             downloaded = self.downloader.download(source, external_id=f"{title[:15]}_{index}")
             if downloaded and downloaded.is_file():
-                return downloaded
-        logger.warning("Instagram could not read image: %s", source)
-        return None
+                found = downloaded
+        if found is not None and is_blank_image(found):
+            logger.warning("Instagram skips an empty picture: %s", source)
+            return None
+        if found is None:
+            logger.warning("Instagram could not read image: %s", source)
+        return found
 
     def _create_story_container(self, image_url: str) -> str:
         return self._create_container({

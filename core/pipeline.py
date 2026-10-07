@@ -64,6 +64,24 @@ class SiteFactsUnavailable(Exception):
         self.product_url = product_url
 
 
+class PhotosUnavailable(SiteFactsUnavailable):
+    """Every picture the store served for this product was empty.
+
+    Raised before anything is published: a post of blank squares is worse than
+    no post. Handled like a page without a size grid (the cycle moves on).
+    """
+
+    def __init__(self, external_id: str, product_url: str | None, blank: int) -> None:
+        Exception.__init__(
+            self,
+            f"{external_id}: the store served {blank} empty pictures instead of product photos "
+            f"({product_url or 'no product URL'})",
+        )
+        self.external_id = external_id
+        self.product_url = product_url
+        self.blank = blank
+
+
 class AlreadyPublished(Exception):
     """The channel has carried this product before.
 
@@ -561,6 +579,12 @@ class PipelineRunner:
                 bypass_duplicate_gate=bypass_duplicate_gate,
                 custom_description=custom_description,
             )
+        except PhotosUnavailable as exc:
+            logger.warning("Manual publish held back, %s", exc)
+            return False, (
+                f"Магазин отдал пустые картинки вместо фото товара ({exc.blank} шт.), "
+                "поэтому пост не опубликован. Попробуйте ссылку ещё раз чуть позже."
+            )
         except SiteFactsUnavailable as exc:
             logger.warning("Manual publish held back, %s", exc)
             return False, (
@@ -941,7 +965,8 @@ class PipelineRunner:
     def _shelve_without_site_facts(self, exc: SiteFactsUnavailable) -> None:
         """Take a product the store would not describe out of the publishing queue."""
         logger.warning("Not publishing %s", exc)
-        summary_msg = f"Skipped, the store page gave no size grid: {exc.product_url or ''}".strip()
+        reason = "the store served empty photos" if isinstance(exc, PhotosUnavailable) else "the store page gave no size grid"
+        summary_msg = f"Skipped, {reason}: {exc.product_url or ''}".strip()
         try:
             self.repo.mark_failed(exc.external_id, summary_msg)
         except Exception as mark_exc:
@@ -1093,6 +1118,10 @@ class PipelineRunner:
             downloaded_paths = self.image_downloader.download_all(photo_urls, external_id=external_id)
         except Exception as exc:
             logger.warning("Failed to download gallery photos for %s: %s", external_id, exc)
+        blank = list(getattr(self.image_downloader, "last_blank", None) or [])
+        if not downloaded_paths and blank:
+            # Falling back to the remote links would post the same empty pictures.
+            raise PhotosUnavailable(external_id, product.product_url, len(blank))
 
         photo_to_use = str(downloaded_paths[0]) if downloaded_paths else product.photo_url
         downloaded_strings = [str(p) for p in downloaded_paths] if downloaded_paths else photo_urls

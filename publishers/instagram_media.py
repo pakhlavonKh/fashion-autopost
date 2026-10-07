@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import logging
 from pathlib import Path
+from core.image_downloader import flatten_to_rgb
 
 logger = logging.getLogger(__name__)
 
@@ -108,10 +109,10 @@ def _open_rgb(image):
 
     image = ImageOps.exif_transpose(image)
     profile = image.info.get("icc_profile")
-    if image.mode not in ("RGB", "RGBA"):
-        image = image.convert("RGB")
+    # A cut-out keeps its transparency until here; lay it on the light grey backdrop.
+    image = flatten_to_rgb(image)
     if not profile:
-        return image.convert("RGB")
+        return image
     try:
         from PIL import ImageCms
 

@@ -13,7 +13,7 @@ import httpx
 
 from core.composer import ComposedPost
 from core.pricing import whole_price
-from core.image_downloader import ImageDownloader, prepare_original_jpeg, unique_images
+from core.image_downloader import ImageDownloader, is_blank_image, prepare_original_jpeg, unique_images
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
 
@@ -102,19 +102,26 @@ class TelegramPublisher:
             candidate_urls = [post.photo_url]
 
         downloaded_paths: list[str] = []
+        empty_pictures = 0
         for i, u in enumerate(candidate_urls):
             local_cand = Path(u)
-            if local_cand.is_file():
-                downloaded_paths.append(str(local_cand))
-                continue
             try:
-                downloaded = self.downloader.download(u, external_id=f"{post.title[:15]}_{i}")
-                if downloaded and downloaded.is_file():
-                    downloaded_paths.append(str(downloaded))
+                downloaded = local_cand if local_cand.is_file() else self.downloader.download(
+                    u, external_id=f"{post.title[:15]}_{i}"
+                )
             except Exception as exc:
                 logger.debug("Could not pre-download photo '%s' for Telegram: %s", u, exc)
+                continue
+            if not downloaded or not downloaded.is_file():
+                continue
+            if is_blank_image(downloaded):
+                logger.warning("Not posting an empty picture to Telegram: %s", u)
+                empty_pictures += 1
+                continue
+            downloaded_paths.append(str(downloaded))
 
-        if not downloaded_paths and post.photo_url:
+        # Telegram may fetch a link we could not download; never one that came back empty.
+        if not downloaded_paths and post.photo_url and not empty_pictures:
             downloaded_paths = [post.photo_url]
         downloaded_paths = self._uniform_slides(downloaded_paths)
 

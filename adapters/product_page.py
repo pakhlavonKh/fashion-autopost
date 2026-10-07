@@ -22,7 +22,8 @@ import httpx
 from adapters.base import RawProduct
 from adapters.scrapers.base import generate_deterministic_id, parse_price
 from core.color_variants import extract_color_variants
-from core.gallery import MAX_PRODUCT_PHOTOS, ordered_photos, page_gallery_is_authoritative
+from core.gallery import MAX_PRODUCT_PHOTOS, _inditex_urls, ordered_photos, page_gallery_is_authoritative
+from core.store_platforms import inditex_brand, is_inditex
 from core.product_facts import extract_heel_height, extract_site_facts, is_heeled_footwear
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,14 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
     external_id = generate_deterministic_id(brand, raw_id=chosen.raw_id or None, url=url)
     title = " ".join(chosen.title.split("|")[0].split())
     color, sizes = extract_site_facts(html_text, url)
+    variants = tuple(extract_color_variants(html_text, url, current_color=color))
+    selected = next((item for item in variants if item.selected), None)
+    if selected is not None and (color or "").strip().casefold() != selected.name.strip().casefold():
+        # The page's first colour is not the one in the link: take that colour's own name and sizes.
+        _first, own_sizes = extract_site_facts(html_text, url, prefer=(selected.code, selected.name))
+        if not selected.name.startswith("Цвет "):
+            color = selected.name
+        sizes = own_sizes or sizes
     heel = extract_heel_height(html_text, title) if is_heeled_footwear(title, url) else None
     return RawProduct(
         external_id=external_id,
@@ -147,7 +156,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
         color=color,
         sizes=sizes,
         photos_verified=page_gallery_is_authoritative(html_text, brand, url),
-        color_variants=tuple(extract_color_variants(html_text, url, current_color=color)),
+        color_variants=variants,
     )
 
 
@@ -825,9 +834,8 @@ def _brand_image_urls(html_text: str, brand: str, url: str) -> list[str]:
                 base += ".jpg"
             found.append(base)
 
-    if any(k in brand_lower or k in url_lower for k in ("stradivarius", "massimodutti", "bershka", "pullandbear", "oysho")):
-        pattern = r"https://static\.(?:stradivarius|massimodutti|bershka|pullandbear|oysho)\.net/(?:photos|assets|public)/[^\s\"'<>]+"
-        found.extend(re.findall(pattern, html_text))
+    if is_inditex(brand_lower) or (inditex_brand(url) and inditex_brand(url) != "zara"):
+        found.extend(_inditex_urls(html_text))
 
     if "hm" in brand_lower or "hm.com" in url_lower:
         found.extend(re.findall(r"https://image\.hm\.com/assets/hm/[^\s\"'<>]+", html_text))

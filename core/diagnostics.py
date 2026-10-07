@@ -3,8 +3,10 @@
     python main.py --inspect-url "https://shop.mango.com/.../37066365/75/00"
 
 prints the title, price, colour, sizes, every colourway with its link and the
-photos that would be posted, and saves the page under data/diag_pages/ so the
-exact HTML the store served can be looked at later.
+photos that would be posted, downloads each photo in every form the bot may
+try and says what came back (a picture, an empty picture, an error), and saves
+the page under data/diag_pages/ so the exact HTML the store served can be
+looked at later.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import re
+import tempfile
 from urllib.parse import urlsplit
 
 DIAG_DIR = Path("data/diag_pages")
@@ -65,6 +68,7 @@ def inspect_product_url(url: str, save_dir: Path = DIAG_DIR) -> str:
         variants = list(product.color_variants)
         lines.append(f"Фото для поста: {len(product.photo_urls)}")
         lines.extend(f"  {index + 1}. {photo}" for index, photo in enumerate(product.photo_urls))
+        lines.extend(probe_photos(product.photo_urls))
 
     if variants:
         lines.append(f"Цветов: {len(variants)}")
@@ -74,3 +78,55 @@ def inspect_product_url(url: str, save_dir: Path = DIAG_DIR) -> str:
     else:
         lines.append("Выбора цвета на странице не найдено.")
     return "\n".join(lines)
+
+
+def probe_photos(photo_urls: list[str], limit: int = 30) -> list[str]:
+    """What the store sends for each photo link, in each form the downloader tries."""
+    import io
+
+    import httpx
+    from PIL import Image
+
+    from core.image_downloader import BROWSER_HEADERS, download_candidates, is_blank_image
+
+    lines = ["Проверка фото (как их скачает бот):"]
+    usable = 0
+    with httpx.Client(timeout=20.0, follow_redirects=True, headers=BROWSER_HEADERS) as client:
+        for index, url in enumerate(photo_urls[:limit], start=1):
+            verdicts: list[str] = []
+            good = False
+            for candidate in download_candidates(url):
+                if candidate == url:
+                    label = "как на странице"
+                elif candidate == url.split("?")[0]:
+                    label = "без параметров"
+                else:
+                    label = "крупная"
+                try:
+                    response = client.get(candidate)
+                except Exception as exc:
+                    verdicts.append(f"{label}: ошибка {type(exc).__name__}")
+                    continue
+                kind = response.headers.get("content-type", "?").split(";")[0]
+                try:
+                    with Image.open(io.BytesIO(response.content)) as image:
+                        image.load()
+                        described = f"{image.format} {image.mode} {image.width}×{image.height}"
+                except Exception:
+                    verdicts.append(f"{label}: HTTP {response.status_code} {kind}, не картинка ({len(response.content)} байт)")
+                    continue
+                with tempfile.NamedTemporaryFile(suffix=".img") as handle:
+                    handle.write(response.content)
+                    handle.flush()
+                    blank = is_blank_image(Path(handle.name))
+                verdicts.append(
+                    f"{label}: HTTP {response.status_code} {described}, {len(response.content) // 1024} КБ"
+                    + (", ПУСТАЯ" if blank else "")
+                )
+                if response.is_success and not blank:
+                    good = True
+                    break
+            usable += good
+            lines.append(f"  {index}. {'ок' if good else 'НЕТ ФОТО'} — " + "; ".join(verdicts))
+    lines.append(f"Годных фото: {usable} из {min(len(photo_urls), limit)}")
+    return lines

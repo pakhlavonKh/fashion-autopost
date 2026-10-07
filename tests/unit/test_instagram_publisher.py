@@ -28,6 +28,15 @@ from publishers.instagram_publisher import (
 )
 
 
+def _photo(size: tuple[int, int], color: tuple[int, int, int]) -> Image.Image:
+    """A stand-in product photo: a garment on a plain backdrop (a flat canvas is an empty picture)."""
+    image = Image.new("RGB", size, color)
+    width, height = size
+    garment = tuple(255 - channel for channel in color)
+    ImageDraw.Draw(image).rectangle((width // 4, height // 4, width * 3 // 4, height * 3 // 4), fill=garment)
+    return image
+
+
 def _sample_post(price: str = "101.39") -> object:
     product = RawProduct(
         external_id="sku-100",
@@ -91,7 +100,7 @@ def test_feed_jpeg_is_four_by_five() -> None:
 def test_single_photo_publishes_after_container_is_ready() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         photo = Path(tmp) / "look.jpg"
-        Image.new("RGB", (900, 1200), (255, 255, 255)).save(photo)
+        _photo((900, 1200), (255, 255, 255)).save(photo)
         post = _sample_post()
         post = type(post)(
             photo_url=str(photo),
@@ -157,7 +166,7 @@ def test_several_photos_become_a_carousel() -> None:
         photos = []
         for index, color in enumerate(((240, 30, 30), (30, 30, 240))):
             path = Path(tmp) / f"look-{index}.jpg"
-            Image.new("RGB", (700, 1400), color).save(path)
+            _photo((700, 1400), color).save(path)
             photos.append(str(path))
         post = _sample_post()
         post = type(post)(
@@ -235,7 +244,7 @@ def test_full_carousel_keeps_the_product_angles_after_the_cover() -> None:
 def test_story_is_filed_into_the_dress_highlight() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         photo = Path(tmp) / "look.jpg"
-        Image.new("RGB", (900, 1200), (40, 40, 80)).save(photo)
+        _photo((900, 1200), (40, 40, 80)).save(photo)
         post = _sample_post()
         post = type(post)(
             photo_url=str(photo),
@@ -268,7 +277,7 @@ def test_story_is_filed_into_the_dress_highlight() -> None:
 def test_story_links_to_the_telegram_post_of_the_product() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         photo = Path(tmp) / "look.jpg"
-        Image.new("RGB", (900, 1200), (40, 40, 80)).save(photo)
+        _photo((900, 1200), (40, 40, 80)).save(photo)
         post = replace(
             _with_photos(_sample_post(), [str(photo)]),
             telegram_links=("https://t.me/fashionalleyb/205728",),
@@ -285,7 +294,7 @@ def test_story_links_to_the_telegram_post_of_the_product() -> None:
 def test_rejected_session_does_not_publish_a_plain_story() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         photo = Path(tmp) / "look.jpg"
-        Image.new("RGB", (900, 1200), (40, 40, 80)).save(photo)
+        _photo((900, 1200), (40, 40, 80)).save(photo)
         sample = _sample_post()
         post = type(sample)(
             photo_url=str(photo),
