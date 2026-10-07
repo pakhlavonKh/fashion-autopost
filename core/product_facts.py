@@ -116,11 +116,14 @@ def extract_site_facts(
     html_text: str,
     url: str = "",
     prefer: Sequence[str] = (),
+    footwear: bool | None = None,
 ) -> tuple[str | None, tuple[str, ...]]:
     """Return the current color name and the full size grid from product HTML.
 
     prefer names the colour the link opens (its code and its name). A page
     lists every colour with its own sizes, and those are the ones to show.
+    footwear says the product is a shoe; None reads it from the link and the
+    product name on the page. A shoe is sold in shoe sizes only.
     """
     if not html_text:
         return None, ()
@@ -136,7 +139,15 @@ def extract_site_facts(
         found.extend(_variants_from_size_arrays(hidden))
 
     color, sizes = _choose(found, url, prefer)
-    sizes = _prefer_sizes(sizes, _sizes_from_dom(html_text))
+    dom_sizes = _sizes_from_dom(html_text)
+    if footwear is None:
+        footwear = is_footwear(url, _page_product_name(html_text))
+    if footwear:
+        # Letter sizes and One Size on a shoe page belong to other products
+        # (recommendations, the menu); they never replace the shoe sizes.
+        sizes = _prefer_sizes(shoe_sizes(sizes), shoe_sizes(dom_sizes))
+    else:
+        sizes = _prefer_sizes(sizes, dom_sizes)
     if not color:
         color = _color_from_dom(html_text)
     return color, tuple(sizes)
@@ -202,12 +213,14 @@ _MEASUREMENT = re.compile(
 )
 _FOOTWEAR = re.compile(
     r"(?:"
-    r"\b(?:shoes?|boots?|sandals?|heels?|pumps?|mules?|loafers?|sneakers?|"
+    r"\b(?:shoes?|boots?|sandals?|heels?|pumps?|mules?|loafers?|sneakers?|trainers?|"
     r"slingbacks?|stilettos?|zapatos?|botas?|sandalias?|tacones?|"
     r"ayakkab\w*|çizme|topuklu|sandalet)\b|"
     # German, French, Italian storefronts.
     r"\b(?:stiefel\w*|schuh\w*|sandale\w*|bottines?|escarpins?|chaussures?|"
     r"stival\w*|scarpe|sandali)\b|"
+    # Inside a slug too: retrosneaker-l11308840.
+    r"sneaker|"
     r"туфл|ботил|сапог|босонож|ботин|обув|каблук|мюл|лодоч|сандал|кроссов|кед|сабо|шпильк"
     r")",
     re.IGNORECASE,
@@ -222,7 +235,7 @@ _HEEL_WORD = re.compile(
 _NOT_HEEL = re.compile(
     r"(?:"
     r"\b(?:sneakers?|trainers?|running|flats?|ballet|loafers?|espadrilles?|"
-    r"slippers?|slides?|flip[-\s]?flops?)\b|"
+    r"slippers?|slides?|flip[-\s]?flops?)\b|sneaker|"
     r"кроссов|кед|балетк|лофер|эспадриль|слипон|шлепан|шлёпан|тапоч|мокасин"
     r")",
     re.IGNORECASE,
@@ -437,6 +450,37 @@ def _as_mm(shown: str) -> float | None:
     return value * 10
 
 
+# A shoe size: EU 15–50 or UK/US 1–14, with halves (37.5, 4½) and pairs (36/37).
+_SHOE_SIZE = re.compile(
+    r"^(?:(?:EU|UK|US)\s*)?(\d{1,2})(?:[.,]5|\s?½)?(?:\s?[-/]\s?\d{1,2}(?:[.,]5|\s?½)?)?$",
+    re.IGNORECASE,
+)
+_PRODUCT_NAME = (
+    re.compile(r"<meta[^>]+property=[\"']og:title[\"'][^>]+content=[\"']([^\"']+)", re.IGNORECASE),
+    re.compile(r"<h1[^>]*>([^<]{2,200})</h1>", re.IGNORECASE),
+)
+
+
+def shoe_sizes(sizes: Sequence[str]) -> tuple[str, ...]:
+    """The labels among sizes that a shoe is sold in."""
+    kept: list[str] = []
+    for size in sizes:
+        match = _SHOE_SIZE.match(" ".join(str(size).split()))
+        if match and 1 <= int(match.group(1)) <= 50:
+            kept.append(size)
+    return tuple(kept)
+
+
+def _page_product_name(html_text: str) -> str:
+    """The product's name as the page states it (og:title, then the first heading)."""
+    head = html_text[:500000]
+    for pattern in _PRODUCT_NAME:
+        match = pattern.search(head)
+        if match:
+            return html_lib.unescape(match.group(1))
+    return ""
+
+
 def _prefer_sizes(primary: tuple[str, ...], extra: tuple[str, ...]) -> tuple[str, ...]:
     """Keep the fuller grid. Do not replace letter sizes with a measurement chart."""
     if not extra:
@@ -507,7 +551,9 @@ def attach_site_facts(product: RawProduct, *, timeout_seconds: float = 12.0) -> 
     if not html_text:
         return product
     page_url = final_url or product.product_url
-    color, sizes = extract_site_facts(html_text, page_url)
+    color, sizes = extract_site_facts(
+        html_text, page_url, footwear=is_footwear(product.title, product.product_url) or None
+    )
     color = product.color or color
     sizes = product.sizes or sizes
     if is_heeled_footwear(product.title, product.product_url):
