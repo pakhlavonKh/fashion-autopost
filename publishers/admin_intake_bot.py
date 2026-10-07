@@ -529,8 +529,6 @@ class AdminIntakeBot:
         buttons.append([{"text": "❌ Отмена", "callback_data": f"cancel:{post.id}"}])
 
         lines += ["", "Какой цвет опубликовать? Можно ответить номером или словом «все»."]
-        if post.photo_url:
-            self._send_photo(chat_id, post.photo_url)
         self._send(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": buttons})
 
     def _choose_color(self, chat_id: str, post_id: int, choice: str) -> str:
@@ -719,8 +717,6 @@ class AdminIntakeBot:
                     [{"text": "❌ Отмена", "callback_data": f"cancel:{post_id}"}],
                 ]
             }
-            if post.photo_url:
-                self._send_photo(chat_id, post.photo_url)
             self._send(chat_id, text, reply_markup=reply_markup)
             return ""
 
@@ -803,8 +799,6 @@ class AdminIntakeBot:
                 row_last,
             ]
         }
-        if getattr(post, "photo_url", None):
-            self._send_photo(chat_id, post.photo_url)
         self._send(chat_id, text, reply_markup=keyboard)
 
     def _finalize_schedule(self, post_id: int, destination: str | None = None) -> str:
@@ -924,27 +918,6 @@ class AdminIntakeBot:
             args=[post_id],
         )
         logger.info("Scheduled manual post %s at %s", post_id, when.isoformat())
-
-    def _send_photo(self, chat_id: str, photo: str, caption: str = "", reply_markup: dict[str, Any] | None = None) -> bool:
-        if self._sender is not None:
-            return True
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
-        payload: dict[str, Any] = {
-            "chat_id": str(chat_id),
-            "photo": photo,
-        }
-        if caption:
-            payload["caption"] = caption
-            payload["parse_mode"] = "HTML"
-        if reply_markup is not None:
-            payload["reply_markup"] = reply_markup
-        try:
-            with httpx.Client(timeout=15.0) as client:
-                resp = client.post(url, json=payload)
-                return resp.status_code == 200
-        except Exception as exc:
-            logger.debug("Failed to send preview photo %s: %s", photo, exc)
-            return False
 
     def _publish_scheduled(self, post_id: int) -> None:
         with self._fire_lock:

@@ -14,8 +14,12 @@ from publishers.telegram_publisher import TelegramPublisher
 from storage.repository import SqlAlchemyProductRepository
 
 
-def test_telegram_sends_every_photo_in_albums_of_ten(tmp_path: Path) -> None:
-    """Twelve store photos become two albums. The caption is only on the first."""
+def test_telegram_posts_one_album_of_at_most_ten(tmp_path: Path) -> None:
+    """Twelve store photos make one album of ten with the caption, never a second message.
+
+    As in an Instagram carousel, model shots go from the middle and the closing
+    front, back and close-up of the product stay.
+    """
     from PIL import Image
 
     photos = []
@@ -25,11 +29,11 @@ def test_telegram_sends_every_photo_in_albums_of_ten(tmp_path: Path) -> None:
         photos.append(str(path))
 
     pub = TelegramPublisher(bot_token="test_token", channel_id="-100111")
-    groups: list[tuple[int, str]] = []
+    groups: list[tuple[list[str], str]] = []
     singles: list[str] = []
 
     def mock_group(batch, caption, chat_id=None):
-        groups.append((len(batch), caption))
+        groups.append((list(batch), caption))
         return "10"
 
     def mock_photo(photo, caption, chat_id=None):
@@ -42,10 +46,20 @@ def test_telegram_sends_every_photo_in_albums_of_ten(tmp_path: Path) -> None:
                 msg_id = pub._send_all_photos(photos, "Слингбэки-98$", "-100111")
 
     assert msg_id == "10"
-    assert [size for size, _caption in groups] == [10, 2]
-    assert groups[0][1] == "Слингбэки-98$"
-    assert groups[1][1] == ""
+    assert len(groups) == 1
+    album, caption = groups[0]
+    assert caption == "Слингбэки-98$"
+    assert album == photos[:7] + photos[-3:]
     assert singles == []
+
+
+def test_telegram_album_of_ten_or_fewer_is_sent_as_it_is(tmp_path: Path) -> None:
+    pub = TelegramPublisher(bot_token="test_token", channel_id="-100111")
+    groups: list[list[str]] = []
+    photos = [str(tmp_path / f"shot-{index}.jpg") for index in range(10)]
+    with patch.object(pub, "_send_media_group_with_retry", side_effect=lambda batch, caption, chat_id=None: groups.append(list(batch)) or "7"):
+        assert pub._send_all_photos(photos, "Платье-55$", "-100111") == "7"
+    assert groups == [photos]
 
 
 def test_telegram_publisher_multi_channel_broadcast(tmp_path: Path) -> None:

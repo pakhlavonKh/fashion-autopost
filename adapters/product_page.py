@@ -202,35 +202,40 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
     """Extract one product from HTML. Returns None when required fields are missing."""
     if not html_text or not url.startswith("http"):
         return None
-    if _is_blocked_page(html_text):
+    # The store's own product data (added by the Chrome read) lists every media
+    # file it keeps for the colour: other crops of the same shots, outfit pictures.
+    # It serves the sizes and the colour choice; the photos, title and price come
+    # from what the page itself shows.
+    page_html = _without_store_data(html_text)
+    if _is_blocked_page(page_html):
         return None
 
     brand = brand_from_url(url)
     default_currency = currency_hint(url)
-    default_currency = _detect_page_currency(html_text, default_currency)
+    default_currency = _detect_page_currency(page_html, default_currency)
 
-    from_ld = _best_json_ld(html_text, url, default_currency)
-    from_embedded = _from_embedded_article(html_text, url, default_currency)
+    from_ld = _best_json_ld(page_html, url, default_currency)
+    from_embedded = _from_embedded_article(page_html, url, default_currency)
     chosen = _merge_parsed(from_ld, from_embedded)
 
     if chosen is None:
-        chosen = _from_open_graph(html_text, url, default_currency)
+        chosen = _from_open_graph(page_html, url, default_currency)
     if chosen is None or chosen.price <= 0 or not chosen.images:
         return None
 
-    page_curr = _detect_page_currency(html_text, chosen.currency)
+    page_curr = _detect_page_currency(page_html, chosen.currency)
     if page_curr and page_curr != chosen.currency:
         chosen.currency = page_curr
 
     if len(chosen.images) >= 2:
         images = chosen.images
     else:
-        images = _merge_images(chosen.images, _brand_image_urls(html_text, brand, url), base_url=url)
+        images = _merge_images(chosen.images, _brand_image_urls(page_html, brand, url), base_url=url)
     if not images:
         images = chosen.images
     if not images:
         return None
-    images = ordered_photos(html_text, brand, url, images, max_photos=MAX_PRODUCT_PHOTOS)
+    images = ordered_photos(page_html, brand, url, images, max_photos=MAX_PRODUCT_PHOTOS)
     external_id = generate_deterministic_id(brand, raw_id=chosen.raw_id or None, url=url)
     title = " ".join(chosen.title.split("|")[0].split())
     footwear = is_footwear(title, url) or None
@@ -243,7 +248,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
         if not selected.name.startswith("Цвет "):
             color = selected.name
         sizes = own_sizes or sizes
-    heel = extract_heel_height(html_text, title) if is_heeled_footwear(title, url) else None
+    heel = extract_heel_height(page_html, title) if is_heeled_footwear(title, url) else None
     return RawProduct(
         external_id=external_id,
         source=brand,
@@ -257,7 +262,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
         heel_height=heel,
         color=color,
         sizes=sizes,
-        photos_verified=page_gallery_is_authoritative(html_text, brand, url),
+        photos_verified=page_gallery_is_authoritative(page_html, brand, url),
         color_variants=variants,
     )
 
@@ -615,6 +620,18 @@ async def _evaluate_text(page, script: str, wait: bool = False) -> str:
         logger.debug("Page script failed: %s", exc)
         return ""
     return result if isinstance(result, str) else ""
+
+
+_STORE_DATA_BLOCK = re.compile(
+    r'<script type="application/json" data-bot-source="store-api">.*?</script>', re.DOTALL
+)
+
+
+def _without_store_data(html: str) -> str:
+    """The page as the store drew it, without the product data the Chrome read added."""
+    if 'data-bot-source="store-api"' not in html:
+        return html
+    return _STORE_DATA_BLOCK.sub("", html)
 
 
 def _append_to_body(html: str, extra: str) -> str:
