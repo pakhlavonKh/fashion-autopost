@@ -14,8 +14,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urljoin, urlparse
 
 import httpx
 
@@ -39,6 +40,7 @@ BROWSER_HEADERS = {
 }
 
 _display_started = False
+_CHROME_LOCK = threading.Lock()
 # One product page is read twice in a row: once for sizes and colour, once for
 # the gallery. The last page stays available for that second read.
 PAGE_CACHE_SECONDS = 180.0
@@ -58,6 +60,65 @@ SCROLL_STEPS = 12
 # Fewer photos than this from a plain request: the page is read in Chrome too,
 # and the fuller of the two reads is kept.
 FULL_GALLERY = 3
+
+# Pages built from web components keep their gallery, size list and colour
+# swatches inside shadow roots, which the page HTML leaves out (Pull&Bear's
+# <gallery-element .xmedias=…>). Every read appends the markup of each open
+# shadow root, which is what the shopper sees.
+_SHADOW_DOM_JS = """(() => {
+  const parts = [];
+  const seen = new Set();
+  const visit = (root) => {
+    for (const element of root.querySelectorAll('*')) {
+      const shadow = element.shadowRoot;
+      if (!shadow || seen.has(shadow)) continue;
+      seen.add(shadow);
+      parts.push('<div data-shadow-host="' + element.localName + '">' + shadow.innerHTML + '</div>');
+      visit(shadow);
+    }
+  };
+  visit(document);
+  return parts.join('\\n');
+})()"""
+
+# Inditex stores load the product (its colours with their sizes) from their own
+# API, /itxrest/…/product/<id>/detail. When a page read still lacks photos,
+# sizes or colours, the responses the page itself requested are read again
+# from the open page and added to it as JSON. Besides the usual product
+# endpoints, any of the store's API answers naming this product's id counts.
+_STORE_API_JS = """(async () => {
+  const ids = __PRODUCT_IDS__;
+  const seen = new Set(performance.getEntriesByType('resource').map((entry) => entry.name));
+  const wanted = [...seen].filter((url) => /\\/itxrest\\//i.test(url) && (
+    /\\/product\\/[^/?]+\\/detail/i.test(url)
+    || (/productsArray/i.test(url) && !/productIds=[^&]*(,|%2C)/i.test(url))
+    || ids.some((id) => new RegExp('(^|[^0-9])' + id + '([^0-9]|$)').test(url))
+  )).slice(0, 6);
+  const texts = [];
+  for (const url of wanted) {
+    try {
+      const response = await fetch(url, { credentials: 'include' });
+      const type = response.headers.get('content-type') || '';
+      if (!response.ok || !type.includes('json')) continue;
+      const text = await response.text();
+      if (text.length < 3000000) texts.push(text);
+    } catch (error) {}
+  }
+  return JSON.stringify(texts);
+})()"""
+_PRODUCT_ID_KEYS = ("pelement", "productid", "parentid")
+
+
+def _product_ids(url: str) -> list[str]:
+    """The ids a store's API may use for the product in this link."""
+    ids = []
+    product, _colour = variant_parts(url)
+    if re.fullmatch(r"\d{6,}", product or ""):
+        ids.append(product)
+    for key, value in parse_qsl(urlparse(url).query):
+        if key.lower() in _PRODUCT_ID_KEYS and re.fullmatch(r"\d{6,}", value.strip()):
+            ids.append(value.strip())
+    return list(dict.fromkeys(ids))
 
 
 class ProductPageError(Exception):
@@ -90,7 +151,9 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
         logger.info("Fast fetch gave %s photo(s) for %s, reading the page in Chrome too", len(product.photo_urls), final_url)
     rendered = ""
     rendered_url = final_url
-    for attempt in range(2):
+    for attempt in range(BROWSER_ATTEMPTS):
+        if attempt:
+            time.sleep(BROWSER_RETRY_PAUSE_SECONDS)
         try:
             rendered, rendered_url = _fetch_html_browser(final_url, timeout_seconds)
         except Exception as exc:
@@ -435,8 +498,13 @@ def _remember_page(url: str, final_url: str, html_text: str) -> tuple[str, str]:
 def _fetch_html_browser(url: str, timeout_seconds: float) -> tuple[str, str]:
     import asyncio
 
-    _ensure_virtual_display()
-    return asyncio.run(_browser_html(url, timeout_seconds))
+    # One Chrome read at a time: a read that finishes stops the Chrome instances
+    # it started, and with two reads at once (the admin's link while a scheduled
+    # post publishes) it would stop the other read's Chrome mid-page too. It also
+    # keeps a second half-gigabyte browser out of the container's memory.
+    with _CHROME_LOCK:
+        _ensure_virtual_display()
+        return asyncio.run(_browser_html(url, timeout_seconds))
 
 
 async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
@@ -460,8 +528,16 @@ async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
         scrolled = False
         quiet = 0
         while time.monotonic() < deadline:
-            await page.sleep(2)
-            snapshot = await _page_snapshot(page, url)
+            try:
+                await page.sleep(2)
+                snapshot = await _page_snapshot(page, url)
+            except Exception as exc:
+                # The page navigated, the tab closed or the connection dropped:
+                # keep what was read so far rather than lose the whole read.
+                if best is None:
+                    raise
+                logger.info("Chrome read of %s ended early (%s); keeping the fullest view so far", url, exc)
+                break
             html, page_url = snapshot[1], snapshot[2]
             if best is None and snapshot[0][0] < 0:
                 continue
@@ -473,9 +549,13 @@ async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
                 # The product is on the page; walk down it so lazy photos and sizes load.
                 best = await _scroll_through(page, url, best, deadline)
                 scrolled = True
-            elif quiet >= SETTLE_SNAPSHOTS:
+            elif quiet >= SETTLE_SNAPSHOTS + (2 if _short_of_photos_or_sizes(best[0]) else 0):
+                # A read still short of photos or sizes waits a little longer; a
+                # single-colour product never shows a colour choice, so that is not waited for.
                 break
         if best is not None:
+            if _needs_store_data(best[0]):
+                best = await _with_store_data(page, url, best)
             return best[1], best[2]
         return html, page_url
     finally:
@@ -483,12 +563,65 @@ async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
 
 
 async def _page_snapshot(page, url: str) -> tuple[tuple[int, int, int], str, str]:
-    """(completeness, HTML, address) of the page as it stands now."""
+    """(completeness, HTML, address) of the page as it stands now, shadow roots included."""
     html = await page.get_content() or ""
+    shadow = await _evaluate_text(page, _SHADOW_DOM_JS)
+    if shadow:
+        html = _append_to_body(html, shadow)
     page_url = str(getattr(page, "url", None) or url)
     if not page_url.startswith("http"):
         page_url = url
     return _richness(parse_product_html(html, page_url)), html, page_url
+
+
+def _short_of_photos_or_sizes(richness: tuple[int, int, int]) -> bool:
+    photos, has_sizes, _has_colours = richness
+    return photos < FULL_GALLERY or not has_sizes
+
+
+def _needs_store_data(richness: tuple[int, int, int]) -> bool:
+    """A read short of photos, of sizes or of colours; each counts on its own."""
+    photos, has_sizes, has_colours = richness
+    return photos < FULL_GALLERY or not has_sizes or not has_colours
+
+
+async def _with_store_data(page, url: str, best):
+    """The read with the store's own product data added, when that makes it fuller."""
+    script = _STORE_API_JS.replace("__PRODUCT_IDS__", json.dumps(_product_ids(url)))
+    raw = await _evaluate_text(page, script, wait=True)
+    try:
+        texts = [text for text in json.loads(raw or "[]") if isinstance(text, str) and text.strip()]
+    except (TypeError, ValueError):
+        return best
+    if not texts:
+        return best
+    blocks = "".join(
+        '<script type="application/json" data-bot-source="store-api">' + text.replace("</", "<\\/") + "</script>"
+        for text in texts
+    )
+    html = _append_to_body(best[1], blocks)
+    richness = _richness(parse_product_html(html, best[2]))
+    logger.info("Store data for %s: %s response(s), read %s -> %s", url, len(texts), best[0], richness)
+    if richness > best[0]:
+        return richness, html, best[2]
+    return best
+
+
+async def _evaluate_text(page, script: str, wait: bool = False) -> str:
+    """A script's string result, or "" when it fails or returns something else."""
+    try:
+        result = await page.evaluate(script, await_promise=wait, return_by_value=True)
+    except Exception as exc:
+        logger.debug("Page script failed: %s", exc)
+        return ""
+    return result if isinstance(result, str) else ""
+
+
+def _append_to_body(html: str, extra: str) -> str:
+    marker = html.rfind("</body>")
+    if marker < 0:
+        return html + extra
+    return html[:marker] + extra + html[marker:]
 
 
 async def _scroll_through(page, url: str, best, deadline: float):

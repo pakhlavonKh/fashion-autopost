@@ -54,6 +54,11 @@ def inspect_product_url(url: str, save_dir: Path = DIAG_DIR) -> str:
         f"в расшифровке={hidden.count(chr(34) + 'colors' + chr(34))}, "
         f"экранированных={'да' if unescaped_text(html_text) else 'нет'}"
     )
+    shadow_roots = html_text.count("data-shadow-host=")
+    store_answers = html_text.count('data-bot-source="store-api"')
+    lines.append(
+        f"Прочитано в Chrome: скрытых деревьев компонентов={shadow_roots}, ответов с данными магазина={store_answers}"
+    )
 
     color, sizes = extract_site_facts(html_text, final_url)
     lines.append(f"Цвет на странице: {color or '—'}")
