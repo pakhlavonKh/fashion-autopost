@@ -149,3 +149,58 @@ def test_store_data_is_asked_for_whatever_the_read_lacks() -> None:
     assert _needs_store_data((5, 1, 0))
     assert _needs_store_data((2, 1, 1))
     assert not _needs_store_data((5, 1, 1))
+
+
+# The page as the server read it on 2026-10-07 after #6: the gallery component
+# (x-media-element, with lazy-image-element inside) shows four photos, and the
+# store's data lists all sixteen media files of the colour, among them other
+# crops of the same shots (Z…) and outfit pictures (K1, E, ULT1).
+GALLERY = ("M", "A2M", "A3M", "A4M")
+STORE_MEDIA = ("A19M", "Z1M", "A4M", "Z3M", "A2M", "M", "Z0M", "K1", "A10M", "A9M", "D2", "ULT1", "A7M", "E", "Z2M", "A3M")
+
+
+def _asset(code: str, query: str = "ts=1780572103801") -> str:
+    return f"{BASE}/11308840002-{code}/11308840002-{code}.jpg?{query}"
+
+
+def _served_page() -> str:
+    media = '<div data-shadow-host="x-media-element">' + "".join(
+        f'<img class="image" object-position="center top" src="{_asset(code, "ts=1780572104327&amp;w=96&amp;f=auto")}">'
+        for code in GALLERY
+    ) + "</div>"
+    lazy = '<div data-shadow-host="lazy-image-element">' + "".join(
+        f'<img class="image" aria-hidden="true" alt="" src="{_asset(code)}">' for code in GALLERY
+    ) + "</div>"
+    medias = []
+    for code in STORE_MEDIA:
+        if code in ("D2", "ULT1", "A7M", "E"):
+            medias.append({"productionType": "MODEL", "url": _asset(code)})
+        else:
+            path = _asset(code).split("static.pullandbear.net", 1)[1].split("?")[0]
+            medias.append({"idMedia": code.lower(), "extraInfo": {"assetId": "x", "oDeliveryPath": path, "deliveryUrl": _asset(code)}})
+    store = json.dumps({
+        "id": 753677463,
+        "detail": {
+            "colors": [{"id": "002", "name": "NATUR", "sizes": [{"name": str(size)} for size in range(35, 42)]}],
+            "xmedia": [{"colorCode": "002", "xmediaItems": [{"medias": medias}]}],
+        },
+    })
+    block = '<script type="application/json" data-bot-source="store-api">' + store + "</script>"
+    return _append_to_body(PAGE, media + lazy + block)
+
+
+def test_the_post_takes_the_photos_the_gallery_shows_not_every_file_the_store_keeps() -> None:
+    # After #6 the post carried all sixteen: duplicate crops and an outfit picture of a hoodie.
+    product = parse_product_html(_served_page(), URL)
+    assert product is not None
+    assert _names(product.photo_urls) == [f"11308840002-{code}.jpg" for code in GALLERY]
+    # The store's data still gives the sizes.
+    assert product.sizes == ("35", "36", "37", "38", "39", "40", "41")
+    assert product.color in ("Natur", "NATUR")
+
+
+def test_the_store_data_never_adds_photos() -> None:
+    with_data = parse_product_html(_served_page(), URL)
+    without = parse_product_html(_served_page().split('<script type="application/json" data-bot-source="store-api">')[0], URL)
+    assert with_data is not None and without is not None
+    assert with_data.photo_urls == without.photo_urls
