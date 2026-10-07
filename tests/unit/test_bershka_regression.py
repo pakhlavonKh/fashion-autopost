@@ -75,10 +75,11 @@ def test_german_footwear_words_do_not_catch_gloves():
 
 def test_main_gallery_keeps_the_model_shot_in_page_order():
     gallery = inditex_pdp_gallery(HTML)
-    assert gallery == SHOTS
+    # Each link stays as the page wrote it, the picture the shopper's browser loads.
+    assert gallery == [f"{shot}?ts=1&w=850" for shot in SHOTS]
     assert page_gallery_is_authoritative(HTML, "bershka", URL)
     ordered = ordered_photos(HTML, "bershka", URL, [SHOTS[0]])
-    assert ordered == SHOTS
+    assert [url.split("?")[0] for url in ordered] == SHOTS
 
 
 def test_without_main_gallery_marker_the_reference_filter_still_applies():

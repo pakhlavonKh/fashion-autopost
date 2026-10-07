@@ -12,19 +12,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# The colourway rides in the query: Zara ?v1=, Mango ?c=, Bershka and the
-# other Inditex stores ?colorId=. Tracking tags are still dropped.
-_COLOR_QUERY_KEYS = {"v1", "c", "colorid", "color", "colour"}
+# The colourway rides in the query: Zara ?v1=, Mango ?c=, Pull&Bear ?cS=,
+# Bershka, Lefties and the other Inditex chains ?colorId=, Salesforce stores
+# ?dwvar_<product>_color=, Shopify ?variant=. Tracking tags are still dropped.
+_COLOR_QUERY_KEYS = {
+    "v1", "c", "cs", "colorid", "colourid", "color_id", "colour_id",
+    "color", "colour", "colorcode", "colourcode", "variant",
+}
+_SFCC_COLOR_KEY = re.compile(r"^dwvar_.+_colou?r$", re.IGNORECASE)
 _MANGO_COLOR_IN_PATH = re.compile(r"/(\d{7,10})/([0-9a-z]{2,3})(?:/|$)", re.IGNORECASE)
+# Salesforce stores name the colour after the product id: CK1-61720277_DK.BRW.html.
+_SFCC_COLOR_IN_PATH = re.compile(r"[-_/]([A-Za-z]{0,3}\d{6,10})_([A-Za-z0-9][A-Za-z0-9.\-]{0,15})\.html?$", re.IGNORECASE)
 _ZARA_PRODUCT_IN_PATH = re.compile(r"-p(\d{6,})(?:\.html|[/?#]|$)", re.IGNORECASE)
+_LAST_SEGMENT_ID = re.compile(r"(?:^|[-_./a-z])(\d{6,12})(?=\.html?$|$|[-_/])", re.IGNORECASE)
+
+
+def is_color_key(key: str) -> bool:
+    """A query parameter that picks the colourway on some store."""
+    lowered = (key or "").lower()
+    return lowered in _COLOR_QUERY_KEYS or bool(_SFCC_COLOR_KEY.match(lowered))
 
 
 def normalize_url(url: str | None) -> str:
     """Canonical product URL: no fragment, no tracking, colour query kept.
 
     Two colours of one model differ only by the colour parameter (?v1=, ?c=,
-    ?colorId=). That parameter stays, so the links are not treated as the same
-    post. utm and similar tags go.
+    ?cS=, ?colorId=, ...). That parameter stays, so the links are not treated
+    as the same post. utm and similar tags go.
     """
     if not url:
         return ""
@@ -33,7 +47,7 @@ def normalize_url(url: str | None) -> str:
         kept = [
             (key, value)
             for key, value in parse_qsl(parsed.query, keep_blank_values=False)
-            if key.lower() in _COLOR_QUERY_KEYS and value
+            if is_color_key(key) and value
         ]
         path = parsed.path.rstrip("/")
         clean = f"{parsed.scheme}://{parsed.netloc}{path}".lower()
@@ -44,30 +58,45 @@ def normalize_url(url: str | None) -> str:
         return url.split("#")[0].rstrip("/").lower()
 
 
-def variant_parts(url: str | None) -> tuple[str, str]:
+def variant_parts(url: str | None, keep_case: bool = False) -> tuple[str, str]:
     """(product id, colour token). Colour is empty when the link does not name one.
 
-    Mango keeps the colour in the path (/37016751/99) or in ?c=. Zara keeps it
-    in ?v1=, the other Inditex stores in ?colorId=.
+    Mango keeps the colour in the path (/37016751/99) or in ?c=, Salesforce
+    stores after the id (_DK.BRW.html), Zara in ?v1=, Pull&Bear in ?cS=, the
+    other Inditex chains in ?colorId=. The token is lower-cased for comparing;
+    keep_case returns it as the store wrote it, for building links.
     """
     if not url:
         return "", ""
+
+    def token(value: str) -> str:
+        return value.strip() if keep_case else value.strip().lower()
+
     parsed = urlparse(url)
-    mango = _MANGO_COLOR_IN_PATH.search(parsed.path or "")
+    path = parsed.path or ""
+    mango = _MANGO_COLOR_IN_PATH.search(path)
     if mango:
-        return mango.group(1), mango.group(2).lower()
+        return mango.group(1), token(mango.group(2))
+    color = ""
+    for key, value in parse_qsl(parsed.query, keep_blank_values=False):
+        if is_color_key(key) and value.strip():
+            color = token(value)
+            break
+    sfcc = _SFCC_COLOR_IN_PATH.search(path)
+    if sfcc:
+        digits = re.sub(r"\D", "", sfcc.group(1))
+        return digits, color or token(sfcc.group(2))
     product_id = ""
-    zara = _ZARA_PRODUCT_IN_PATH.search(parsed.path or "")
+    zara = _ZARA_PRODUCT_IN_PATH.search(path)
     if zara:
         product_id = zara.group(1)
     else:
         skus = extract_skus(url, None)
         product_id = max(skus, key=len) if skus else ""
-    color = ""
-    for key, value in parse_qsl(parsed.query, keep_blank_values=False):
-        if key.lower() in _COLOR_QUERY_KEYS and value.strip():
-            color = value.strip().lower()
-            break
+    if not product_id:
+        last = path.rstrip("/").rsplit("/", 1)[-1]
+        found = _LAST_SEGMENT_ID.findall(last)
+        product_id = found[-1] if found else ""
     return product_id, color
 
 

@@ -13,6 +13,8 @@ from typing import NamedTuple, Optional
 from urllib.parse import parse_qsl, urlsplit, urlunsplit, urlencode
 import httpx
 
+from core.store_platforms import is_inditex_cdn
+
 from core.gallery import is_product_angle
 
 logger = logging.getLogger(__name__)
@@ -22,10 +24,6 @@ logger = logging.getLogger(__name__)
 INDITEX_WIDTH = 2048
 MANGO_WIDTH = 2048
 HM_WIDTH = 2160
-_INDITEX_HOST = re.compile(
-    r"^static\.(zara|bershka|pullandbear|stradivarius|massimodutti|oysho|lefties)\.",
-    re.IGNORECASE,
-)
 _INDITEX_PATH_WIDTH = re.compile(r"/w/(\d+)(?=/)")
 
 DEFAULT_IMAGE_DIR = Path("data/images")
@@ -58,7 +56,7 @@ def high_resolution_image_url(url: str) -> str:
 
     parts = urlsplit(url)
     host = parts.netloc.lower().split(":")[0]
-    if _INDITEX_HOST.match(host):
+    if is_inditex_cdn(url):
         return _upgrade_inditex(url)
     if host == "media.mango.com":
         return _raise_query_int(_raise_query_int(url, "imwidth", MANGO_WIDTH), "qlt", 100)
@@ -67,6 +65,29 @@ def high_resolution_image_url(url: str) -> str:
     if re.search(r"(?:^|&)imwidth=\d+", parts.query, flags=re.IGNORECASE):
         return _raise_query_int(url, "imwidth", MANGO_WIDTH)
     return url
+
+
+def download_candidates(url: str) -> list[str]:
+    """Forms of one photo link, best first: the large rendition, the link as the
+    store page wrote it, the bare file without a query. The next one is tried
+    when a form fails or comes back as an empty picture."""
+    stripped = (url or "").strip()
+    parts = urlsplit(stripped)
+    bare = urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")) if parts.query else stripped
+    return list(dict.fromkeys([high_resolution_image_url(stripped), stripped, bare]))
+
+
+def _decodes_as_image(content: bytes) -> bool:
+    import io
+
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            image.verify()
+    except Exception:
+        return False
+    return True
 
 
 def _upgrade_inditex(url: str) -> str:
@@ -168,7 +189,7 @@ def _image_fingerprint(path: Path) -> _Fingerprint | None:
 
         with Image.open(path) as image:
             width, height = image.size
-            small = image.convert("RGB").resize((OUTLINE_SIZE, OUTLINE_SIZE), Image.Resampling.BOX)
+            small = flatten_to_rgb(image).resize((OUTLINE_SIZE, OUTLINE_SIZE), Image.Resampling.BOX)
             outline = ImageOps.autocontrast(small.convert("L")).tobytes()
             raw = small.tobytes()
     except Exception:
@@ -191,6 +212,72 @@ def _same_picture(left: _Fingerprint, right: _Fingerprint, max_difference: float
         return False
     changed = sum(1 for value in diffs if value > CHANGED_PIXEL_LEVEL)
     return changed / len(diffs) <= MAX_CHANGED_SHARE
+
+
+# Cut-out product shots come with a transparent background. Dropping the alpha
+# channel shows whatever colour the store left under it (often white, so a white
+# trainer vanishes); stores show such shots on a light grey, and so does the post.
+CUTOUT_BACKGROUND = (242, 242, 242)
+# A photo whose pixels all sit within a few grey levels of each other is a
+# placeholder, an empty canvas or a failed render, never a product.
+BLANK_SPREAD = 3
+BLANK_STDDEV = 2.0
+
+
+def flatten_to_rgb(image):
+    """RGB copy of an image, with any transparency laid over the light grey backdrop."""
+    from PIL import Image
+
+    if image.mode in _WIDE_MODES:
+        image = _eight_bit_grey(image)
+    has_alpha = image.mode in ("RGBA", "LA", "PA") or (image.mode == "P" and "transparency" in image.info)
+    if has_alpha:
+        rgba = image.convert("RGBA")
+        backdrop = Image.new("RGBA", rgba.size, CUTOUT_BACKGROUND + (255,))
+        backdrop.alpha_composite(rgba)
+        return backdrop.convert("RGB")
+    return image if image.mode == "RGB" else image.convert("RGB")
+
+
+# 16-bit, 32-bit and float pictures; Pillow clips them to white when it converts them directly.
+_WIDE_MODES = ("I", "I;16", "I;16L", "I;16B", "I;16N", "F")
+
+
+def _eight_bit_grey(image):
+    """8-bit grey from a 16/32-bit or float picture, keeping its tones."""
+    wide = image.convert("F")
+    _low, high = wide.getextrema()
+    if high <= 255:
+        return wide.convert("L")
+    scale = 257.0 if high <= 65535 else high / 255.0
+    return wide.point(lambda value: value / scale).convert("L")
+
+
+def is_blank_image(image_path: Path) -> bool:
+    """True for an image with nothing on it: one flat tone from edge to edge."""
+    try:
+        from PIL import Image, ImageStat
+
+        with Image.open(image_path) as image:
+            small = flatten_to_rgb(image).resize((128, 128), Image.Resampling.BOX).convert("L")
+    except Exception:
+        return False
+    histogram = small.histogram()
+    total = sum(histogram)
+    if not total:
+        return True
+    low = high = None
+    running = 0
+    for level, count in enumerate(histogram):
+        running += count
+        if low is None and running >= total * 0.02:
+            low = level
+        if running >= total * 0.98:
+            high = level
+            break
+    spread = (high or 0) - (low or 0)
+    stddev = ImageStat.Stat(small).stddev[0]
+    return spread <= BLANK_SPREAD and stddev < BLANK_STDDEV
 
 
 def is_material_or_color_swatch(image_path: Path) -> bool:
@@ -235,8 +322,7 @@ def prepare_original_jpeg(source: Path, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(source) as image:
         image = ImageOps.exif_transpose(image)
-        if image.mode != "RGB":
-            image = image.convert("RGB")
+        image = flatten_to_rgb(image)
         image = _fit_long_edge(image, TELEGRAM_MAX_EDGE)
         _save_under_limit(image, dest, TELEGRAM_MAX_BYTES)
     return dest
@@ -278,6 +364,7 @@ class ImageDownloader:
     """Downloads remote product photos to local disk storage."""
 
     def __init__(self, dest_dir: Path | str = DEFAULT_IMAGE_DIR, timeout_seconds: float = 20.0) -> None:
+        self.last_blank: list[str] = []
         self.dest_dir = Path(dest_dir)
         self.timeout_seconds = timeout_seconds
         self.dest_dir.mkdir(parents=True, exist_ok=True)
@@ -299,31 +386,26 @@ class ImageDownloader:
             return None
 
         clean_id = sanitize_filename(external_id) if external_id else "item"
-        upgraded = high_resolution_image_url(stripped)
-
-        # A previously saved thumbnail must not win over a sharper rendition.
-        if upgraded != stripped:
-            cached = self._cached_image(clean_id, upgraded)
-            if cached is not None:
-                return cached
-
         headers = dict(BROWSER_HEADERS)
+        blank: Optional[Path] = None
         try:
             with httpx.Client(timeout=self.timeout_seconds, follow_redirects=True) as client:
-                if upgraded != stripped:
-                    fetched = self._fetch_image(client, upgraded, clean_id, headers)
-                    if fetched is not None:
-                        logger.info("Downloaded high-resolution image instead of %s", stripped)
-                        return fetched
-                    logger.info("High-resolution URL failed, using the original image: %s", stripped)
-
-                cached = self._cached_image(clean_id, stripped)
-                if cached is not None:
-                    return cached
-                return self._fetch_image(client, stripped, clean_id, headers)
+                # A saved copy of one form never wins over an earlier, sharper form.
+                for candidate in download_candidates(stripped):
+                    path = self._cached_image(clean_id, candidate) or self._fetch_image(
+                        client, candidate, clean_id, headers
+                    )
+                    if path is None:
+                        continue
+                    if not is_blank_image(path):
+                        if candidate != stripped:
+                            logger.info("Downloaded %s for %s", candidate, stripped)
+                        return path
+                    logger.warning("The store sent an empty picture for %s, trying the next form of the link", candidate)
+                    blank = blank or path
         except Exception as exc:
             logger.warning("Failed to download image from %s: %s", stripped, exc)
-            return None
+        return blank
 
     def _cached_image(self, clean_id: str, url: str) -> Optional[Path]:
         url_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
@@ -338,6 +420,9 @@ class ImageDownloader:
         try:
             resp = client.get(url, headers=headers)
             resp.raise_for_status()
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # The host is unreachable; another form of the link would only wait again.
+            raise
         except Exception as exc:
             logger.warning("Failed to download image from %s: %s", url, exc)
             return None
@@ -345,6 +430,10 @@ class ImageDownloader:
         content = resp.content
         if len(content) < 200:
             logger.warning("Downloaded image content suspiciously small (%d bytes) for %s", len(content), url)
+            return None
+        if not _decodes_as_image(content):
+            # An error or bot-wall page served with status 200.
+            logger.warning("Not a picture (%s) at %s", resp.headers.get("content-type", "?"), url)
             return None
 
         extension = ".jpg"
@@ -360,12 +449,22 @@ class ImageDownloader:
         return target_path
 
     def download_all(self, photo_urls: list[str], external_id: str = "") -> list[Path]:
-        """Download multiple photos for a product card, returning successfully downloaded local paths with swatches filtered out."""
+        """Download multiple photos for a product card, returning successfully downloaded local paths with swatches filtered out.
+
+        Empty pictures (placeholders, blank canvases) are dropped and listed in
+        last_blank, so the caller can tell «the store sent nothing usable» from
+        «the download failed».
+        """
         downloaded: list[Path] = []
+        self.last_blank = []
         for i, url in enumerate(photo_urls):
             sub_id = f"{external_id}_{i}" if external_id else f"item_{i}"
             path = self.download(url, external_id=sub_id)
             if path and path.is_file():
+                if is_blank_image(path):
+                    logger.warning("Dropping an empty picture instead of a product photo: %s", url)
+                    self.last_blank.append(url)
+                    continue
                 # A light garment on a pale backdrop reads as a flat swatch.
                 if not is_product_angle(url) and is_material_or_color_swatch(path):
                     continue

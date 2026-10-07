@@ -9,10 +9,13 @@ shot, a second close-up takes its place. The same photo is kept once.
 """
 
 import html as html_lib
+import json
 import logging
 import re
 from urllib.parse import parse_qs, urljoin, urlsplit
 import httpx
+
+from core.store_platforms import INDITEX_BRANDS, is_inditex_cdn
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +26,22 @@ _MANGO_PAGE = re.compile(r"/(\d{7,8})(?:/([0-9A-Za-z]{2,3}))?(?:/|$)")
 _MANGO_SLUG_ID = re.compile(r"_(\d{7,8})(?:\.html)?/?$")
 _INDITEX_IMAGE = re.compile(r"(?:^|[/_\-])(\d{8})(\d{3})(?:[/_\-\.]|$)", re.IGNORECASE)
 _ZARA_PAGE = re.compile(r"-p(\d{7,8})(?:\.html|\?|$)", re.IGNORECASE)
-_INDITEX_HOSTS = ("zara.net", "stradivarius.net", "massimodutti.net", "bershka.net", "pullandbear.net", "oysho.net")
 _ZARA_SHOT = re.compile(r"_(\d+)_(\d+)_\d+$")
-_ZARA_KIND = re.compile(r'"kind"\s*:\s*"(full|plain|other|colorcut)"', re.IGNORECASE)
+# Case matters: the product itself carries "kind":"Other", a media object "kind":"other".
+_ZARA_KIND = re.compile(r'"kind"\s*:\s*"(full|plain|other|colorcut)"')
+_ZARA_XMEDIA = re.compile(r'"xmedia"\s*:\s*\[')
 _TAIL_ROLES = ("front", "back", "close")
+# The shot number at the end of a photo name: -1, _01, -alt2, _sub3.
+_SHOT_NUMBER = re.compile(r"[-_](?:[a-z]{0,4})?\d{1,2}$")
 # A colourway rarely has more than this. The cap only stops a broken page
 # from pulling the whole catalog. Telegram sends anything past 10 as extra albums.
 MAX_PRODUCT_PHOTOS = 30
-_INDITEX_BRANDS = ("stradivarius", "massimodutti", "bershka", "pullandbear", "oysho")
+# Inditex chains other than Zara share one storefront; Zara has its own reader.
+_INDITEX_BRANDS = tuple(brand for brand in INDITEX_BRANDS if brand != "zara")
+_INDITEX_SISTER_CDN = re.compile(
+    r"https://static\.(?:e-)?(?:" + "|".join(_INDITEX_BRANDS) + r")\.(?:net|com)/(?:photos|assets|public|[0-9]+/photos2?)/(?:[^\s\"'<>\\]|\\u0026)+",
+    re.IGNORECASE,
+)
 _PDP_MAIN_IMAGE = re.compile(r"<img\b[^>]*data-qa-anchor=[\"']pdpMainImage[\"'][^>]*>", re.IGNORECASE)
 _ZARA_COLORS_START = re.compile(r'"colors"\s*:\s*\[')
 _ZARA_COLOR_ENTRY = re.compile(r'\{\s*"id"\s*:\s*"(\d{3})"\s*,([^{}\[\]]{0,600})')
@@ -61,6 +72,20 @@ def canonical_photo_key(url: str) -> str:
     if mango:
         return f"{mango.group(1)}-{mango.group(2).lower()}-{int(mango.group(3))}"
     return name
+
+
+def photo_family(url: str) -> str:
+    """A photo's file name without its shot number: one product in one colour, on any store.
+
+    2026-L2-CK1-61720277-DK.BRW-1 and -5 are one family; -BLACK-1, a swatch or
+    another product's photo is not. Names without a product reference (image-1,
+    image-2) form no family, so recommendations never join through them.
+    """
+    name = canonical_photo_key(url)
+    family = _SHOT_NUMBER.sub("", name)
+    if family == name or sum(ch.isdigit() for ch in family) < 5:
+        return ""
+    return family
 
 
 def mango_page_identity(page_url: str) -> tuple[str, str] | None:
@@ -94,9 +119,11 @@ def zara_page_identity(page_url: str) -> str | None:
 def inditex_image_identity(url: str) -> tuple[str, str] | None:
     """(product_id, colour_code) from a Zara / Inditex asset photo."""
     lower = (url or "").lower()
-    if not any(k in lower for k in _INDITEX_HOSTS):
+    if not is_inditex_cdn(lower):
         return None
-    match = _INDITEX_IMAGE.search(lower)
+    # The file name carries the reference; a folder name alone is not enough.
+    filename = urlsplit(lower).path.rstrip("/").rsplit("/", 1)[-1]
+    match = _INDITEX_IMAGE.search("/" + filename)
     if not match:
         return None
     return match.group(1), match.group(2)
@@ -300,10 +327,11 @@ def inditex_pdp_gallery(html_text: str) -> list[str]:
             if match:
                 src = match.group(1)
                 break
-        url = html_lib.unescape(src).split("?")[0]
+        # The link stays as the page wrote it (?ts=…&w=…): that is the picture the shopper sees.
+        url = html_lib.unescape(src).replace("\\u0026", "&")
         if not url.startswith(("http://", "https://")):
             continue
-        if not any(host in url.lower() for host in _INDITEX_HOSTS) or _shot_role(url) == "skip":
+        if not is_inditex_cdn(url) or _shot_role(url) == "skip":
             continue
         key = canonical_photo_key(url)
         if key and key not in seen:
@@ -381,9 +409,17 @@ def ordered_photos(
                 if u and u not in urls:
                     urls.append(u)
 
-    if fallback and len(fallback) >= 2:
+    # Stores whose photo names carry the product and colour (Inditex, Mango) are
+    # isolated by those names below; their structured data often lists only a few
+    # of the gallery's photos, and trimming to it is how posts lost photos.
+    identified = any(inditex_image_identity(u) or mango_image_identity(u) for u in urls)
+    if fallback and len(fallback) >= 2 and not identified:
         fallback_keys = {canonical_photo_key(u) for u in fallback if u}
-        matching_fallback = [u for u in urls if canonical_photo_key(u) in fallback_keys]
+        # The gallery's other shots of the same files (…-DK.BRW-5 next to …-DK.BRW-1) stay too.
+        families = {photo_family(u) for u in fallback if u} - {""}
+        matching_fallback = [
+            u for u in urls if canonical_photo_key(u) in fallback_keys or photo_family(u) in families
+        ]
         if len(matching_fallback) >= 2:
             urls = matching_fallback
 
@@ -561,15 +597,23 @@ def _zara_urls(html_text: str) -> list[str]:
 
 
 def _inditex_urls(html_text: str) -> list[str]:
-    pattern = r"https://static\.(?:stradivarius|massimodutti|bershka|pullandbear|oysho)\.net/(?:photos|assets|public)/[^\s\"'<>]+"
-    found = re.findall(pattern, html_text)
+    """Photos on a Pull&Bear / Bershka / Lefties / ... page, with their own query kept.
+
+    These CDNs serve the picture for the ts= and w= the page asks for; the
+    size is raised later, the query itself is left as the store wrote it.
+    """
     urls: list[str] = []
-    for url in found:
-        if "/swatches/" in url or "_swatch" in url or "swatch" in url.lower():
+    seen: set[str] = set()
+    for raw in _INDITEX_SISTER_CDN.findall(html_text or ""):
+        url = html_lib.unescape(raw).replace("\\u0026", "&").replace("{width}", "2048").rstrip(".,;\"')")
+        if "swatch" in url.lower():
             continue
-        cleaned = url.replace("{width}", "2048").split("?")[0].rstrip(".,;\"'")
-        if cleaned.lower().endswith((".jpg", ".jpeg", ".webp", ".png")) and cleaned not in urls:
-            urls.append(cleaned)
+        if not urlsplit(url).path.lower().endswith((".jpg", ".jpeg", ".webp", ".png")):
+            continue
+        key = canonical_photo_key(url)
+        if key and key not in seen:
+            seen.add(key)
+            urls.append(url)
     return urls
 
 
@@ -778,17 +822,42 @@ def _keep_zara_selected_color(urls: list[str], html_text: str, page_url: str) ->
 
 
 def _zara_entries(html_text: str) -> list[tuple[str, str]]:
-    """(url, kind) for Zara xmedia, in page order."""
+    """(url, kind) for the photos of every Zara colour gallery, in page order.
+
+    Each colour carries its gallery as an "xmedia" list. The page also lists a
+    cart thumbnail (shopcartMedia) and a colour-switcher picture
+    (colorSelectorMedias) for each colour; neither is a gallery photo.
+    """
     entries: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for match in _ZARA_KIND.finditer(html_text):
+    decoder = json.JSONDecoder()
+    for match in _ZARA_XMEDIA.finditer(html_text or ""):
+        try:
+            items, _end = decoder.raw_decode(html_text[match.end() - 1:])
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict) or str(item.get("type") or "image").lower() != "image":
+                continue
+            kind = str(item.get("kind") or "").lower()
+            url = _zara_xmedia_url(item)
+            if not url or _is_watermark(url):
+                continue
+            key = canonical_photo_key(url)
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append((url, kind))
+    if entries:
+        return entries
+    # Older page shape without whole xmedia lists: read the media objects one by one.
+    for match in _ZARA_KIND.finditer(html_text or ""):
         kind = match.group(1).lower()
         window = html_text[match.end(): match.end() + 900]
         url = _zara_url_from_window(window) or _zara_url_from_window(html_text[max(0, match.start() - 400): match.start()])
-        if not url:
-            continue
-        lower_url = url.lower()
-        if "/watermarks/" in lower_url or "/assets/watermark/" in lower_url or "svg-landscape" in lower_url:
+        if not url or _is_watermark(url):
             continue
         key = canonical_photo_key(url)
         if key in seen:
@@ -796,6 +865,29 @@ def _zara_entries(html_text: str) -> list[tuple[str, str]]:
         seen.add(key)
         entries.append((url, kind))
     return entries
+
+
+def _zara_xmedia_url(item: dict) -> str:
+    path = str(item.get("path") or "").strip()
+    name = str(item.get("name") or "").strip()
+    if path and name:
+        if not path.startswith("/"):
+            path = "/" + path
+        base = "https://static.zara.net" + path.rstrip("/")
+        if not base.endswith("/" + name):
+            base = f"{base}/{name}"
+        if not base.lower().endswith((".jpg", ".jpeg", ".webp", ".png")):
+            base += ".jpg"
+        return base
+    direct = str(item.get("url") or (item.get("extraInfo") or {}).get("deliveryUrl") or "")
+    if direct.startswith("http"):
+        return direct.replace("{width}", "2048").split("?")[0]
+    return ""
+
+
+def _is_watermark(url: str) -> bool:
+    lower = url.lower()
+    return "/watermarks/" in lower or "/assets/watermark/" in lower or "svg-landscape" in lower
 
 
 def _zara_url_from_window(window: str) -> str:

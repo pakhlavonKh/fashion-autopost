@@ -47,3 +47,54 @@ def searchable_texts(html_text: str) -> list[str]:
         if extra:
             texts.append(extra)
     return texts
+
+
+def iter_json_values(text: str, limit: int = 400):
+    """Every JSON object or array that parses at some position of the text, in order."""
+    decoder = json.JSONDecoder()
+    idx = 0
+    size = len(text or "")
+    count = 0
+    while idx < size and count < limit:
+        start_obj = text.find("{", idx)
+        start_list = text.find("[", idx)
+        start = start_obj
+        if start < 0 or (start_list >= 0 and start_list < start):
+            start = start_list
+        if start < 0:
+            break
+        try:
+            value, end_offset = decoder.raw_decode(text[start:])
+        except (json.JSONDecodeError, ValueError):
+            idx = start + 1
+            continue
+        idx = start + max(1, end_offset)
+        count += 1
+        if value:
+            yield value
+
+
+_SCRIPT = re.compile(r"<script\b[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
+
+
+def page_json_values(html_text: str, per_script: int = 8):
+    """JSON found in the page's scripts, then in its Next.js payload."""
+    for raw in _SCRIPT.findall(html_text or ""):
+        text = raw.strip()
+        if text and ("{" in text or "[" in text):
+            yield from iter_json_values(text, limit=per_script)
+    hidden = flight_text(html_text)
+    if hidden:
+        yield from iter_json_values(hidden, limit=400)
+
+
+def walk_dicts(value):
+    """Every dict nested anywhere in a decoded JSON value."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            yield item
+            stack.extend(reversed(list(item.values())))
+        elif isinstance(item, list):
+            stack.extend(reversed(item))

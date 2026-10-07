@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 from adapters.base import RawProduct
 from core.color_names import russian_color
-from core.page_data import flight_text
+from core.page_data import flight_text, iter_json_values
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +112,16 @@ class _Variant:
         self.selected = selected
 
 
-def extract_site_facts(html_text: str, url: str = "") -> tuple[str | None, tuple[str, ...]]:
-    """Return the current color name and the full size grid from product HTML."""
+def extract_site_facts(
+    html_text: str,
+    url: str = "",
+    prefer: Sequence[str] = (),
+) -> tuple[str | None, tuple[str, ...]]:
+    """Return the current color name and the full size grid from product HTML.
+
+    prefer names the colour the link opens (its code and its name). A page
+    lists every colour with its own sizes, and those are the ones to show.
+    """
     if not html_text:
         return None, ()
     found: list[_Variant] = []
@@ -127,7 +135,7 @@ def extract_site_facts(html_text: str, url: str = "") -> tuple[str | None, tuple
             _consume(document, "", found)
         found.extend(_variants_from_size_arrays(hidden))
 
-    color, sizes = _choose(found, url)
+    color, sizes = _choose(found, url, prefer)
     sizes = _prefer_sizes(sizes, _sizes_from_dom(html_text))
     if not color:
         color = _color_from_dom(html_text)
@@ -546,12 +554,13 @@ def _size_sort_key(label: str) -> tuple:
     return (2, 0, compact)
 
 
-def _choose(found: list[_Variant], url: str) -> tuple[str | None, tuple[str, ...]]:
+def _choose(found: list[_Variant], url: str, prefer: Sequence[str] = ()) -> tuple[str | None, tuple[str, ...]]:
     if not found:
         return None, ()
+    wanted = {str(token).strip().casefold() for token in prefer if str(token or "").strip()}
     sized = [item for item in found if item.sizes]
     pool = sized or found
-    best = max(pool, key=lambda item: _score(item, url))
+    best = max(pool, key=lambda item: _score(item, url, wanted))
     color = best.color
     if not color:
         related = [
@@ -559,18 +568,23 @@ def _choose(found: list[_Variant], url: str) -> tuple[str | None, tuple[str, ...
             if item.color and set(item.ids) & set(best.ids)
         ]
         if related:
-            color = max(related, key=lambda item: _score(item, url)).color
+            color = max(related, key=lambda item: _score(item, url, wanted)).color
         else:
             colored = [item for item in found if item.color]
             if len(colored) == 1:
                 color = colored[0].color
             elif colored:
-                color = max(colored, key=lambda item: _score(item, url)).color
+                color = max(colored, key=lambda item: _score(item, url, wanted)).color
     return color, order_sizes(best.sizes)
 
 
-def _score(item: _Variant, url: str) -> int:
+def _score(item: _Variant, url: str, wanted: set[str] | None = None) -> int:
     score = len(item.sizes)
+    if wanted:
+        if item.color and item.color.strip().casefold() in wanted:
+            score += 400
+        if any(ident.strip().casefold() in wanted for ident in item.ids if ident):
+            score += 400
     if item.color:
         score += 3
     if item.selected:
@@ -601,6 +615,13 @@ def _query_ids(url: str) -> set[str]:
     tail = re.search(r"[_-](\d{2,4})$", parsed.path)
     if tail:
         found.add(tail.group(1))
+    # The colour the link names, wherever the store keeps it (/37066365/75/00, _DK.BRW.html, ?cS=002).
+    from core.dedup import variant_parts
+
+    _product, color = variant_parts(url)
+    if color:
+        found.add(color)
+        found.add(color.upper())
     return found
 
 
@@ -862,26 +883,7 @@ def _iter_json_documents(html_text: str):
 
 
 def _iter_json_in_text(text: str, limit: int):
-    decoder = json.JSONDecoder()
-    idx = 0
-    size = len(text)
-    count = 0
-    while idx < size and count < limit:
-        start_obj = text.find("{", idx)
-        start_list = text.find("[", idx)
-        start = start_obj
-        if start < 0 or (start_list >= 0 and start_list < start):
-            start = start_list
-        if start < 0:
-            break
-        try:
-            value, end_offset = decoder.raw_decode(text[start:])
-            idx = start + max(1, end_offset)
-            count += 1
-            if value:
-                yield value
-        except json.JSONDecodeError:
-            idx = start + 1
+    yield from iter_json_values(text, limit=limit)
 
 
 def _variants_from_size_arrays(html_text: str) -> list[_Variant]:
