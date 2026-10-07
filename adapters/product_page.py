@@ -25,7 +25,7 @@ from core.color_variants import extract_color_variants
 from core.dedup import variant_parts
 from core.gallery import MAX_PRODUCT_PHOTOS, _inditex_urls, ordered_photos, page_gallery_is_authoritative
 from core.store_platforms import inditex_brand, is_inditex
-from core.product_facts import extract_heel_height, extract_site_facts, is_heeled_footwear
+from core.product_facts import extract_heel_height, extract_site_facts, is_footwear, is_heeled_footwear
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +118,14 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
 
 
 def _richness(product: RawProduct | None) -> tuple[int, int, int]:
-    """How complete one read of a product page is: photos, then sizes, then colours."""
+    """How complete one read of a product page is: photos, then whether it has sizes and colours.
+
+    Only the presence of sizes counts, not their number: lists that load further
+    down the page (other products, the menu) only ever add to a size list.
+    """
     if product is None:
         return (-1, -1, -1)
-    return (len(product.photo_urls or ()), len(product.sizes or ()), len(product.color_variants or ()))
+    return (len(product.photo_urls or ()), int(bool(product.sizes)), int(bool(product.color_variants)))
 
 
 def _fuller_read(candidate: RawProduct, current: RawProduct) -> bool:
@@ -166,12 +170,13 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
     images = ordered_photos(html_text, brand, url, images, max_photos=MAX_PRODUCT_PHOTOS)
     external_id = generate_deterministic_id(brand, raw_id=chosen.raw_id or None, url=url)
     title = " ".join(chosen.title.split("|")[0].split())
-    color, sizes = extract_site_facts(html_text, url)
+    footwear = is_footwear(title, url) or None
+    color, sizes = extract_site_facts(html_text, url, footwear=footwear)
     variants = tuple(extract_color_variants(html_text, url, current_color=color))
     selected = next((item for item in variants if item.selected), None)
     if selected is not None and (color or "").strip().casefold() != selected.name.strip().casefold():
         # The page's first colour is not the one in the link: take that colour's own name and sizes.
-        _first, own_sizes = extract_site_facts(html_text, url, prefer=(selected.code, selected.name))
+        _first, own_sizes = extract_site_facts(html_text, url, prefer=(selected.code, selected.name), footwear=footwear)
         if not selected.name.startswith("Цвет "):
             color = selected.name
         sizes = own_sizes or sizes
