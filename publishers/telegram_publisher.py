@@ -16,6 +16,7 @@ from core.pricing import whole_price
 from core.image_downloader import ImageDownloader, is_blank_image, prepare_original_jpeg, unique_images
 from core.resilience import retry_with_backoff
 from publishers.base import PublishResult
+from publishers.instagram_publisher import _keep_product_angles
 
 logger = logging.getLogger(__name__)
 
@@ -262,23 +263,20 @@ class TelegramPublisher:
         return slides
 
     def _send_all_photos(self, photos: list[str], caption: str, chat_id: str) -> str:
-        """Send every photo. Telegram albums hold 10, so the rest follow as further albums.
+        """Send the post as one message: one album of at most 10 photos with the caption.
 
-        The sales caption is on the first album only.
+        Photos past the tenth used to follow as a second message under the post.
+        As in an Instagram carousel, model shots are trimmed from the middle and the
+        closing front, back and close-up of the product stay.
         """
         if not photos:
             raise RuntimeError("No photos to send")
-        first_id = ""
-        for index in range(0, len(photos), TELEGRAM_ALBUM_SIZE):
-            batch = photos[index:index + TELEGRAM_ALBUM_SIZE]
-            batch_caption = caption if index == 0 else ""
-            if len(batch) > 1:
-                msg_id = self._send_media_group_with_retry(batch, batch_caption, chat_id=chat_id)
-            else:
-                msg_id = self._send_photo_with_retry(batch[0], batch_caption, chat_id=chat_id)
-            if not first_id:
-                first_id = msg_id
-        return first_id
+        if len(photos) > TELEGRAM_ALBUM_SIZE:
+            logger.info("Posting %s of %s photos: a Telegram album holds %s", TELEGRAM_ALBUM_SIZE, len(photos), TELEGRAM_ALBUM_SIZE)
+            photos = _keep_product_angles(photos, TELEGRAM_ALBUM_SIZE)
+        if len(photos) > 1:
+            return self._send_media_group_with_retry(photos, caption, chat_id=chat_id)
+        return self._send_photo_with_retry(photos[0], caption, chat_id=chat_id)
 
     @retry_with_backoff(max_attempts=3, base_delay=2.0, max_delay=10.0, exceptions=(httpx.HTTPError,))
     def _send_media_group_with_retry(
