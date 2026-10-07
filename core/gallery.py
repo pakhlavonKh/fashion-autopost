@@ -15,7 +15,7 @@ import re
 from urllib.parse import parse_qs, urljoin, urlsplit
 import httpx
 
-from core.store_platforms import INDITEX_BRANDS, is_inditex_cdn
+from core.store_platforms import INDITEX_BRANDS, inditex_brand, is_inditex_cdn
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +168,11 @@ def keep_single_product(urls: list[str], page_url: str = "", anchor_url: str = "
     inditex = [(url, inditex_image_identity(url)) for url in urls if url]
     inditex_identified = [(url, ident) for url, ident in inditex if ident]
     if inditex_identified:
+        # The colour the link names (?cS=800, ?colorId=001) wins over the colour
+        # of the page's first photo, which may be the store's default colour.
+        in_link_colour = _link_colour_photos(inditex_identified, page_url, anchor_url)
+        if in_link_colour:
+            return in_link_colour
         if anchor_url:
             anchor_ident = inditex_image_identity(anchor_url)
             if anchor_ident:
@@ -238,6 +243,32 @@ def keep_single_product(urls: list[str], page_url: str = "", anchor_url: str = "
                 return same_slug
 
     return cleaned_urls
+
+
+def _link_colour_photos(identified: list[tuple[str, tuple[str, str]]], page_url: str, anchor_url: str) -> list[str]:
+    """Photos in the colour the link names, of the anchor's product (or the product most shown in it).
+
+    Only for the Inditex chains that name a colour by its code (Pull&Bear ?cS=,
+    the others ?colorId=); Zara's ?v1= names a product, not a colour.
+    """
+    from core.dedup import variant_parts
+
+    if inditex_brand(page_url) in ("", "zara"):
+        return []
+    _product, colour = variant_parts(page_url)
+    if not re.fullmatch(r"\d{3}", colour or ""):
+        return []
+    in_colour = [(url, ident) for url, ident in identified if ident[1] == colour]
+    if not in_colour:
+        return []
+    anchor = inditex_image_identity(anchor_url) if anchor_url else None
+    if anchor:
+        return [url for url, ident in in_colour if ident[0] == anchor[0]]
+    counts: dict[str, int] = {}
+    for _url, ident in in_colour:
+        counts[ident[0]] = counts.get(ident[0], 0) + 1
+    product = max(counts, key=lambda item: (counts[item], -list(counts).index(item)))
+    return [url for url, ident in in_colour if ident[0] == product]
 
 
 def arrange_carousel(

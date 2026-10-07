@@ -191,3 +191,46 @@ def test_declining_a_repeat_returns_to_the_colour_menu(tmp_path: Path) -> None:
     bot.handle_update(_callback(ADMIN_ID, f"repeat:no:{draft.id}", update_id=3))
     assert "Какой цвет опубликовать" in sent[-1][1]
     assert bot.repo.get_manual_post(draft.id).status == "awaiting_color"
+
+
+class _ThinReadRunner(_Runner):
+    """A page read that found one photo and no sizes (the Pull&Bear post before the fix)."""
+
+    def __init__(self, photo_count: int, size_count: int) -> None:
+        super().__init__()
+        self.photo_count = photo_count
+        self.size_count = size_count
+
+    def prepare_manual_draft_data(self, product_url: str) -> dict:
+        return {
+            "processed_url": product_url,
+            "title": "Ретро-кроссовки",
+            "price_final": 72,
+            "currency": "USD",
+            "header": "Ретро-кроссовки-72$",
+            "description": "Ретро-кроссовки-72$\nЦвет: натуральный.",
+            "photo_url": "https://example.com/natur.jpg",
+            "photo_count": self.photo_count,
+            "size_count": self.size_count,
+            "colors": [],
+        }
+
+
+PULL_AND_BEAR = "https://www.pullandbear.com/de/retrosneaker-l11308840?cS=002&pelement=753677463"
+
+
+def test_the_admin_is_warned_when_the_page_gave_one_photo_and_no_sizes(tmp_path: Path) -> None:
+    bot, sent, _scheduler, _ = _bot(tmp_path, runner=_ThinReadRunner(photo_count=1, size_count=0))
+    bot.handle_update(_message(ADMIN_ID, PULL_AND_BEAR, update_id=1))
+    preview = sent[-1][1]
+    assert "Фото на сайте: 1" in preview
+    assert "нашлось только 1 фото" in preview
+    assert "Размеры на странице не найдены" in preview
+
+
+def test_a_full_read_shows_no_warning(tmp_path: Path) -> None:
+    bot, sent, _scheduler, _ = _bot(tmp_path, runner=_ThinReadRunner(photo_count=5, size_count=6))
+    bot.handle_update(_message(ADMIN_ID, PULL_AND_BEAR, update_id=1))
+    preview = sent[-1][1]
+    assert "📸 Фото на сайте: 5. В пост пойдут все.\n\nСсылку принял" in preview
+    assert "⚠️" not in preview and "ℹ️" not in preview

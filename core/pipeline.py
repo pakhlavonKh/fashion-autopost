@@ -419,6 +419,7 @@ class PipelineRunner:
             "description": part1,
             "photo_url": photo_url,
             "photo_count": len(getattr(product, "photo_urls", None) or []),
+            "size_count": len(getattr(product, "sizes", None) or ()),
             "color": product_color or product.color or "",
             "colors": colors,
         }

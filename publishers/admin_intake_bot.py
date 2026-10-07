@@ -64,6 +64,7 @@ class AdminIntakeBot:
         # shows the stored text with its «use this description» button.
         self._own_caption: dict[int, bool] = {}
         self._photo_counts: dict[int, int] = {}
+        self._size_counts: dict[int, int | None] = {}
 
     def _instagram_on(self) -> bool:
         """Live flag. The admin panel can turn Instagram back on without a code change."""
@@ -415,6 +416,7 @@ class AdminIntakeBot:
                     item["description"] = (draft_data.get("description") or "").strip()
                     item["photo_url"] = draft_data.get("photo_url")
                     item["photo_count"] = draft_data.get("photo_count")
+                    item["size_count"] = draft_data.get("size_count")
             draft = self.repo.create_manual_draft(
                 str(user_id),
                 chat_id,
@@ -443,6 +445,7 @@ class AdminIntakeBot:
             auto_desc=(draft_data.get("description") or "").strip(),
             photo_url=draft_data.get("photo_url"),
             photo_count=draft_data.get("photo_count"),
+            size_count=draft_data.get("size_count"),
             also_check=[original_url],
         )
 
@@ -567,12 +570,14 @@ class AdminIntakeBot:
         auto_desc = (item.get("description") or "").strip()
         photo_url = item.get("photo_url")
         photo_count = item.get("photo_count")
+        size_count = item.get("size_count")
         if not auto_desc and not post.custom_description:
             self._send(chat_id, f"⏳ Готовлю описание для цвета «{html.escape(_color_label(item))}»…")
             data = self._prepare_draft_data(url)
             auto_desc = (data.get("description") or "").strip()
             photo_url = data.get("photo_url") or photo_url
             photo_count = data.get("photo_count") or photo_count
+            size_count = data.get("size_count", size_count)
         extra = [post.original_product_url] if item.get("selected") and post.original_product_url else []
         return self._after_color_chosen(
             chat_id,
@@ -580,6 +585,7 @@ class AdminIntakeBot:
             auto_desc=auto_desc,
             photo_url=photo_url,
             photo_count=photo_count,
+            size_count=size_count,
             also_check=[u for u in extra if not link_names_color(u)],
             color_name=_color_label(item),
         )
@@ -591,6 +597,7 @@ class AdminIntakeBot:
         auto_desc: str = "",
         photo_url: str | None = None,
         photo_count: int | None = None,
+        size_count: int | None = None,
         also_check: list[str] | None = None,
         color_name: str = "",
     ) -> str:
@@ -607,6 +614,7 @@ class AdminIntakeBot:
         if changes:
             self.repo.update_manual_post(post_id, **changes)
         self._photo_counts[post_id] = photo_count or 0
+        self._size_counts[post_id] = size_count
         self._own_caption[post_id] = own_caption
 
         if self._is_published(post.product_url, *(also_check or [])):
@@ -656,7 +664,9 @@ class AdminIntakeBot:
         # Later it may hold the auto text as well; the dialogue remembers which.
         own_caption = bool(post.custom_description) if multi else self._own_caption.get(post_id, False)
         photo_count = self._photo_counts.get(post_id) or 0
-        photo_line = f"📸 Фото на сайте: {photo_count}. В пост пойдут все.\n\n" if photo_count else ""
+        photo_line = f"📸 Фото на сайте: {photo_count}. В пост пойдут все.\n" if photo_count else ""
+        photo_line += _read_warnings(photo_count, self._size_counts.get(post_id))
+        photo_line += "\n" if photo_line else ""
 
         if own_caption:
             self.repo.update_manual_post(post_id, status="awaiting_time")
@@ -1138,6 +1148,19 @@ def _command_name(text: str) -> str | None:
 
 
 _COLOR_LINE = re.compile(r"^\s*цвет\s*:.*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _read_warnings(photo_count: int, size_count: int | None) -> str:
+    """What the page read missed, for the admin to see before the post goes out."""
+    lines = ""
+    if photo_count == 1:
+        lines += (
+            "⚠️ На странице нашлось только 1 фото. Если на сайте их больше, "
+            "пришлите ссылку ещё раз или напишите разработчику.\n"
+        )
+    if size_count == 0:
+        lines += "ℹ️ Размеры на странице не найдены: строки с размерами в описании не будет.\n"
+    return lines
 
 
 def swap_color_line(text: str, color: str) -> str:
