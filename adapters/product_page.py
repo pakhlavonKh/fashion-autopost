@@ -22,6 +22,7 @@ import httpx
 from adapters.base import RawProduct
 from adapters.scrapers.base import generate_deterministic_id, parse_price
 from core.color_variants import extract_color_variants
+from core.dedup import variant_parts
 from core.gallery import MAX_PRODUCT_PHOTOS, _inditex_urls, ordered_photos, page_gallery_is_authoritative
 from core.store_platforms import inditex_brand, is_inditex
 from core.product_facts import extract_heel_height, extract_site_facts, is_heeled_footwear
@@ -49,6 +50,15 @@ _page_cache: tuple[str, str, str, float] | None = None
 BROWSER_ATTEMPTS = 3
 BROWSER_RETRY_PAUSE_SECONDS = 2.0
 
+# A store that draws its page in the browser shows the product before the whole
+# gallery and the size list: more photos come in as the shopper scrolls, sizes
+# after the stock call. The read goes on until neither grows.
+SETTLE_SNAPSHOTS = 2
+SCROLL_STEPS = 12
+# Fewer photos than this from a plain request: the page is read in Chrome too,
+# and the fuller of the two reads is kept.
+FULL_GALLERY = 3
+
 
 class ProductPageError(Exception):
     """The page did not contain a usable product title, price, and photo."""
@@ -70,10 +80,14 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
     del headless  # Store walls reject headless Chrome; the browser fallback is headed.
     final_url, html_text = _fetch_html_fast(url, timeout_seconds)
     product = parse_product_html(html_text, final_url) if html_text else None
-    if product is not None:
+    if product is not None and len(product.photo_urls) >= FULL_GALLERY:
+        _remember_page(url, final_url, html_text)
         return product
 
-    logger.info("Fast fetch missed product data for %s, opening the page in Chrome", final_url)
+    if product is None:
+        logger.info("Fast fetch missed product data for %s, opening the page in Chrome", final_url)
+    else:
+        logger.info("Fast fetch gave %s photo(s) for %s, reading the page in Chrome too", len(product.photo_urls), final_url)
     rendered = ""
     rendered_url = final_url
     for attempt in range(2):
@@ -82,9 +96,12 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
         except Exception as exc:
             logger.warning("Chrome product fetch failed for %s: %s", final_url, exc)
             rendered, rendered_url = "", final_url
-        product = parse_product_html(rendered, rendered_url or final_url) if rendered else None
-        if product is not None:
-            return product
+        browser_product = parse_product_html(rendered, rendered_url or final_url) if rendered else None
+        if browser_product is not None:
+            if product is None or _fuller_read(browser_product, product):
+                _remember_page(url, rendered_url or final_url, rendered)
+                return browser_product
+            break
         # A short or blocked document is usually a display/startup miss. Retry once.
         if rendered and not _is_blocked_page(rendered) and len(rendered) > 20000:
             break
@@ -94,7 +111,24 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
             final_url,
             len(rendered),
         )
+    if product is not None:
+        _remember_page(url, final_url, html_text)
+        return product
     raise ProductPageError(_unreadable_message(url))
+
+
+def _richness(product: RawProduct | None) -> tuple[int, int, int]:
+    """How complete one read of a product page is: photos, then sizes, then colours."""
+    if product is None:
+        return (-1, -1, -1)
+    return (len(product.photo_urls or ()), len(product.sizes or ()), len(product.color_variants or ()))
+
+
+def _fuller_read(candidate: RawProduct, current: RawProduct) -> bool:
+    """The candidate shows the same product in the same colour, more completely."""
+    if variant_parts(candidate.product_url) != variant_parts(current.product_url):
+        return False
+    return _richness(candidate) > _richness(current)
 
 
 def parse_product_html(html_text: str, url: str) -> RawProduct | None:
@@ -336,11 +370,13 @@ def fetch_product_html(url: str, timeout_seconds: float = 20.0) -> tuple[str, st
         return cached
 
     final_url, html_text = _fetch_html_fast(url, timeout_seconds)
-    if _carries_product_markup(html_text):
-        return _remember_page(url, final_url or url, html_text)
-
     page_url = final_url or url
-    logger.info("Product page %s came back empty or blocked, opening it in Chrome", page_url)
+    # A long document is not yet a product card: a store app sends a long shell
+    # and draws the card in the browser.
+    if _carries_product_markup(html_text) and parse_product_html(html_text, page_url) is not None:
+        return _remember_page(url, page_url, html_text)
+
+    logger.info("Product page %s came back empty, blocked or as a bare app shell, opening it in Chrome", page_url)
     for attempt in range(1, BROWSER_ATTEMPTS + 1):
         if attempt > 1:
             time.sleep(BROWSER_RETRY_PAUSE_SECONDS)
@@ -363,6 +399,9 @@ def fetch_product_html(url: str, timeout_seconds: float = 20.0) -> tuple[str, st
         logger.warning(
             "Chrome attempt %s of %s still saw a bot wall on %s", attempt, BROWSER_ATTEMPTS, page_url
         )
+    if _carries_product_markup(html_text):
+        # Chrome could not help; the long document is still the best there is.
+        return _remember_page(url, page_url, html_text)
     return page_url, html_text
 
 
@@ -374,7 +413,7 @@ def _carries_product_markup(html_text: str) -> bool:
 
 
 def _cached_page(url: str) -> tuple[str, str] | None:
-    if _page_cache is None or _page_cache[0] != url:
+    if _page_cache is None or url not in (_page_cache[0], _page_cache[1]):
         return None
     if time.monotonic() - _page_cache[3] > PAGE_CACHE_SECONDS:
         return None
@@ -401,7 +440,8 @@ async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
     chrome = "/usr/bin/google-chrome" if os.path.exists("/usr/bin/google-chrome") else None
     kwargs = {
         "headless": False,
-        "browser_args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        # A desktop window: in a small one a lazy gallery shows, and loads, one photo.
+        "browser_args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1366,900"],
     }
     if chrome:
         kwargs["browser_executable_path"] = chrome
@@ -410,19 +450,67 @@ async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
         browser = await uc.start(**kwargs)
         page = await browser.get(url)
         deadline = time.monotonic() + max(12.0, min(timeout_seconds, 40.0))
-        html = ""
-        page_url = url
+        html, page_url = "", url
+        best: tuple[tuple[int, int, int], str, str] | None = None
+        scrolled = False
+        quiet = 0
         while time.monotonic() < deadline:
             await page.sleep(2)
-            html = await page.get_content() or ""
-            page_url = getattr(page, "url", None) or url
-            if not str(page_url).startswith("http"):
-                page_url = url
-            if parse_product_html(html, str(page_url)) is not None:
+            snapshot = await _page_snapshot(page, url)
+            html, page_url = snapshot[1], snapshot[2]
+            if best is None and snapshot[0][0] < 0:
+                continue
+            if best is None or snapshot[0] > best[0]:
+                best, quiet = snapshot, 0
+            else:
+                quiet += 1
+            if not scrolled:
+                # The product is on the page; walk down it so lazy photos and sizes load.
+                best = await _scroll_through(page, url, best, deadline)
+                scrolled = True
+            elif quiet >= SETTLE_SNAPSHOTS:
                 break
-        return html, str(page_url)
+        if best is not None:
+            return best[1], best[2]
+        return html, page_url
     finally:
         _close_chrome(uc, running_before)
+
+
+async def _page_snapshot(page, url: str) -> tuple[tuple[int, int, int], str, str]:
+    """(completeness, HTML, address) of the page as it stands now."""
+    html = await page.get_content() or ""
+    page_url = str(getattr(page, "url", None) or url)
+    if not page_url.startswith("http"):
+        page_url = url
+    return _richness(parse_product_html(html, page_url)), html, page_url
+
+
+async def _scroll_through(page, url: str, best, deadline: float):
+    """Scroll down step by step and back to the top, keeping the fullest view of the page.
+
+    Some galleries load a photo only when it comes into view, and some drop it
+    again once it leaves, so the page is read after every step.
+    """
+    try:
+        for _ in range(SCROLL_STEPS):
+            if time.monotonic() >= deadline:
+                break
+            at_bottom = await page.evaluate(
+                "(() => { window.scrollBy(0, Math.max(600, Math.round(window.innerHeight * 0.8)));"
+                " return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4"
+                " ? 'bottom' : 'more'; })()"
+            )
+            await page.sleep(0.7)
+            snapshot = await _page_snapshot(page, url)
+            if snapshot[0][0] >= 0 and (best is None or snapshot[0] > best[0]):
+                best = snapshot
+            if "bottom" in str(at_bottom):
+                break
+        await page.evaluate("window.scrollTo(0, 0)")
+    except Exception as exc:
+        logger.info("Could not scroll the product page %s: %s", url, exc)
+    return best
 
 
 def _close_chrome(uc, running_before: set) -> None:
