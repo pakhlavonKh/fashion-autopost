@@ -26,6 +26,13 @@ NON_EUROPEAN_MARKET_CODES = frozenset({
 
 REGION_INDEX_PATH = Path("data/europe_region_index.txt")
 
+# Storefronts whose address names no country: the main site is one European
+# market (Marks & Spencer's www.marksandspencer.com is the UK shop; its other
+# countries sit under a path such as /ie/, which is read first).
+HOME_MARKETS = {
+    "marksandspencer.com": "gb",
+}
+
 _KNOWN_MARKET_CODES = EUROPEAN_MARKET_CODES | NON_EUROPEAN_MARKET_CODES
 _LOCALE_TOKEN = re.compile(r"^([a-z]{2})[_-]([a-z]{2})$")
 
@@ -64,7 +71,7 @@ def market_code_from_url(url: str) -> str | None:
         code = _code_from_token(part)
         if code:
             return code
-    return None
+    return HOME_MARKETS.get(".".join(labels[-2:]))
 
 
 def is_european_store_url(url: str) -> bool:

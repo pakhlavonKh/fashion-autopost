@@ -142,6 +142,13 @@ def test_dashboard_scraper_stores_api(tmp_path: Path) -> None:
     assert res_named.status_code == 200
     assert config.scraper.stores["hm"].url.startswith("https://www2.hm.com/es_es/")
 
+    # The customer's attempt: Marks & Spencer's UK site names no country in its address.
+    res_mns = client.post("/api/scraper/stores", json={"name": "Marks & Spencer", "url": "https://marksandspencer.com/"})
+    assert res_mns.status_code == 200
+    mns = config.scraper.stores[res_mns.json()["name"]]
+    assert mns.currency == "GBP"
+    assert mns.url == "https://marksandspencer.com/"
+
     res_unknown = client.post("/api/scraper/stores", json={"name": "unknown-boutique"})
     assert res_unknown.status_code == 400
     assert res_unknown.json()["detail"] == "unknown_brand"
