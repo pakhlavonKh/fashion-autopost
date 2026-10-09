@@ -365,6 +365,7 @@ class ImageDownloader:
 
     def __init__(self, dest_dir: Path | str = DEFAULT_IMAGE_DIR, timeout_seconds: float = 20.0) -> None:
         self.last_blank: list[str] = []
+        self.last_report: list[tuple[str, str]] = []
         self.dest_dir = Path(dest_dir)
         self.timeout_seconds = timeout_seconds
         self.dest_dir.mkdir(parents=True, exist_ok=True)
@@ -456,17 +457,31 @@ class ImageDownloader:
         «the download failed».
         """
         downloaded: list[Path] = []
+        origins: list[tuple[int, str, Path]] = []
+        outcomes: dict[int, tuple[str, str]] = {}
         self.last_blank = []
         for i, url in enumerate(photo_urls):
             sub_id = f"{external_id}_{i}" if external_id else f"item_{i}"
             path = self.download(url, external_id=sub_id)
-            if path and path.is_file():
-                if is_blank_image(path):
-                    logger.warning("Dropping an empty picture instead of a product photo: %s", url)
-                    self.last_blank.append(url)
-                    continue
-                # A light garment on a pale backdrop reads as a flat swatch.
-                if not is_product_angle(url) and is_material_or_color_swatch(path):
-                    continue
-                downloaded.append(path)
-        return unique_images(downloaded)
+            if not path or not path.is_file():
+                outcomes[i] = (url, "failed")
+                continue
+            if is_blank_image(path):
+                logger.warning("Dropping an empty picture instead of a product photo: %s", url)
+                self.last_blank.append(url)
+                outcomes[i] = (url, "blank")
+                continue
+            # A light garment on a pale backdrop reads as a flat swatch.
+            if not is_product_angle(url) and is_material_or_color_swatch(path):
+                logger.info("Dropping a photo that reads as a swatch: %s", url)
+                outcomes[i] = (url, "swatch")
+                continue
+            downloaded.append(path)
+            origins.append((i, url, path))
+        kept = unique_images(downloaded)
+        kept_ids = {id(path) for path in kept}
+        for i, url, path in origins:
+            outcomes[i] = (url, "kept" if id(path) in kept_ids else "duplicate")
+        # What happened to each photo, in the order given: kept, failed, blank, swatch, duplicate.
+        self.last_report = [outcomes[i] for i in sorted(outcomes)]
+        return kept

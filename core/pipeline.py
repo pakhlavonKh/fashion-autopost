@@ -158,6 +158,39 @@ class CollectionSummary:
     errors: list[str] = field(default_factory=list)
 
 
+def post_photo_urls(product: RawProduct) -> list[str]:
+    """The photo links a post of this product carries, in album order, before downloading.
+
+    Related products on the same page (complete the look, other colourways) are
+    not part of the post. --inspect-url runs the same steps.
+    """
+    from core.gallery import MAX_PRODUCT_PHOTOS, arrange_carousel, extract_gallery_photos, keep_single_product
+
+    photo_urls = list(product.photo_urls) if getattr(product, "photo_urls", None) else []
+    if len(photo_urls) <= 1 and product.product_url:
+        try:
+            gallery = extract_gallery_photos(
+                product.product_url,
+                brand=product.source,
+                max_photos=MAX_PRODUCT_PHOTOS,
+            )
+            if gallery:
+                photo_urls = gallery
+        except Exception as exc:
+            logger.debug("Failed to extract gallery photos from %s: %s", product.product_url, exc)
+
+    if not photo_urls and product.photo_url:
+        photo_urls = [product.photo_url]
+    verified = bool(getattr(product, "photos_verified", False)) and photo_urls == list(product.photo_urls or [])
+    if not verified:
+        photo_urls = keep_single_product(
+            photo_urls,
+            product.product_url or "",
+            anchor_url=product.photo_url or "",
+        )
+    return arrange_carousel(photo_urls, max_photos=MAX_PRODUCT_PHOTOS)
+
+
 class PipelineRunner:
     """Orchestrator for the autonomous clothing post publishing pipeline."""
 
@@ -1085,33 +1118,7 @@ class PipelineRunner:
             logger.info("Product %s held in 'pending_review' per ModerationGate.", external_id)
             return False
 
-        # Collect all gallery photos for the product card. Related products on the
-        # same page (complete the look, other colourways) are not part of this post.
-        from core.gallery import MAX_PRODUCT_PHOTOS, arrange_carousel, extract_gallery_photos, keep_single_product
-
-        photo_urls = list(product.photo_urls) if getattr(product, "photo_urls", None) else []
-        if len(photo_urls) <= 1 and product.product_url:
-            try:
-                gallery = extract_gallery_photos(
-                    product.product_url,
-                    brand=product.source,
-                    max_photos=MAX_PRODUCT_PHOTOS,
-                )
-                if gallery:
-                    photo_urls = gallery
-            except Exception as exc:
-                logger.debug("Failed to extract gallery photos from %s: %s", product.product_url, exc)
-
-        if not photo_urls and product.photo_url:
-            photo_urls = [product.photo_url]
-        verified = bool(getattr(product, "photos_verified", False)) and photo_urls == list(product.photo_urls or [])
-        if not verified:
-            photo_urls = keep_single_product(
-                photo_urls,
-                product.product_url or "",
-                anchor_url=product.photo_url or "",
-            )
-        photo_urls = arrange_carousel(photo_urls, max_photos=MAX_PRODUCT_PHOTOS)
+        photo_urls = post_photo_urls(product)
 
         # Download all photos locally for binary posting & multi-photo albums
         downloaded_paths = []

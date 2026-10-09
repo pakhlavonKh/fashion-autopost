@@ -265,3 +265,28 @@ def test_telegram_does_not_hand_over_a_link_that_came_back_empty(tmp_path: Path)
     assert len(store.get.call_args_list) == 3
     assert result.success is False
     assert sent.post.call_args_list == []
+
+
+def test_download_all_says_what_happened_to_each_photo(tmp_path: Path) -> None:
+    import shutil
+
+    shoe = _white_sneaker(tmp_path / "shoe.jpg")
+    copy = tmp_path / "shoe-copy.jpg"
+    shutil.copy(shoe, copy)
+    empty = _placeholder(tmp_path / "empty.jpg")
+    chip = tmp_path / "chip.jpg"
+    fabric = Image.new("RGB", (200, 200), (180, 40, 40))
+    for x in range(0, 200, 8):
+        ImageDraw.Draw(fabric).line((x, 0, x, 200), fill=(150, 30, 30), width=3)
+    fabric.save(chip)
+    missing = tmp_path / "missing.jpg"
+    downloader = ImageDownloader(dest_dir=tmp_path / "out")
+    kept = downloader.download_all([str(shoe), str(missing), str(empty), str(chip), str(copy)], external_id="x")
+    assert kept == [shoe]
+    assert downloader.last_report == [
+        (str(shoe), "kept"),
+        (str(missing), "failed"),
+        (str(empty), "blank"),
+        (str(chip), "swatch"),
+        (str(copy), "duplicate"),
+    ]
