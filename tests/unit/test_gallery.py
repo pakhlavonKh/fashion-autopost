@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
-from core.gallery import arrange_carousel, is_product_angle, ordered_photos
+from core.gallery import arrange_carousel, is_product_angle, keep_single_product, ordered_photos
 from core.image_downloader import ImageDownloader, unique_images
 
 
@@ -367,3 +367,28 @@ def test_hm_opaque_hex_hashes_not_collapsed_to_single_photo() -> None:
     assert len(kept) == 3
 
 
+
+
+def test_view_words_in_photo_names_never_split_one_product() -> None:
+    # Before: the main photo's word "main" was taken for the product, and 1 of 4 photos stayed.
+    urls = [f"https://cdn.example.com/files/ABC123_{view}.jpg" for view in ("main", "back", "side", "detail")]
+    assert keep_single_product(urls, "https://shop.example.com/products/linen-shirt", anchor_url=urls[0]) == urls
+
+
+def test_photos_with_neutral_names_stay_with_the_product() -> None:
+    urls = [
+        "https://cdn.example.com/files/linen-shirt-white-front.jpg",
+        "https://cdn.example.com/files/IMG_2041.jpg",
+        "https://cdn.example.com/files/IMG_2042.jpg",
+        "https://cdn.example.com/files/linen-shirt-white-back.jpg",
+    ]
+    assert keep_single_product(urls, "https://shop.example.com/products/linen-shirt-white", anchor_url=urls[0]) == urls
+
+
+def test_photos_of_other_products_still_go() -> None:
+    by_code = [f"https://cdn.example.com/files/{code}_{view}.jpg" for code, view in
+               (("ABC123", "main"), ("ABC123", "back"), ("XYZ987", "main"), ("QRS555", "front"))]
+    assert keep_single_product(by_code, "https://shop.example.com/products/linen-shirt", anchor_url=by_code[0]) == by_code[:2]
+    by_words = ["https://cdn.example.com/f/red-dress-front.jpg", "https://cdn.example.com/f/red-dress-back.jpg",
+                "https://cdn.example.com/f/blue-shirt-front.jpg", "https://cdn.example.com/f/cotton-trousers.jpg"]
+    assert keep_single_product(by_words, "https://shop.example.com/p/12345", anchor_url=by_words[0]) == by_words[:2]

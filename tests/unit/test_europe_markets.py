@@ -79,3 +79,19 @@ def test_resolve_rotates_one_european_market(tmp_path: Path) -> None:
     assert "/tr/" not in first["mango"].url
     assert "/fr/" in second["zara"].url
     assert second["mango"].currency == "EUR"
+
+
+def test_marks_and_spencer_main_site_is_the_uk_shop() -> None:
+    from adapters.europe_markets import currency_for_market, market_code_from_url
+
+    # The customer's link: no country in the address, still a European (UK) catalog.
+    assert market_code_from_url("https://marksandspencer.com/") == "gb"
+    assert is_european_store_url("https://marksandspencer.com/") is True
+    assert currency_for_market(market_code_from_url("https://www.marksandspencer.com/l/women/new-in")) == "GBP"
+    # Its other countries are named in the path, and that wins.
+    assert market_code_from_url("https://www.marksandspencer.com/ie/l/women") == "ie"
+
+
+def test_an_address_without_a_country_is_still_not_taken_for_europe() -> None:
+    assert is_european_store_url("https://www.zara.com/") is False
+    assert is_european_store_url("https://boutique.example.com/catalog") is False

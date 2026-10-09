@@ -280,6 +280,25 @@ def is_blank_image(image_path: Path) -> bool:
     return spread <= BLANK_SPREAD and stddev < BLANK_STDDEV
 
 
+def _object_on_plain_backdrop(image) -> bool:
+    """True for a product photo: plain edges, and something in the middle that differs from them."""
+    from PIL import Image, ImageStat
+
+    side = 120
+    border = 8
+    grey = image.resize((side, side), Image.Resampling.BOX).convert("L")
+    edge = Image.new("L", (side, side), 0)
+    edge.paste(255, (0, 0, side, border))
+    edge.paste(255, (0, side - border, side, side))
+    edge.paste(255, (0, 0, border, side))
+    edge.paste(255, (side - border, 0, side, side))
+    edges = ImageStat.Stat(grey, mask=edge)
+    middle = ImageStat.Stat(grey.crop((side // 4, side // 4, side * 3 // 4, side * 3 // 4)))
+    if edges.stddev[0] > 3.0:
+        return False
+    return middle.stddev[0] > edges.stddev[0] + 1.5 or abs(middle.mean[0] - edges.mean[0]) > 2.0
+
+
 def is_material_or_color_swatch(image_path: Path) -> bool:
     """Detect if an image is a single-color or fabric texture swatch rather than a full product photo.
 
@@ -299,9 +318,16 @@ def is_material_or_color_swatch(image_path: Path) -> bool:
             # are studio garment shots, not fabric swatch tiles.
             if max(w, h) >= 1200 and min(w, h) >= 600:
                 return False
-            stat = ImageStat.Stat(im.convert("RGB"))
+            rgb = im.convert("RGB")
+            stat = ImageStat.Stat(rgb)
             avg_std = sum(stat.stddev) / len(stat.stddev)
             if avg_std < 18.0:
+                # A light product on a light backdrop (white sneakers, a pale shirt) has
+                # as little colour spread as a swatch, but a plain backdrop runs along
+                # its edges with the product inside; a swatch is one tone or one
+                # texture from edge to edge.
+                if _object_on_plain_backdrop(rgb):
+                    return False
                 logger.info("Filtered swatch image %s: low color variance (stddev=%.2f, single-color texture)", image_path.name, avg_std)
                 return True
     except Exception as exc:
@@ -365,6 +391,7 @@ class ImageDownloader:
 
     def __init__(self, dest_dir: Path | str = DEFAULT_IMAGE_DIR, timeout_seconds: float = 20.0) -> None:
         self.last_blank: list[str] = []
+        self.last_report: list[tuple[str, str]] = []
         self.dest_dir = Path(dest_dir)
         self.timeout_seconds = timeout_seconds
         self.dest_dir.mkdir(parents=True, exist_ok=True)
@@ -456,17 +483,31 @@ class ImageDownloader:
         «the download failed».
         """
         downloaded: list[Path] = []
+        origins: list[tuple[int, str, Path]] = []
+        outcomes: dict[int, tuple[str, str]] = {}
         self.last_blank = []
         for i, url in enumerate(photo_urls):
             sub_id = f"{external_id}_{i}" if external_id else f"item_{i}"
             path = self.download(url, external_id=sub_id)
-            if path and path.is_file():
-                if is_blank_image(path):
-                    logger.warning("Dropping an empty picture instead of a product photo: %s", url)
-                    self.last_blank.append(url)
-                    continue
-                # A light garment on a pale backdrop reads as a flat swatch.
-                if not is_product_angle(url) and is_material_or_color_swatch(path):
-                    continue
-                downloaded.append(path)
-        return unique_images(downloaded)
+            if not path or not path.is_file():
+                outcomes[i] = (url, "failed")
+                continue
+            if is_blank_image(path):
+                logger.warning("Dropping an empty picture instead of a product photo: %s", url)
+                self.last_blank.append(url)
+                outcomes[i] = (url, "blank")
+                continue
+            # A light garment on a pale backdrop reads as a flat swatch.
+            if not is_product_angle(url) and is_material_or_color_swatch(path):
+                logger.info("Dropping a photo that reads as a swatch: %s", url)
+                outcomes[i] = (url, "swatch")
+                continue
+            downloaded.append(path)
+            origins.append((i, url, path))
+        kept = unique_images(downloaded)
+        kept_ids = {id(path) for path in kept}
+        for i, url, path in origins:
+            outcomes[i] = (url, "kept" if id(path) in kept_ids else "duplicate")
+        # What happened to each photo, in the order given: kept, failed, blank, swatch, duplicate.
+        self.last_report = [outcomes[i] for i in sorted(outcomes)]
+        return kept

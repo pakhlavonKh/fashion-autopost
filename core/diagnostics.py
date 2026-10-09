@@ -74,6 +74,7 @@ def inspect_product_url(url: str, save_dir: Path = DIAG_DIR) -> str:
         lines.append(f"Фото для поста: {len(product.photo_urls)}")
         lines.extend(f"  {index + 1}. {photo}" for index, photo in enumerate(product.photo_urls))
         lines.extend(probe_photos(product.photo_urls))
+        lines.extend(post_selection(product))
 
     if variants:
         lines.append(f"Цветов: {len(variants)}")
@@ -134,4 +135,31 @@ def probe_photos(photo_urls: list[str], limit: int = 30) -> list[str]:
             usable += good
             lines.append(f"  {index}. {'ок' if good else 'НЕТ ФОТО'} — " + "; ".join(verdicts))
     lines.append(f"Годных фото: {usable} из {min(len(photo_urls), limit)}")
+    return lines
+
+
+_OUTCOMES = {
+    "kept": "в посте",
+    "failed": "не скачалось",
+    "blank": "пустая картинка",
+    "swatch": "отсеяно как образец ткани",
+    "duplicate": "отсеяно как дубль другого фото",
+}
+
+
+def post_selection(product) -> list[str]:
+    """The photos a post of this product would carry: the same steps as publishing, without posting."""
+    from core.image_downloader import ImageDownloader
+    from core.pipeline import post_photo_urls
+
+    urls = post_photo_urls(product)
+    lines = [f"Отбор фото для поста (как при публикации): ссылок {len(urls)}"]
+    with tempfile.TemporaryDirectory() as folder:
+        downloader = ImageDownloader(dest_dir=Path(folder))
+        kept = downloader.download_all(urls, external_id="inspect")
+        for index, (url, outcome) in enumerate(downloader.last_report, start=1):
+            name = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+            lines.append(f"  {index}. {_OUTCOMES.get(outcome, outcome)} — {name}")
+    album = min(len(kept), 10)
+    lines.append(f"В пост попадёт фото: {album}" + (f" (из {len(kept)}: альбом Telegram вмещает 10)" if len(kept) > 10 else ""))
     return lines

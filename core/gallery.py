@@ -213,18 +213,18 @@ def keep_single_product(urls: list[str], page_url: str = "", anchor_url: str = "
     if len(cleaned_urls) <= 1:
         return cleaned_urls
 
-    # For non-Mango stores: filter by anchor photo stem if provided
+    # Other stores: drop photos named after another product (recommendations).
+    # A photo stays when its name shares the product's code or a meaningful word
+    # with the main photo, or when its name says nothing (IMG_2041, tote_1); view
+    # and size words (main, back, large) never identify a product.
     if anchor_url:
         anchor_name = canonical_photo_key(anchor_url).lower()
         # Opaque hashes (e.g. 24+ hex digits, or image.hm.com) do not contain model-name word tokens
         is_hash = bool(re.fullmatch(r"[0-9a-f]{24,}", anchor_name)) or "image.hm.com" in anchor_url
         if not is_hash:
-            anchor_tokens = [t for t in re.split(r"[-_0-9]+", anchor_name) if len(t) >= 4]
-            if anchor_tokens:
-                same_anchor = [
-                    u for u in cleaned_urls
-                    if any(tok in canonical_photo_key(u).lower() for tok in anchor_tokens)
-                ]
+            codes, words = _name_marks(anchor_name)
+            if codes or words:
+                same_anchor = [u for u in cleaned_urls if _same_product_name(u, codes | words)]
                 if same_anchor and len(same_anchor) < len(cleaned_urls):
                     return same_anchor
 
@@ -233,16 +233,48 @@ def keep_single_product(urls: list[str], page_url: str = "", anchor_url: str = "
         path = urlsplit(page_url).path.rstrip("/")
         slug = path.split("/")[-1].lower()
         slug = re.sub(r"\.(html?|php|asp)$", "", slug)
-        slug_tokens = [t for t in re.split(r"[-_]+", slug) if len(t) >= 4]
+        slug_tokens = {t for t in re.split(r"[-_]+", slug) if len(t) >= 4 and t not in _VIEW_WORDS}
         if slug_tokens:
-            same_slug = [
-                u for u in cleaned_urls
-                if any(tok in canonical_photo_key(u).lower() for tok in slug_tokens)
-            ]
+            same_slug = [u for u in cleaned_urls if _same_product_name(u, slug_tokens)]
             if same_slug and len(same_slug) < len(cleaned_urls):
                 return same_slug
 
     return cleaned_urls
+
+
+# Words in photo names that say how a picture was taken or sized, never which product it shows.
+_VIEW_WORDS = frozenset({
+    "main", "front", "back", "side", "left", "right", "top", "bottom", "detail", "details", "close", "closeup",
+    "zoom", "large", "small", "medium", "thumb", "thumbnail", "image", "images", "photo", "photos", "picture",
+    "product", "products", "default", "primary", "secondary", "view", "model", "look", "still", "flat", "full",
+    "crop", "hero", "mobile", "desktop", "original", "high", "hires", "web", "file", "files", "media", "upload",
+    "uploads", "static", "alt", "packshot", "studio", "gallery", "slide", "shot",
+})
+_SIZE_TOKEN = re.compile(r"^(?:\d{2,5}x\d{0,5}|w\d+|h\d+|\d+w|\d+px|\d{1,5})$")
+
+
+def _name_marks(name: str) -> tuple[set[str], set[str]]:
+    """(product codes, meaningful words) in a photo's file name."""
+    codes = {
+        token
+        for token in re.split(r"[-_.\s]+", name.lower())
+        if len(token) >= 5 and re.search(r"\d", token) and not _SIZE_TOKEN.match(token)
+    }
+    words = {
+        token
+        for token in re.split(r"[-_.\s0-9]+", name.lower())
+        if len(token) >= 4 and token not in _VIEW_WORDS
+    }
+    return codes, words
+
+
+def _same_product_name(url: str, marks: set[str]) -> bool:
+    """The photo's name carries one of the product's marks, or says nothing about any product."""
+    name = canonical_photo_key(url).lower()
+    if any(mark in name for mark in marks):
+        return True
+    codes, words = _name_marks(name)
+    return not codes and not words
 
 
 def _link_colour_photos(identified: list[tuple[str, tuple[str, str]]], page_url: str, anchor_url: str) -> list[str]:
