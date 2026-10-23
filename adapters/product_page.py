@@ -711,32 +711,60 @@ def _cleanup_stale_chrome_temp_dirs(max_age_seconds: float = 1800.0) -> None:
                 pass
 
 
+def _is_display_active(display: str = ":99") -> bool:
+    """Check if an X11 server is actively listening on display."""
+    import socket
+
+    display_num = display.lstrip(":").split(".")[0]
+    socket_path = f"/tmp/.X11-unix/X{display_num}"
+    if not os.path.exists(socket_path):
+        return False
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(1.0)
+        sock.connect(socket_path)
+        return True
+    except Exception:
+        return False
+    finally:
+        sock.close()
+
+
 def _ensure_virtual_display() -> None:
-    global _display_started
-    if os.environ.get("DISPLAY") or not sys.platform.startswith("linux"):
+    if not sys.platform.startswith("linux"):
         return
-    if _display_started:
-        os.environ["DISPLAY"] = ":99"
+
+    display = os.environ.get("DISPLAY") or ":99"
+    if _is_display_active(display):
+        os.environ["DISPLAY"] = display
         return
-    socket_path = "/tmp/.X11-unix/X99"
-    if os.path.exists(socket_path):
-        os.environ["DISPLAY"] = ":99"
-        _display_started = True
-        return
+
+    # Clean up stale locks and sockets if no active X server is listening
+    display_num = display.lstrip(":").split(".")[0]
+    stale_socket = f"/tmp/.X11-unix/X{display_num}"
+    stale_lock = f"/tmp/.X{display_num}-lock"
+    for path in (stale_socket, stale_lock):
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
     if not shutil.which("Xvfb"):
         return
+
     subprocess.Popen(
-        ["Xvfb", ":99", "-screen", "0", "1366x900x24", "-nolisten", "tcp"],
+        ["Xvfb", display, "-screen", "0", "1366x900x24", "-nolisten", "tcp"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    os.environ["DISPLAY"] = ":99"
-    _display_started = True
-    for _ in range(25):
-        if os.path.exists(socket_path):
-            time.sleep(0.3)
+    os.environ["DISPLAY"] = display
+
+    for _ in range(30):
+        if _is_display_active(display):
+            time.sleep(0.2)
             return
-        time.sleep(0.2)
+        time.sleep(0.1)
 
 
 def _best_json_ld(html_text: str, url: str, default_currency: str) -> _ParsedProduct | None:
