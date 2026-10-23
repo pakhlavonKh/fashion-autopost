@@ -681,11 +681,34 @@ def _close_chrome(uc, running_before: set) -> None:
     for browser in list(registry):
         if browser in running_before:
             continue
+        user_data_dir = getattr(getattr(browser, "config", None), "user_data_dir", None)
         try:
             browser.stop()
         except Exception as exc:
             logger.warning("Could not stop the Chrome instance we started: %s", exc)
+        if user_data_dir and os.path.isdir(user_data_dir):
+            try:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
+            except Exception as exc:
+                logger.debug("Could not remove Chrome user data dir %s: %s", user_data_dir, exc)
         registry.discard(browser)
+    _cleanup_stale_chrome_temp_dirs()
+
+
+def _cleanup_stale_chrome_temp_dirs(max_age_seconds: float = 1800.0) -> None:
+    """Purge abandoned nodriver and Chrome temporary directories from /tmp."""
+    import glob
+
+    now = time.time()
+    for pattern in ("/tmp/uc_*", "/tmp/com.google.Chrome.*"):
+        for path in glob.glob(pattern):
+            try:
+                if os.path.isdir(path):
+                    mtime = os.path.getmtime(path)
+                    if now - mtime > max_age_seconds:
+                        shutil.rmtree(path, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def _ensure_virtual_display() -> None:
