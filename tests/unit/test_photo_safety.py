@@ -112,7 +112,7 @@ def test_manual_post_with_only_empty_pictures_is_not_published(tmp_path: Path, m
         sizes=("36", "37", "38"),
     )
     monkeypatch.setattr("core.pipeline.fetch_product_page", lambda url, headless=True: product)
-    monkeypatch.setattr("core.pipeline.process_product_url_with_playwright", lambda url, headless=True: (url, ""))
+    monkeypatch.setattr("core.pipeline.resolve_product_url", lambda url: (url, ""))
     telegram = FakePublisher("telegram")
 
     class _Prompt:

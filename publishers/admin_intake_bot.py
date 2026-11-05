@@ -205,13 +205,17 @@ class AdminIntakeBot:
                 self.repo.update_manual_post(post_id, status="awaiting_time", clear_description=True)
             else:
                 self.repo.set_manual_post_status(post_id, "awaiting_time")
-            self._send(
-                chat_id,
-                f"Описание принято!\n"
-                f"В какое время выложить пост?\n"
-                f"Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
-                f"Часовой пояс: {self.timezone_name}."
-            )
+            self._ask_time(chat_id, post_id, lead="Описание принято!\n")
+
+        elif data.startswith("time:"):
+            try:
+                _, choice, raw_id = data.split(":", 2)
+                post_id = int(raw_id)
+            except ValueError:
+                return
+            reply = self._answer_time_button(chat_id, post_id, choice)
+            if reply:
+                self._send(chat_id, reply)
 
         elif data.startswith("dest:"):
             try:
@@ -248,12 +252,7 @@ class AdminIntakeBot:
             except (ValueError, IndexError):
                 return
             self.repo.set_manual_post_status(post_id, "awaiting_time")
-            self._send(
-                chat_id,
-                f"В какое время выложить пост?\n"
-                f"Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
-                f"Часовой пояс: {self.timezone_name}."
-            )
+            self._ask_time(chat_id, post_id)
 
         elif data.startswith("edit:dest:"):
             try:
@@ -362,12 +361,7 @@ class AdminIntakeBot:
                 return self._accept_time(user_id, chat_id, text)
 
             self.repo.set_manual_post_description(draft.id, text.strip(), next_status="awaiting_time")
-            return (
-                "Описание сохранено!\n"
-                "В какое время выложить пост?\n"
-                "Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
-                f"Часовой пояс: {self.timezone_name}."
-            )
+            return self._ask_time(chat_id, draft.id, lead="Описание сохранено!\n")
 
         if draft.status == "awaiting_time":
             return self._accept_time(user_id, chat_id, text)
@@ -671,12 +665,11 @@ class AdminIntakeBot:
             colour_note = (
                 "Для каждого цвета строка «Цвет: …» подставится своя.\n" if len(post.publish_urls()) > 1 else ""
             )
-            return (
-                f"{photo_line}Ссылку и описание принял.\n{colour_note}"
-                "В какое время выложить пост?\n"
-                "Например: 18:30, завтра 18:30, 29.09 18:30 или «сейчас».\n"
-                f"Часовой пояс: {self.timezone_name}.\n\n"
-                "Контакты и ссылки добавятся автоматически во 2-й части."
+            return self._ask_time(
+                chat_id,
+                post_id,
+                lead=f"{photo_line}Ссылку и описание принял.\n{colour_note}",
+                tail="\n\nКонтакты и ссылки добавятся автоматически во 2-й части.",
             )
 
         self.repo.update_manual_post(post_id, status="awaiting_description")
@@ -877,29 +870,62 @@ class AdminIntakeBot:
                 return ""
             return str(exc)
 
-        time_val = parsed.when
         if parsed.note == "сейчас":
-            time_val = datetime.now(timezone.utc)
+            return self._apply_time(chat_id, draft.id, datetime.now(timezone.utc), now=True, destination=dest_override)
+        return self._apply_time(chat_id, draft.id, parsed.when, destination=dest_override)
 
+    def _ask_time(self, chat_id: str, post_id: int, lead: str = "", tail: str = "") -> str:
+        """Ask when to publish: «Сейчас» in one tap, or a time typed in the chat."""
+        self._send(
+            chat_id,
+            f"{lead}В какое время выложить пост?\n"
+            "Нажмите «⚡ Сейчас» или напишите время: 18:30, завтра 18:30, 29.09 18:30.\n"
+            f"Часовой пояс: {self.timezone_name}.{tail}",
+            reply_markup=_time_keyboard(post_id),
+        )
+        return ""
+
+    def _answer_time_button(self, chat_id: str, post_id: int, choice: str) -> str:
+        post = self.repo.get_manual_post(post_id)
+        if post is None:
+            return "Ошибка: черновик не найден. Пришлите ссылку ещё раз."
+        if post.status != "awaiting_time":
+            return "Время для этого поста уже выбрано. Изменить его можно кнопкой «⏰ Изменить время» в предпросмотре."
+        if choice == "now":
+            return self._apply_time(chat_id, post_id, datetime.now(timezone.utc), now=True)
+        return (
+            "Напишите время сообщением, например: 18:30, завтра 18:30 или 29.09 18:30.\n"
+            f"Часовой пояс: {self.timezone_name}."
+        )
+
+    def _apply_time(
+        self,
+        chat_id: str,
+        post_id: int,
+        when: datetime,
+        now: bool = False,
+        destination: str | None = None,
+    ) -> str:
+        """Save the publish time, then ask for the channel unless it is already known."""
         if not self._instagram_on():
-            dest_override = "telegram"
+            destination = "telegram"
 
-        if dest_override:
-            self.repo.set_manual_post_time(draft.id, time_val, next_status="awaiting_approval")
-            self.repo.set_manual_post_destination(draft.id, dest_override, next_status="awaiting_approval")
-            self._send_prerender(chat_id, draft.id)
+        if destination:
+            self.repo.set_manual_post_time(post_id, when, next_status="awaiting_approval")
+            self.repo.set_manual_post_destination(post_id, destination, next_status="awaiting_approval")
+            self._send_prerender(chat_id, post_id)
             return ""
 
-        updated = self.repo.set_manual_post_time(draft.id, time_val, next_status="awaiting_destination")
+        updated = self.repo.set_manual_post_time(post_id, when, next_status="awaiting_destination")
         if updated is None:
             return "Не удалось сохранить время. Пришлите ссылку ещё раз."
 
-        time_label = "сейчас" if parsed.note == "сейчас" else self._format_local(parsed.when)
+        time_label = "сейчас" if now else self._format_local(when)
         prompt_text = (
             f"Время: {time_label} ({self.timezone_name}).\n"
             f"Куда опубликовать пост?"
         )
-        self._send(chat_id, prompt_text, reply_markup=_destination_keyboard(draft.id))
+        self._send(chat_id, prompt_text, reply_markup=_destination_keyboard(post_id))
         return ""
 
     def _arm_job(self, post_id: int, run_at: datetime) -> None:
@@ -1082,6 +1108,18 @@ def _destination_keyboard(post_id: int) -> dict[str, Any]:
             [
                 {"text": "🌐 Везде (TG + IG)", "callback_data": f"dest:both:{post_id}"},
             ],
+        ]
+    }
+
+
+def _time_keyboard(post_id: int) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "⚡ Сейчас", "callback_data": f"time:now:{post_id}"},
+                {"text": "🕐 Указать время", "callback_data": f"time:ask:{post_id}"},
+            ],
+            [{"text": "❌ Отмена", "callback_data": f"cancel:{post_id}"}],
         ]
     }
 

@@ -172,6 +172,27 @@ def sfcc_color_url(page_url: str, code: str, hint: str = "") -> str:
     return ""
 
 
+_SFCC_PAGE_PID = re.compile(r"/([A-Za-z0-9][A-Za-z0-9.\-]*_[A-Za-z0-9.\-]+)(\.html?)$", re.IGNORECASE)
+
+
+def sfcc_pid_url(page_url: str, hint: str) -> str:
+    """The colour's own page on a store whose page is named after its product id.
+
+    Charles & Keith: …/CK1-61720261_BEIGE.html opens beige; Product-Variation
+    names the black one CK1-61720261_BLACK, so its page is …/CK1-61720261_BLACK.html.
+    """
+    pid = _query_value(hint, "pid")
+    parts = urlsplit(page_url)
+    match = _SFCC_PAGE_PID.search(parts.path)
+    if not pid or not match:
+        return ""
+    master, _sep, _colour = match.group(1).rpartition("_")
+    if not master or not pid.lower().startswith(master.lower() + "_"):
+        return ""
+    path = parts.path[: match.start(1)] + pid + match.group(2)
+    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+
 def _query_value(url: str, *keys: str) -> str:
     wanted = {key.lower() for key in keys}
     for name, value in parse_qsl(urlsplit(url or "").query):
@@ -405,7 +426,11 @@ def _variation_attribute_variants(text: str, page_url: str) -> list[ColorVariant
                 code = str(value.get("value") or value.get("id") or "").strip()
                 name = " ".join(str(value.get("displayValue") or value.get("name") or code).split())
                 hint = _entry_url(value, page_url)
-                url = sfcc_color_url(page_url, code, hint) or (hint if hint and "Product-Variation" not in hint else "")
+                url = (
+                    sfcc_pid_url(page_url, hint)
+                    or sfcc_color_url(page_url, code, hint)
+                    or (hint if hint and "Product-Variation" not in hint else "")
+                )
                 if code and name and url:
                     variants.append(ColorVariant(code, name, url, _selected(value)))
             if len(variants) >= 2:

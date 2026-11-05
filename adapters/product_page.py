@@ -26,7 +26,14 @@ from core.color_variants import extract_color_variants
 from core.dedup import variant_parts
 from core.gallery import MAX_PRODUCT_PHOTOS, _inditex_urls, ordered_photos, page_gallery_is_authoritative
 from core.store_platforms import inditex_brand, is_inditex
-from core.product_facts import extract_heel_height, extract_site_facts, is_footwear, is_heeled_footwear
+from core.product_facts import (
+    extract_bag_size,
+    extract_heel_height,
+    extract_site_facts,
+    is_bag,
+    is_footwear,
+    is_heeled_footwear,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +67,8 @@ SCROLL_STEPS = 12
 # Fewer photos than this from a plain request: the page is read in Chrome too,
 # and the fuller of the two reads is kept.
 FULL_GALLERY = 3
+# A Chrome read still short of that gets one more read.
+SHORT_GALLERY_READS = 2
 
 # Pages built from web components keep their gallery, size list and colour
 # swatches inside shadow roots, which the page HTML leaves out (Pull&Bear's
@@ -140,6 +149,7 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
     """Load a product URL and return a normalized product."""
     del headless  # Store walls reject headless Chrome; the browser fallback is headed.
     final_url, html_text = _fetch_html_fast(url, timeout_seconds)
+    html_text = _with_sfcc_variations(html_text, final_url)
     product = parse_product_html(html_text, final_url) if html_text else None
     if product is not None and len(product.photo_urls) >= FULL_GALLERY:
         _remember_page(url, final_url, html_text)
@@ -151,6 +161,7 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
         logger.info("Fast fetch gave %s photo(s) for %s, reading the page in Chrome too", len(product.photo_urls), final_url)
     rendered = ""
     rendered_url = final_url
+    best: tuple[RawProduct, str, str] | None = None
     for attempt in range(BROWSER_ATTEMPTS):
         if attempt:
             time.sleep(BROWSER_RETRY_PAUSE_SECONDS)
@@ -161,9 +172,19 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
             rendered, rendered_url = "", final_url
         browser_product = parse_product_html(rendered, rendered_url or final_url) if rendered else None
         if browser_product is not None:
-            if product is None or _fuller_read(browser_product, product):
-                _remember_page(url, rendered_url or final_url, rendered)
-                return browser_product
+            if best is None or _fuller_read(browser_product, best[0]):
+                best = (browser_product, rendered_url or final_url, rendered)
+            if len(best[0].photo_urls) >= FULL_GALLERY or attempt + 1 >= SHORT_GALLERY_READS:
+                break
+            # A loaded server draws a lazy gallery late, and the read settles on
+            # the first photo. A second read usually sees the whole gallery.
+            logger.info(
+                "Chrome read of %s showed %s photo(s), reading the page once more",
+                final_url,
+                len(best[0].photo_urls),
+            )
+            continue
+        if best is not None:
             break
         # A short or blocked document is usually a display/startup miss. Retry once.
         if rendered and not _is_blocked_page(rendered) and len(rendered) > 20000:
@@ -174,10 +195,58 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
             final_url,
             len(rendered),
         )
+    if best is not None and (product is None or _fuller_read(best[0], product)):
+        _remember_page(url, best[1], best[2])
+        return best[0]
     if product is not None:
         _remember_page(url, final_url, html_text)
         return product
     raise ProductPageError(_unreadable_message(url))
+
+
+# Salesforce Commerce Cloud stores (Charles & Keith) draw the colour and size
+# pickers after the page loads, from Product-Variation. The page HTML holds only
+# placeholders, so that answer is fetched the same way and added as store data.
+_SFCC_STORE = re.compile(r"/on/demandware\.store/(Sites-[\w-]+)/([A-Za-z]{2}(?:_[A-Za-z]{2})?|default)/")
+_SFCC_PID = (
+    re.compile(r"<[^>]*class=[\"'][^\"']*product-detail[^\"']*[\"'][^>]*\bdata-pid=[\"']([^\"']+)[\"']", re.IGNORECASE),
+    re.compile(r"<[^>]*\bdata-pid=[\"']([^\"']+)[\"'][^>]*class=[\"'][^\"']*product-detail", re.IGNORECASE),
+    re.compile(r"js-pdp-product-id[\"'][^>]*\bdata-pid=[\"']([^\"']+)[\"']", re.IGNORECASE),
+)
+
+
+def _with_sfcc_variations(html_text: str, page_url: str, timeout_seconds: float = 15.0) -> str:
+    """The page with its Product-Variation answer added, for Salesforce stores that load it later."""
+    if not html_text or "demandware" not in html_text or '"variationAttributes"' in html_text:
+        return html_text
+    store = _SFCC_STORE.search(html_text)
+    pid = next((match.group(1) for pattern in _SFCC_PID if (match := pattern.search(html_text))), "")
+    if not store or not pid:
+        return html_text
+    parts = urlparse(page_url)
+    endpoint = (
+        f"{parts.scheme}://{parts.netloc}/on/demandware.store/{store.group(1)}/{store.group(2)}"
+        f"/Product-Variation?pid={pid}&quantity=1"
+    )
+    try:
+        from curl_cffi import requests as curl_requests
+
+        response = curl_requests.get(
+            endpoint,
+            impersonate="chrome",
+            timeout=timeout_seconds,
+            headers={"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"},
+        )
+        text = response.text if response.status_code == 200 else ""
+        json.loads(text)
+    except Exception as exc:
+        logger.info("No Product-Variation answer for %s: %s", page_url, exc)
+        return html_text
+    if '"variationAttributes"' not in text or len(text) > 3000000:
+        return html_text
+    logger.info("Read colours and sizes of %s from Product-Variation", pid)
+    block = '<script type="application/json" data-bot-source="store-api">' + text.replace("</", "<\\/") + "</script>"
+    return _append_to_body(html_text, block)
 
 
 def _richness(product: RawProduct | None) -> tuple[int, int, int]:
@@ -249,6 +318,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
             color = selected.name
         sizes = own_sizes or sizes
     heel = extract_heel_height(page_html, title) if is_heeled_footwear(title, url) else None
+    bag_size = extract_bag_size(html_text) if is_bag(title, url) else None
     return RawProduct(
         external_id=external_id,
         source=brand,
@@ -264,6 +334,7 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
         sizes=sizes,
         photos_verified=page_gallery_is_authoritative(page_html, brand, url),
         color_variants=variants,
+        bag_size=bag_size,
     )
 
 
@@ -384,20 +455,34 @@ def _is_blocked_page(html_text: str) -> bool:
     return False
 
 
-_HTML_CACHE: dict[str, tuple[str, str]] = {}
+# A post is read a few times within minutes (link, colour choice, publishing);
+# a link sent again hours later must see today's price and stock.
+FAST_CACHE_SECONDS = 600.0
+_HTML_CACHE: dict[str, tuple[str, str, float]] = {}
 
 
 def _fetch_html_fast(url: str, timeout_seconds: float) -> tuple[str, str]:
     cached = _HTML_CACHE.get(url)
-    if cached is not None:
-        return cached
+    if cached is not None and time.monotonic() - cached[2] <= FAST_CACHE_SECONDS:
+        return cached[0], cached[1]
     final_url, html_text = _fetch_html_uncached(url, timeout_seconds)
     if html_text:
-        _HTML_CACHE[url] = (final_url, html_text)
-        _HTML_CACHE[final_url] = (final_url, html_text)
-        if len(_HTML_CACHE) > 40:
+        _HTML_CACHE[url] = (final_url, html_text, time.monotonic())
+        _HTML_CACHE[final_url] = (final_url, html_text, time.monotonic())
+        while len(_HTML_CACHE) > 40:
             _HTML_CACHE.pop(next(iter(_HTML_CACHE)))
     return final_url, html_text
+
+
+def fetch_html_fast(url: str, timeout_seconds: float = 20.0) -> tuple[str, str]:
+    """(final URL, HTML) from a plain browser-like request, held for the product read that follows."""
+    return _fetch_html_fast(url, timeout_seconds)
+
+
+def remember_fast_page(url: str, final_url: str, html_text: str) -> None:
+    """Serve this page for url too: the canonical link of a page already fetched."""
+    if html_text:
+        _HTML_CACHE[url] = (final_url, html_text, time.monotonic())
 
 
 def _fetch_html_uncached(url: str, timeout_seconds: float) -> tuple[str, str]:
@@ -559,7 +644,7 @@ async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
                 # single-colour product never shows a colour choice, so that is not waited for.
                 break
         if best is not None:
-            if _needs_store_data(best[0]):
+            if _needs_store_data(best[0]) or _bag_without_size(best[1], best[2]):
                 best = await _with_store_data(page, url, best)
             return best[1], best[2]
         return html, page_url
@@ -590,6 +675,11 @@ def _needs_store_data(richness: tuple[int, int, int]) -> bool:
     return photos < FULL_GALLERY or not has_sizes or not has_colours
 
 
+def _bag_without_size(html: str, page_url: str) -> bool:
+    product = parse_product_html(html, page_url)
+    return product is not None and is_bag(product.title, product.product_url) and not product.bag_size
+
+
 async def _with_store_data(page, url: str, best):
     """The read with the store's own product data added, when that makes it fuller."""
     script = _STORE_API_JS.replace("__PRODUCT_IDS__", json.dumps(_product_ids(url)))
@@ -605,10 +695,16 @@ async def _with_store_data(page, url: str, best):
         for text in texts
     )
     html = _append_to_body(best[1], blocks)
-    richness = _richness(parse_product_html(html, best[2]))
+    fuller = parse_product_html(html, best[2])
+    richness = _richness(fuller)
     logger.info("Store data for %s: %s response(s), read %s -> %s", url, len(texts), best[0], richness)
     if richness > best[0]:
         return richness, html, best[2]
+    # A bag's measurements are only in the store's data (Inditex «Ver medidas»).
+    if richness == best[0] and fuller is not None and fuller.bag_size:
+        before = parse_product_html(best[1], best[2])
+        if before is not None and not before.bag_size:
+            return best[0], html, best[2]
     return best
 
 
@@ -800,7 +896,15 @@ def _product_from_json_ld(node: dict, url: str, default_currency: str) -> _Parse
     amount = offers.get("price")
     if amount is None:
         amount = offers.get("lowPrice")
-    currency = str(offers.get("priceCurrency") or default_currency)
+    # Marks & Spencer states the amount only inside offers.priceSpecification.
+    spec = offers.get("priceSpecification")
+    if isinstance(spec, list):
+        spec = spec[0] if spec else {}
+    if not isinstance(spec, dict):
+        spec = {}
+    if amount is None:
+        amount = spec.get("price") if spec.get("price") is not None else spec.get("minPrice")
+    currency = str(offers.get("priceCurrency") or spec.get("priceCurrency") or default_currency)
     if amount is None or not title:
         return None
     try:

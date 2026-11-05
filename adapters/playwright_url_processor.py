@@ -5,9 +5,10 @@ following redirects, retrieving canonical representations, and normalizing
 the final URL into the expected clean format for the publishing workflow.
 """
 
+import html as html_lib
 import logging
 import re
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,8 @@ TRACKING_PARAMS = {
     "ref",
     "source",
     "aff_id",
+    # Charles & Keith's A/B test label, added by its own redirect.
+    "ampv",
 }
 
 
@@ -72,6 +75,47 @@ def choose_processed_url(initial: str, current: str | None, canonical: str | Non
             continue
         return cleaned
     return clean_url_parameters(initial)
+
+
+_CANONICAL = (
+    re.compile(r"<link\b[^>]*rel=[\"']canonical[\"'][^>]*href=[\"']([^\"']+)[\"']", re.IGNORECASE),
+    re.compile(r"<link\b[^>]*href=[\"']([^\"']+)[\"'][^>]*rel=[\"']canonical[\"']", re.IGNORECASE),
+)
+
+
+def canonical_href(html_text: str, page_url: str) -> str | None:
+    """The page's rel=canonical link, made absolute."""
+    head = (html_text or "")[:400000]
+    for pattern in _CANONICAL:
+        match = pattern.search(head)
+        if match:
+            return urljoin(page_url, html_lib.unescape(match.group(1).strip()))
+    return None
+
+
+def resolve_product_url(raw_url: str, timeout_seconds: float = 20.0) -> tuple[str, str]:
+    """The clean product link, without starting a browser: redirects followed, canonical tag read.
+
+    The page fetched here is kept for the product read that follows, so the
+    link costs one request instead of a browser start plus a second download.
+    A store that blocks the plain request keeps the cleaned link; its page is
+    then read in Chrome, which follows the store's own redirects.
+    """
+    from adapters.product_page import fetch_html_fast, remember_fast_page
+
+    cleaned_initial = clean_url_parameters(raw_url.strip())
+    try:
+        final_url, html_text = fetch_html_fast(cleaned_initial, timeout_seconds)
+    except Exception as exc:
+        logger.info("Could not resolve %s without a browser: %s", raw_url, exc)
+        return cleaned_initial, ""
+    if not html_text:
+        return cleaned_initial, ""
+    processed_url = choose_processed_url(cleaned_initial, final_url, canonical_href(html_text, final_url))
+    if processed_url != final_url:
+        remember_fast_page(processed_url, final_url, html_text)
+    logger.info("Resolved product link: original='%s' -> processed='%s'", raw_url, processed_url)
+    return processed_url, html_text
 
 
 def process_product_url_with_playwright(

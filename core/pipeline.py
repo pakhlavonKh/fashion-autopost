@@ -16,7 +16,7 @@ import threading
 from typing import Any, Callable, Protocol, runtime_checkable, TYPE_CHECKING
 
 from adapters.base import RawProduct, SourceAdapter
-from adapters.playwright_url_processor import process_product_url_with_playwright
+from adapters.playwright_url_processor import choose_processed_url, resolve_product_url
 from adapters.product_page import ProductPageError, fetch_product_page
 from config.app_config import AppConfig
 from core.color_names import russian_color
@@ -389,15 +389,7 @@ class PipelineRunner:
         except Exception as exc:
             logger.warning("Failed to reload hot config fields before prepare_manual_draft: %s", exc)
 
-        try:
-            processed_url, _ = process_product_url_with_playwright(
-                product_url,
-                headless=self.config.scraper.headless,
-            )
-        except Exception as exc:
-            logger.warning("Playwright URL processing fell back to input URL: %s", exc)
-            processed_url = product_url
-
+        processed_url = self._resolved_link(product_url)
         try:
             product = fetch_product_page(processed_url, headless=self.config.scraper.headless)
         except Exception as exc:
@@ -413,10 +405,14 @@ class PipelineRunner:
             }
 
         product = attach_site_facts(product)
-        product_title = self._russian_title(product, None)
-        product_color = self._resolve_color(product.color)
+        if link_names_color(product.product_url) and not link_names_color(processed_url):
+            # The store's own redirect named the colour (a short or shared link).
+            processed_url = choose_processed_url(processed_url, product.product_url, None)
+        product_title, product_color = self._russian_title_and_color(product)
         heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
-        facts_desc = site_description(product_color or product.color, product.sizes, heel_height=heel)
+        facts_desc = site_description(
+            product_color or product.color, product.sizes, heel_height=heel, bag_size=product.bag_size
+        )
 
         final_price = calculate_final_price(
             original_price=product.price,
@@ -456,6 +452,24 @@ class PipelineRunner:
             "color": product_color or product.color or "",
             "colors": colors,
         }
+
+    def _resolved_link(self, product_url: str) -> str:
+        """The admin's link without tracking, after the store's redirects and canonical tag."""
+        try:
+            processed_url, _ = resolve_product_url(product_url)
+        except Exception as exc:
+            logger.warning("Product link resolution fell back to the input URL: %s", exc)
+            return product_url
+        return processed_url or product_url
+
+    def _russian_title_and_color(self, product: RawProduct) -> tuple[str, str]:
+        """The Russian title and colour name, asked of the model at the same time."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="draft-translate") as pool:
+            title = pool.submit(self._russian_title, product, None)
+            color = pool.submit(self._resolve_color, product.color)
+            return title.result(), color.result()
 
     def _color_choices(self, product: RawProduct) -> list[dict[str, Any]]:
         """The page's colourways for the admin, each with its Russian name and its own link."""
@@ -500,22 +514,7 @@ class PipelineRunner:
         except Exception as exc:
             logger.warning("Failed to reload hot config fields before manual publish: %s", exc)
 
-        # Feature 1: Pass URL through Playwright worker
-        try:
-            processed_url, _ = process_product_url_with_playwright(
-                product_url,
-                headless=self.config.scraper.headless,
-            )
-        except Exception as exc:
-            logger.warning("Playwright URL processing fell back to input URL: %s", exc)
-            processed_url = product_url
-
-        logger.info(
-            "Playwright URL processing for manual post: original='%s' -> processed='%s'",
-            product_url,
-            processed_url,
-        )
-
+        processed_url = self._resolved_link(product_url)
         try:
             product = fetch_product_page(processed_url, headless=self.config.scraper.headless)
         except ProductPageError as exc:
@@ -1090,8 +1089,10 @@ class PipelineRunner:
         else:
             # Size, color, and heel height are copied from the product page. The model must not fill them in.
             heel = product.heel_height if is_heeled_footwear(product.title, product.product_url) else None
-            description = site_description(product_color or product.color, product.sizes, heel_height=heel)
-            if not order_sizes(product.sizes):
+            description = site_description(
+                product_color or product.color, product.sizes, heel_height=heel, bag_size=product.bag_size
+            )
+            if not order_sizes(product.sizes) and not product.bag_size:
                 # A bot wall answers with a script shell that carries no size grid.
                 # Instagram reposts what Telegram already carries, so it can fall
                 # back to the lines read on that earlier, working visit.

@@ -1,3 +1,5 @@
+# Runtime data is mounted from the host (./data, ./logs). Copying it into the
+# image duplicates every product photo and fills the disk during export.
 .git
 .gitignore
 .venv
@@ -8,10 +10,13 @@ __pycache__
 *.pyd
 .env
 tests
-data/*.db
-logs/*
+data
+logs
 fashion_autopost.egg-info
 dist
 build
 .coverage
 htmlcov
+*.md
+certbot
+nginx

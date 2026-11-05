@@ -31,6 +31,9 @@ class RawProduct:
     # Every colourway the page offers (core.color_variants.ColorVariant), the
     # one this link opens marked as selected. Empty for single-colour products.
     color_variants: tuple[Any, ...] = ()
+    # A bag's measurements as the page prints them, already in Russian
+    # (e.g. «высота 22 см, ширина 25,5 см, глубина 11 см»).
+    bag_size: str | None = None
 
 
 @runtime_checkable

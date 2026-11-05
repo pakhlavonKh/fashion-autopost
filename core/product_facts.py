@@ -146,6 +146,7 @@ def extract_site_facts(
         # Letter sizes and One Size on a shoe page belong to other products
         # (recommendations, the menu); they never replace the shoe sizes.
         sizes = _prefer_sizes(shoe_sizes(sizes), shoe_sizes(dom_sizes))
+        sizes = tuple(order_sizes(eu_shoe_sizes(sizes, url)))
     else:
         sizes = _prefer_sizes(sizes, dom_sizes)
     if not color:
@@ -157,22 +158,232 @@ def site_description(
     color: str | None,
     sizes: Sequence[str],
     heel_height: str | None = None,
+    bag_size: str | None = None,
 ) -> str:
-    """Caption lines for the size grid, color, and heel height. Empty when the page did not say."""
+    """Caption lines in the shop's order: sizes, heel height, bag size, and the colour last.
+
+    Empty when the page did not say. A bag with its measurements drops the
+    store's size line («One Size», Stradivarius' «M»): the measurements are its size.
+    """
     lines: list[str] = []
-    ordered = order_sizes(sizes)
+    ordered = [] if bag_size else order_sizes(sizes)
     if len(ordered) == 1:
         lines.append(f"Размер: {ordered[0]}.")
     elif len(ordered) >= 2:
         lines.append(f"Размеры от {ordered[0]} до {ordered[-1]}.")
+    heel_line = heel_caption_line(heel_height)
+    if heel_line:
+        lines.append(heel_line)
+    if bag_size:
+        lines.append(bag_caption_line(bag_size))
     # Stores name the shade in their own language; the caption says it in Russian.
     cleaned = russian_color(color or "")
     if cleaned:
         lines.append(f"Цвет: {cleaned}.")
-    heel_line = heel_caption_line(heel_height)
-    if heel_line:
-        lines.append(heel_line)
     return "\n".join(lines)
+
+
+_COLOR_LINE = re.compile(r"^\s*цвет\s*:", re.IGNORECASE)
+
+
+def insert_before_color(text: str, line: str) -> str:
+    """Add a caption line above the «Цвет:» line, which always closes part 1."""
+    lines = text.strip().splitlines()
+    for index, existing in enumerate(lines):
+        if _COLOR_LINE.match(existing):
+            return "\n".join([*lines[:index], line, *lines[index:]])
+    return "\n".join([*lines, line]) if lines else line
+
+
+def bag_caption_line(bag_size: str) -> str:
+    return f"Размер сумки: {bag_size.strip().rstrip('.')}."
+
+
+_BAG = re.compile(
+    r"(?:"
+    r"\b(?:bags?|handbags?|totes?|clutch(?:es)?|cross[\s-]?body|shoppers?|backpacks?|rucksacks?|satchels?|"
+    r"pouch(?:es)?|bum[\s-]?bags?|belt[\s-]?bags?|"
+    r"bolsos?|bolsas?|bandoleras?|mochilas?|riñoneras?|carteras?|"
+    r"sacs?|sacoches?|pochettes?|cabas|besaces?|"
+    r"handtaschen?|umhängetaschen?|schultertaschen?|"
+    r"borse|borsa|borsetta|zaino|tracolla|"
+    r"çanta|torebka|torba|plecak)\b|"
+    r"сумк|клатч|рюкзак|шоппер|тоут|кроссбоди|бананк"
+    r")",
+    re.IGNORECASE,
+)
+# The bag's own measurements, by name, in the languages of the European storefronts.
+_BAG_DIMENSION_WORDS = (
+    ("высота", r"height|alto|altura|hauteur|h[öo]he|altezza|wysoko(?:ść|sc)|y[üu]kseklik|высота"),
+    ("ширина", r"width|ancho|anchura|largeur|breite|larghezza|largura|szeroko(?:ść|sc)|geni[şs]lik|ширина"),
+    ("длина", r"length|largo|longitud|longueur|l[äa]nge|lunghezza|comprimento|d[łl]ugo(?:ść|sc)|uzunluk|длина"),
+    ("глубина", r"depth|fondo|profundidad|profondeur|tiefe|profondit[àa]|profundidade|g[łl][ęe]boko(?:ść|sc)|derinlik|глубина"),
+)
+_BAG_DIMENSION = re.compile(
+    r"(?<![\w-])(?P<label>" + "|".join(f"(?P<d{i}>{words})" for i, (_, words) in enumerate(_BAG_DIMENSION_WORDS)) + r")"
+    r"(?P<between>[^\d<>]{0,25}?)"
+    r"(?P<number>\d{1,3}(?:[.,]\d{1,2})?)\s*(?P<unit>cm|см|mm|мм)\b",
+    re.IGNORECASE,
+)
+# A measurement of a strap, a handle or a heel is not the bag's size.
+_NOT_BAG_DIMENSION = re.compile(
+    r"strap|handle|drop|heel|asa\b|asas\b|correa|bandolera|tac[oó]n|anse|poign[ée]e|bretelle|talon|"
+    r"henkel|riemen|absatz|manico|manici|tracolla|tacco|al[çc]a|salto|r[ąa]czk|pas(?:ek|ka)\b|obcas|\bsap\b|kay[ıi]ş|"
+    r"ручк|ремеш|ремн|каблук|model|модел",
+    re.IGNORECASE,
+)
+_BAG_SIZE_LABEL = re.compile(
+    r"dimensions?|measurements?|measures|size|medidas?|dimensiones|tama[ñn]o|mesures|taille|abmessungen|ma[ßs]e|"
+    r"gr[öo][ßs]e|misure|dimensioni|wymiary|rozmiar|boyut\w*|[öo]l[çc][üu]\w*|размер\w*|габарит\w*",
+    re.IGNORECASE,
+)
+_NUMBER = r"\d{1,3}(?:[.,]\d{1,2})?"
+_BAG_BY_X = re.compile(
+    rf"(?<![\d.,])(?P<a>{_NUMBER})\s*(?:cm|см)?\s*[x×X*]\s*(?P<b>{_NUMBER})\s*(?:cm|см)?"
+    rf"(?:\s*[x×X*]\s*(?P<c>{_NUMBER}))?\s*(?P<unit>cm|см|mm|мм)\b",
+)
+
+
+def is_bag(*parts: str) -> bool:
+    """True when the title or the link names a bag (tote, clutch, backpack, bolso, сумка…)."""
+    text = " ".join(str(part) for part in parts if part)
+    return bool(_BAG.search(text.replace("-", " ").replace("_", " ")))
+
+
+def extract_bag_size(html_text: str) -> str | None:
+    """A bag's measurements as the page prints them, in Russian, or None.
+
+    Either «30 x 22 x 10 cm» next to a word such as Dimensions/Medidas, or
+    named measurements (Height: 22 cm; Width: 25.5 cm; Depth: 11 cm). Strap,
+    handle and heel lengths are not the bag's size and are skipped. The text
+    the shopper reads is searched first, then the page's own product data.
+    """
+    if not html_text:
+        return None
+    visible = _plain_text(html_text)
+    scripted = html_lib.unescape(html_text).replace("\\n", " ").replace("\\u00a0", " ").replace("\\/", "/")
+    for text in (visible, scripted):
+        found = _named_bag_size(text) or _bag_size_by_x(text)
+        if found:
+            return found
+    return _inditex_bag_size(html_text)
+
+
+_SKU_DIMENSIONS = re.compile(r'"skuDimensions"\s*:\s*\[')
+
+
+def _inditex_bag_size(text: str) -> str | None:
+    """Inditex stores keep a bag's measurements in centimetres on each size (sizes[].skuDimensions)."""
+    for match in _SKU_DIMENSIONS.finditer(text):
+        try:
+            items, _ = json.JSONDecoder().raw_decode(text[match.end() - 1 :])
+        except ValueError:
+            continue
+        parts: list[tuple[str, str]] = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("dimensionName") or item.get("name") or "")
+            if not label or _NOT_BAG_DIMENSION.search(label):
+                continue
+            name = _dimension_name(label)
+            try:
+                value = float(item.get("value"))
+            except (TypeError, ValueError):
+                continue
+            number = str(int(value)) if value.is_integer() else f"{value:g}".replace(".", ",")
+            shown = _bag_measure(number, "cm")
+            if name and shown and all(existing != name for existing, _ in parts):
+                parts.append((name, shown))
+        if len(parts) >= 2:
+            return _join_dimensions(parts)
+    return None
+
+
+def _dimension_name(label: str) -> str | None:
+    for russian, words in _BAG_DIMENSION_WORDS:
+        if re.fullmatch(rf"\s*(?:{words})\s*", label, flags=re.IGNORECASE):
+            return russian
+    return None
+
+
+def _join_dimensions(parts: list[tuple[str, str]]) -> str:
+    """«высота 32 см, ширина 45 см, глубина 18 см»: the same order on every store."""
+    order = [russian for russian, _words in _BAG_DIMENSION_WORDS]
+    ranked = sorted(parts, key=lambda part: order.index(part[0]))
+    return ", ".join(f"{name} {shown}" for name, shown in ranked)
+
+
+def _named_bag_size(text: str) -> str | None:
+    parts: list[tuple[str, str]] = []
+    last_end = -1
+    for match in _BAG_DIMENSION.finditer(text):
+        if parts and match.start() - last_end > 120:
+            if len(parts) >= 2:
+                break
+            parts = []
+        before = text[max(0, match.start() - 12) : match.start()]
+        if _NOT_BAG_DIMENSION.search(before) or _NOT_BAG_DIMENSION.search(match.group("between")):
+            continue
+        name = next(
+            russian for index, (russian, _words) in enumerate(_BAG_DIMENSION_WORDS) if match.group(f"d{index}")
+        )
+        shown = _bag_measure(match.group("number"), match.group("unit"))
+        if not shown or any(existing == name for existing, _ in parts):
+            continue
+        parts.append((name, shown))
+        last_end = match.end()
+    if len(parts) < 2:
+        return None
+    return _join_dimensions(parts)
+
+
+_LEGEND_WORD = r"[A-Za-zÀ-ÖØ-öø-ÿĄ-žА-Яа-яЁё]+"
+# «(Largo x Alto x Ancho)» after the numbers (Mango), «Alto x Ancho x Fondo:» before them (Zara).
+_LEGEND_AFTER = re.compile(rf"^\s*\(\s*({_LEGEND_WORD})\s*[x×X]\s*({_LEGEND_WORD})(?:\s*[x×X]\s*({_LEGEND_WORD}))?\s*\)")
+_LEGEND_BEFORE = re.compile(rf"({_LEGEND_WORD})\s*[x×X]\s*({_LEGEND_WORD})(?:\s*[x×X]\s*({_LEGEND_WORD}))?\s*[:\-]?\s*$")
+
+
+def _bag_size_by_x(text: str) -> str | None:
+    for match in _BAG_BY_X.finditer(text):
+        numbers = [match.group(key) for key in ("a", "b", "c") if match.group(key)]
+        unit = match.group("unit")
+        shown = [_bag_measure(number, unit) for number in numbers]
+        if not all(shown):
+            continue
+        window = text[max(0, match.start() - 60) : match.start()]
+        legend = _LEGEND_AFTER.match(text[match.end() : match.end() + 60]) or _LEGEND_BEFORE.search(window)
+        names = [_dimension_name(word) for word in legend.groups() if word] if legend else []
+        if len(numbers) < 3 and not _BAG_SIZE_LABEL.search(window) and not names:
+            continue
+        if _NOT_BAG_DIMENSION.search(window[-25:]):
+            continue
+        if len(names) == len(numbers) and all(names) and len(set(names)) == len(names):
+            return _join_dimensions(list(zip(names, shown)))
+        shown_unit = "мм" if unit.lower() in {"mm", "мм"} else "см"
+        return " × ".join(_plain_number(number) for number in numbers) + f" {shown_unit}"
+    return None
+
+
+def _plain_number(number: str) -> str:
+    """«52.0» as 52, «25.5» as 25,5: how a Russian caption writes a measurement."""
+    value = float(number.replace(",", "."))
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:g}".replace(".", ",")
+
+
+def _bag_measure(number: str, unit: str) -> str | None:
+    """«25,5 см» for a plausible bag measurement, None otherwise."""
+    try:
+        value = float(number.replace(",", "."))
+    except ValueError:
+        return None
+    millimetres = unit.lower() in {"mm", "мм"}
+    low, high = (5, 1500) if millimetres else (0.5, 150)
+    if not low <= value <= high:
+        return None
+    return f"{_plain_number(number)} {'мм' if millimetres else 'см'}"
 
 
 # A measurement counts only when the page itself labels it as heel height.
@@ -197,8 +408,11 @@ _HEEL_LABEL = re.compile(
     r"(\d{1,3}(?:[.,]\d{1,2})?)\s*(cm|см|mm|мм)\b",
     re.IGNORECASE,
 )
+# «7 cm heel». In «Shoe width 7.6 cm Heel height 4.5 cm» the 7.6 belongs to the
+# width, and the label that follows it names the next measurement.
 _HEEL_AFTER = re.compile(
-    r"(\d{1,3}(?:[.,]\d{1,2})?)\s*(cm|см|mm|мм)\s*(?:high\s*)?(?:heels?|каблук\w*|tac[oó]n|topuk)\b",
+    r"(\d{1,3}(?:[.,]\d{1,2})?)\s*(cm|см|mm|мм)\s*(?:high\s*)?(?:heels?|каблук\w*|tac[oó]n|topuk)\b"
+    r"(?!\s*(?:height|boyu|y[uü]ksekli))",
     re.IGNORECASE,
 )
 _HEEL_NAME = re.compile(
@@ -534,10 +748,12 @@ def clean_size(raw: str) -> str | None:
 
 
 def attach_site_facts(product: RawProduct, *, timeout_seconds: float = 12.0) -> RawProduct:
-    """Fill color, sizes, and heel height from the product page when they are missing."""
+    """Fill color, sizes, heel height and a bag's measurements from the product page when they are missing."""
     needs_variant = not product.color or not product.sizes
     needs_heel = not product.heel_height and is_heeled_footwear(product.title, product.product_url)
-    if not needs_variant and not needs_heel:
+    bag = is_bag(product.title, product.product_url)
+    needs_bag = bag and not product.bag_size
+    if not needs_variant and not needs_heel and not needs_bag:
         return product
     if not _looks_like_product_page(product.product_url):
         return product
@@ -560,16 +776,23 @@ def attach_site_facts(product: RawProduct, *, timeout_seconds: float = 12.0) -> 
         heel = extract_heel_height(html_text, product.title) or product.heel_height
     else:
         heel = None
-    if color == product.color and sizes == product.sizes and heel == product.heel_height:
+    bag_size = (product.bag_size or extract_bag_size(html_text)) if bag else None
+    if (
+        color == product.color
+        and sizes == product.sizes
+        and heel == product.heel_height
+        and bag_size == product.bag_size
+    ):
         return product
     logger.info(
-        "Product page facts for %s: color=%s sizes=%s heel=%s",
+        "Product page facts for %s: color=%s sizes=%s heel=%s bag=%s",
         product.external_id,
         color or "—",
         " ".join(sizes) if sizes else "—",
         heel or "—",
+        bag_size or "—",
     )
-    return replace(product, color=color, sizes=sizes, heel_height=heel)
+    return replace(product, color=color, sizes=sizes, heel_height=heel, bag_size=bag_size)
 
 
 def _looks_like_product_page(url: str) -> bool:
@@ -684,6 +907,9 @@ def _consume(node: object, parent_key: str, found: list[_Variant]) -> None:
     )
     if isinstance(variants, list):
         _add_grouped_variants(variants, found)
+    attributes = node.get("variationAttributes")
+    if isinstance(attributes, list):
+        _add_variation_attributes(node, attributes, found)
 
     labels = _sizes_on(node)
     color = _color_from(node, parent_key)
@@ -765,6 +991,47 @@ def _add_grouped_variants(variants: list, found: list[_Variant]) -> None:
         if not labels and not color:
             continue
         found.append(_Variant(color or None, tuple(labels), tuple(ids.get(color, ())), color in selected))
+
+
+_COLOR_ATTRIBUTE = re.compile(r"colou?r|farbe|couleur|colore|\bcor\b|kleur|kolor|цвет", re.IGNORECASE)
+_SIZE_ATTRIBUTE = re.compile(r"size|talla|taille|taglia|gr[öo](?:ß|ss)e|rozmiar|maat|размер", re.IGNORECASE)
+
+
+def _add_variation_attributes(node: dict, attributes: list, found: list[_Variant]) -> None:
+    """Salesforce Commerce Cloud product data: the chosen colour and that colour's size grid."""
+    color: str | None = None
+    labels: list[str] = []
+    for attribute in attributes:
+        if not isinstance(attribute, dict) or not isinstance(attribute.get("values"), list):
+            continue
+        name = " ".join(str(attribute.get(key) or "") for key in ("attributeId", "id", "displayName", "name"))
+        values = [value for value in attribute["values"] if isinstance(value, dict)]
+        if _COLOR_ATTRIBUTE.search(name):
+            chosen = next((value for value in values if value.get("selected") is True), None)
+            if chosen is not None:
+                color = _color_text(chosen.get("displayValue") or chosen.get("name"))
+        elif _SIZE_ATTRIBUTE.search(name):
+            for value in values:
+                label = clean_size(str(value.get("displayValue") or value.get("value") or ""))
+                if label and label not in labels:
+                    labels.append(label)
+    if color or labels:
+        found.append(_Variant(color, tuple(labels), _ids_on(node, ""), True))
+
+
+# Charles & Keith numbers its shoe sizes in UK style on some pages: 1 is EU 34, 9 is EU 42.
+_UK_NUMBERED_SHOES = {"charleskeith": 33}
+
+
+def eu_shoe_sizes(sizes: Sequence[str], url: str) -> tuple[str, ...]:
+    """A store's numbered shoe sizes as the EU sizes the channel posts."""
+    host = urlparse(url or "").netloc.lower()
+    offset = next((shift for name, shift in _UK_NUMBERED_SHOES.items() if name in host), None)
+    if offset is None or not sizes:
+        return tuple(sizes)
+    if not all(re.fullmatch(r"0?\d|1[0-3]", str(size).strip()) for size in sizes):
+        return tuple(sizes)
+    return tuple(str(int(str(size).strip()) + offset) for size in sizes)
 
 
 def _sizes_on(node: dict) -> list[str]:
@@ -985,11 +1252,24 @@ _DOM_SIZE_INPUT_ALT = re.compile(
 _TEMPLATE_PLACEHOLDER = re.compile(r"\$\{|\{\{")
 
 
+# Size buttons on the tiles of other products (recommendations, «complete the
+# look») sit on the same page: Stradivarius marks them «grid-product-size-item».
+# The label sits inside the button that carries the mark, so the markup just
+# before it is checked too.
+_OTHER_PRODUCT_TILE = re.compile(
+    r"grid-product|product-?tile|product-?card|recommend|related-?product|upsell|cross-?sell",
+    re.IGNORECASE,
+)
+_TILE_WINDOW = 250
+
+
 def _sizes_from_dom(html_text: str) -> tuple[str, ...]:
     labels: list[str] = []
     for match in _DOM_SIZE.finditer(html_text):
         attrs = match.group(1).lower()
         if not any(token in attrs for token in ("size", "talla", "taille", "taglia", "größe", "grosse", "rozmiar")):
+            continue
+        if _OTHER_PRODUCT_TILE.search(html_text, max(0, match.start() - _TILE_WINDOW), match.end()):
             continue
         if _TEMPLATE_PLACEHOLDER.search(match.group(2)):
             continue

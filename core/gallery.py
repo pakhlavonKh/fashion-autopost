@@ -47,6 +47,10 @@ _ZARA_COLORS_START = re.compile(r'"colors"\s*:\s*\[')
 _ZARA_COLOR_ENTRY = re.compile(r'\{\s*"id"\s*:\s*"(\d{3})"\s*,([^{}\[\]]{0,600})')
 _ZARA_PRODUCT_ID = re.compile(r'"productId"\s*:\s*"?(\d+)')
 _ZARA_COLOR_CODE = re.compile(r'"colorCode"\s*:\s*"?(\d{3})"?')
+_SEO_TAIL = re.compile(r"^[a-z]+(?:-[a-z]+)+$")
+_SHOT_CODE = re.compile(r"^(?=(?:[^0-9]*[0-9]){3})[A-Za-z0-9_]{6,}$")
+_NEXT_DATA = re.compile(r'<script[^>]*id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', re.IGNORECASE | re.DOTALL)
+MARKS_IMAGE_BASE = "https://assets.digitalcontent.marksandspencer.app/image/upload/q_auto,f_auto/"
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -66,7 +70,12 @@ def canonical_photo_key(url: str) -> str:
     if not raw.startswith(("http://", "https://")):
         return raw.replace("\\", "/").lower()
     path = _WIDTH_SEGMENT.sub("", urlsplit(raw).path)
-    name = path.rstrip("/").split("/")[-1].lower()
+    segments = path.rstrip("/").split("/")
+    name = segments[-1].lower()
+    # Marks & Spencer ends every photo of a product with the same product name
+    # (…/SD_01_T01_9102A_Y0_X_EC_90/Leather-Cross-Body-Bag); the shot is the segment before it.
+    if len(segments) >= 2 and _SEO_TAIL.match(name) and _SHOT_CODE.search(segments[-2]):
+        name = segments[-2].lower()
     name = re.sub(r"\.(jpe?g|png|webp)$", "", name)
     mango = _MANGO_NAME.match(name)
     if mango:
@@ -452,6 +461,8 @@ def ordered_photos(
                 return arrange_carousel(inditex_pdp_gallery(html_text), roles=roles, max_photos=max_photos)
             inditex_found = _inditex_urls(html_text)
             urls.extend(inditex_found)
+        elif "marksandspencer" in brand_lower or "marksandspencer.com" in page:
+            urls.extend(_marks_urls(html_text, page))
         elif "hm" in brand_lower or "hm.com" in page:
             hm_found = _hm_urls(html_text, page)
             urls.extend(hm_found)
@@ -678,6 +689,42 @@ def _inditex_urls(html_text: str) -> list[str]:
             seen.add(key)
             urls.append(url)
     return urls
+
+
+def _marks_urls(html_text: str, page_url: str = "") -> list[str]:
+    """Every photo of the colour on a Marks & Spencer page, main photo first.
+
+    The page's JSON-LD names only some of them; the product data lists each
+    colour's photos as asset ids (variants[].assets).
+    """
+    match = _NEXT_DATA.search(html_text or "")
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group(1))
+    except ValueError:
+        return []
+    details = ((data.get("props") or {}).get("pageProps") or {}).get("productDetails") or {}
+    variants = [item for item in details.get("variants") or [] if isinstance(item, dict)]
+    if not variants:
+        return []
+    wanted = (parse_qs(urlsplit(page_url).query).get("color") or [""])[0].strip().casefold()
+    variant = next(
+        (item for item in variants if wanted and str(item.get("colour") or "").casefold() == wanted),
+        variants[0],
+    )
+    swatch = str(variant.get("colourSwatchAssetId") or "")
+    main: list[str] = []
+    others: list[str] = []
+    for asset in variant.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = str(asset.get("assetId") or "").strip()
+        if not asset_id or asset_id == swatch:
+            continue
+        target = main if str(asset.get("type") or "").upper() == "MAIN" else others
+        target.append(MARKS_IMAGE_BASE + asset_id)
+    return list(dict.fromkeys(main + others))
 
 
 def _hm_urls(html_text: str, page_url: str = "") -> list[str]:

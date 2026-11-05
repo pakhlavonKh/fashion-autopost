@@ -8,7 +8,7 @@ import logging
 from typing import Protocol, runtime_checkable
 
 from adapters.base import RawProduct
-from core.product_facts import heel_caption_line, is_heeled_footwear
+from core.product_facts import heel_caption_line, insert_before_color, is_heeled_footwear
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,7 @@ class HighHeelDescriptionRule:
             return current_description
         if "высота каблука" in current_description.casefold():
             return current_description
-        if current_description.strip():
-            return f"{current_description.strip()}\n{line}"
-        return line
+        return insert_before_color(current_description, line)
 
 
 DEFAULT_DESCRIPTION_RULES: list[DescriptionRule] = [

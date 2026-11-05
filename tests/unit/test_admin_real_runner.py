@@ -60,10 +60,7 @@ def mango_pages(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     monkeypatch.setattr("adapters.product_page._fetch_html_fast", fetch)
     monkeypatch.setattr("adapters.product_page.fetch_product_html", fetch)
-    monkeypatch.setattr(
-        "core.pipeline.process_product_url_with_playwright",
-        lambda url, headless=True: (url, ""),
-    )
+    monkeypatch.setattr("core.pipeline.resolve_product_url", lambda url: (url, ""))
     return opened
 
 
