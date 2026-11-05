@@ -123,6 +123,8 @@ class PlaywrightStoryWorker:
         prepared_images: list[Path],
         price_label: str = "",
         quality_line: str = DEFAULT_QUALITY_LINE,
+        caption: str = "",
+        verbatim: bool = False,
     ) -> tuple[bool, str, str | None]:
         """Execute the complete Story job sequence for a product with Telegram verification."""
         product = self.repo.get_product(product_id)
@@ -192,13 +194,15 @@ class PlaywrightStoryWorker:
 
         dest = prepared_images[0].with_name(f"{prepared_images[0].stem}_story.jpg")
         try:
+            approved = caption.strip() if verbatim and caption.strip() else ""
             collage = render_story_collage(
                 prepared_images,
                 dest,
                 title=product.name,
                 price_label=price_label or format_story_price(product.price_original, product.currency_original),
-                description=product_description(product.description),
+                description=approved or product_description(product.description),
                 quality_line=quality_line_from_footer(quality_line),
+                verbatim=bool(approved),
             )
         except Exception as exc:
             err = f"Failed to render story collage: {exc}"

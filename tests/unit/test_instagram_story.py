@@ -38,6 +38,12 @@ def test_story_cards_follow_the_boutique_layout() -> None:
     ]
 
 
+def test_an_approved_caption_is_the_story_card() -> None:
+    approved = "Мокасины-72$\nРазмеры с 35 по 42.\nЦвет: бургунди/темно-красный."
+    cards = story_cards("Leather loafers", "80$", approved, "Европейское качество", verbatim=True)
+    assert cards == [approved, "Европейское качество"]
+
+
 def test_highlight_category_matches_the_account_circles() -> None:
     cases = {
         "Платье": "Платья",

@@ -274,7 +274,7 @@ def test_a_link_is_resolved_from_the_plain_page_and_that_page_is_reused(monkeypa
     assert fetched == ["https://www.example.com/p/coat-123"]
 
 
-# --- the admin bot: «Сейчас» / «Указать время» --------------------------------
+# --- the admin bot: «Сейчас в TG / IG / оба» / «Указать время» ----------------
 
 
 def _draft_waiting_for_time(bot, sent) -> int:
@@ -284,6 +284,39 @@ def _draft_waiting_for_time(bot, sent) -> int:
     draft = bot.repo.get_awaiting_manual(str(ADMIN_ID))
     assert draft is not None and draft.status == "awaiting_time"
     return draft.id
+
+
+def test_the_time_question_offers_publish_now_into_each_channel(tmp_path: Path) -> None:
+    bot, sent, _scheduler, _runner = _bot(tmp_path)
+    _draft_waiting_for_time(bot, sent)
+    prompt = sent[-1][1].lower()
+    assert "сейчас в tg" in prompt
+    assert "сейчас в ig" in prompt
+    assert "сейчас оба" in prompt
+
+
+def test_publish_now_buttons_schedule_that_channel(tmp_path: Path) -> None:
+    bot, sent, scheduler, runner = _bot(tmp_path)
+    expected = {
+        "now_tg": ("telegram", "Публикую сейчас в Telegram", "telegram"),
+        "now_ig": ("instagram", "Публикую сейчас в Instagram", "instagram"),
+        "now_both": ("both", "Публикую сейчас в Telegram и Instagram", None),
+    }
+    for choice, (channel, confirmation, publish_filter) in expected.items():
+        post_id = _draft_waiting_for_time(bot, sent)
+        bot.handle_update(_callback(ADMIN_ID, f"time:{choice}:{post_id}", update_id=3))
+        preview = sent[-1][1].lower()
+        assert "предпросмотр" in preview
+        assert "сейчас" in preview
+        draft = bot.repo.get_manual_post(post_id)
+        assert draft is not None
+        assert draft.status == "awaiting_approval"
+        assert draft.target_channel == channel
+        bot.handle_update(_callback(ADMIN_ID, f"approve:{post_id}", update_id=4))
+        assert sent[-1][1] == confirmation
+        job = scheduler.jobs[-1]
+        job["func"](*job["args"])
+        assert runner.filters[-1] == publish_filter
 
 
 def test_the_now_button_asks_only_for_the_channel(tmp_path: Path) -> None:

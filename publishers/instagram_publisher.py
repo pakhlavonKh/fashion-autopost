@@ -231,6 +231,8 @@ class InstagramPublisher:
             else story_link_url(post.telegram_links, self.caption_footer)
         )
 
+        approved = bool(getattr(post, "is_custom_description", False))
+        approved_text = (post.text or "").strip()
         if self.story_worker and self.repo:
             try:
                 external_id = getattr(post, "product_id", "") or ""
@@ -241,6 +243,8 @@ class InstagramPublisher:
                         prepared,
                         price_label=format_story_price(post.price, post.currency),
                         quality_line=quality_line_from_footer(self.caption_footer),
+                        caption=approved_text if approved else "",
+                        verbatim=approved,
                     )
                     if ok:
                         return
@@ -263,8 +267,9 @@ class InstagramPublisher:
                 dest,
                 title=post.title,
                 price_label=format_story_price(post.price, post.currency),
-                description=product_description(post.text),
+                description=approved_text if approved else product_description(post.text),
                 quality_line=quality_line_from_footer(self.caption_footer),
+                verbatim=approved,
             )
         except Exception as exc:
             logger.error("Instagram story collage failed for %s: %s", post.title, exc)
@@ -529,11 +534,25 @@ def footer_for_carousel(footer: str | None) -> str:
 
 def format_instagram_caption(post: ComposedPost, footer: str | None = None) -> str:
     """Format a boutique caption that matches the Telegram card, within Instagram limits."""
+    contact = (footer if footer is not None else DEFAULT_INSTAGRAM_CAPTION_FOOTER).strip()
+    # The admin already approved this exact part 1 in the bot. Do not rebuild a
+    # title or a price from the store page: that is what Telegram publishes.
+    if getattr(post, "is_custom_description", False):
+        body = (post.text or "").strip()
+        caption = f"{body}\n\n{contact}" if body and contact else (body or contact)
+        if len(caption) <= MAX_INSTAGRAM_CAPTION_LEN:
+            return caption
+        overflow = len(caption) - (MAX_INSTAGRAM_CAPTION_LEN - 3)
+        trimmed = body[: max(0, len(body) - overflow)].rstrip()
+        if trimmed:
+            trimmed += "..."
+        caption = f"{trimmed}\n\n{contact}" if trimmed and contact else (trimmed or contact)
+        return caption[:MAX_INSTAGRAM_CAPTION_LEN]
+
     price_val = int(whole_price(post.price))
     price_display = f"{price_val}$" if post.currency == "USD" else f"{price_val} {post.currency}"
     header = f"{post.title.strip()}-{price_display}"
     description = _extract_description(post)
-    contact = (footer if footer is not None else DEFAULT_INSTAGRAM_CAPTION_FOOTER).strip()
 
     caption = _assemble_caption(header, description, contact)
     if len(caption) <= MAX_INSTAGRAM_CAPTION_LEN:

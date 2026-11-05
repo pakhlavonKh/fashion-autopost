@@ -875,13 +875,20 @@ class AdminIntakeBot:
         return self._apply_time(chat_id, draft.id, parsed.when, destination=dest_override)
 
     def _ask_time(self, chat_id: str, post_id: int, lead: str = "", tail: str = "") -> str:
-        """Ask when to publish: «Сейчас» in one tap, or a time typed in the chat."""
+        """Ask when to publish: now into a channel, or a time typed in the chat."""
+        if self._instagram_on():
+            hint = (
+                "Нажмите «Сейчас в TG», «Сейчас в IG» или «Сейчас оба» — пост выйдет сразу.\n"
+                "Или напишите время: 18:30, завтра 18:30, 29.09 18:30."
+            )
+        else:
+            hint = "Нажмите «⚡ Сейчас» или напишите время: 18:30, завтра 18:30, 29.09 18:30."
         self._send(
             chat_id,
             f"{lead}В какое время выложить пост?\n"
-            "Нажмите «⚡ Сейчас» или напишите время: 18:30, завтра 18:30, 29.09 18:30.\n"
+            f"{hint}\n"
             f"Часовой пояс: {self.timezone_name}.{tail}",
-            reply_markup=_time_keyboard(post_id),
+            reply_markup=_time_keyboard(post_id, instagram=self._instagram_on()),
         )
         return ""
 
@@ -891,8 +898,17 @@ class AdminIntakeBot:
             return "Ошибка: черновик не найден. Пришлите ссылку ещё раз."
         if post.status != "awaiting_time":
             return "Время для этого поста уже выбрано. Изменить его можно кнопкой «⏰ Изменить время» в предпросмотре."
+        now_dest = {"now_tg": "telegram", "now_ig": "instagram", "now_both": "both"}
         if choice == "now":
             return self._apply_time(chat_id, post_id, datetime.now(timezone.utc), now=True)
+        if choice in now_dest:
+            return self._apply_time(
+                chat_id,
+                post_id,
+                datetime.now(timezone.utc),
+                now=True,
+                destination=now_dest[choice],
+            )
         return (
             "Напишите время сообщением, например: 18:30, завтра 18:30 или 29.09 18:30.\n"
             f"Часовой пояс: {self.timezone_name}."
@@ -1112,16 +1128,25 @@ def _destination_keyboard(post_id: int) -> dict[str, Any]:
     }
 
 
-def _time_keyboard(post_id: int) -> dict[str, Any]:
-    return {
-        "inline_keyboard": [
+def _time_keyboard(post_id: int, *, instagram: bool = True) -> dict[str, Any]:
+    if instagram:
+        rows: list[list[dict[str, str]]] = [
+            [
+                {"text": "⚡ Сейчас в TG", "callback_data": f"time:now_tg:{post_id}"},
+                {"text": "⚡ Сейчас в IG", "callback_data": f"time:now_ig:{post_id}"},
+            ],
+            [{"text": "⚡ Сейчас оба", "callback_data": f"time:now_both:{post_id}"}],
+            [{"text": "🕐 Указать время", "callback_data": f"time:ask:{post_id}"}],
+        ]
+    else:
+        rows = [
             [
                 {"text": "⚡ Сейчас", "callback_data": f"time:now:{post_id}"},
                 {"text": "🕐 Указать время", "callback_data": f"time:ask:{post_id}"},
-            ],
-            [{"text": "❌ Отмена", "callback_data": f"cancel:{post_id}"}],
+            ]
         ]
-    }
+    rows.append([{"text": "❌ Отмена", "callback_data": f"cancel:{post_id}"}])
+    return {"inline_keyboard": rows}
 
 
 def _platform_notice(platform: str, success: bool, detail: str) -> str:

@@ -489,6 +489,57 @@ def test_manual_publish_keeps_admin_caption_and_appends_footer(
     assert caption.index(part1) < caption.index("Европейское качество")
 
 
+def test_instagram_posts_the_caption_the_admin_approved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Instagram must use the same part 1 the admin confirmed, not a rebuilt store caption."""
+    from publishers.instagram_publisher import format_instagram_caption
+    from publishers.telegram_publisher import TelegramPublisher
+
+    photo = tmp_path / "loafer.jpg"
+    photo.write_bytes(b"local-photo")
+    approved = "Мокасины\nРазмеры с 35 по 42.\nЦвет: бургунди/темно-красный."
+    product = RawProduct(
+        external_id="zara-99887766",
+        source="zara",
+        title="Leather loafers",
+        price=Decimal("60.00"),
+        currency="EUR",
+        photo_url=str(photo),
+        product_url="https://www.zara.com/es/es/leather-loafers-p99887766.html",
+        in_stock=True,
+        photo_urls=[str(photo)],
+        color="burgundy",
+        sizes=("35", "36", "37", "38", "39", "40", "41", "42"),
+    )
+    monkeypatch.setattr("core.pipeline.fetch_product_page", lambda url, headless=True: product)
+
+    repo = FakeProductRepository()
+    telegram = FakePublisher("telegram")
+    instagram = FakePublisher("instagram")
+    runner = PipelineRunner(
+        source=None,  # type: ignore[arg-type]
+        repo=repo,
+        llm=FakeLLMProvider(select_count=1),
+        fx=FixedRateConverter(fixed_rate=Decimal("1.08")),
+        publishers=[telegram, instagram],
+        config=AppConfig(),
+        prompt_loader=type("Prompt", (), {"load_prompt": lambda self: "unused"})(),
+    )
+
+    ok, _message = runner.publish_manual_url(product.product_url, custom_description=approved)
+    assert ok is True
+    assert telegram.published_posts[0].is_custom_description is True
+    assert instagram.published_posts[0].text == approved
+
+    telegram_caption = TelegramPublisher(bot_token="test")._format_caption(telegram.published_posts[0])
+    instagram_caption = format_instagram_caption(instagram.published_posts[0])
+    assert telegram_caption.startswith(approved)
+    assert instagram_caption.startswith(approved)
+    assert "Leather loafers" not in instagram_caption
+    assert "бургунди/темно-красный" in instagram_caption
+    assert "бордово" not in instagram_caption
+    assert "Европейское качество" in instagram_caption
+
+
 def test_manual_publish_with_unstructured_first_line_does_not_prepend_auto_header(tmp_path: Path, monkeypatch) -> None:
     from publishers.telegram_publisher import TelegramPublisher
 

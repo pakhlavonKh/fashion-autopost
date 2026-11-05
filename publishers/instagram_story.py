@@ -99,8 +99,23 @@ def detect_highlight(title: str, description: str = "", url: str = "") -> str:
     return "Одежда"
 
 
-def story_cards(title: str, price_label: str, description: str, quality_line: str) -> list[str]:
+def story_cards(
+    title: str,
+    price_label: str,
+    description: str,
+    quality_line: str,
+    *,
+    verbatim: bool = False,
+) -> list[str]:
     """Split the product card into the stacked white boxes on the story."""
+    quality = (quality_line or DEFAULT_QUALITY_LINE).strip() or DEFAULT_QUALITY_LINE
+    if verbatim:
+        # The approved caption already names the item, the price and the colour.
+        text = description.strip()
+        cards = [text] if text else []
+        cards.append(quality)
+        return cards
+
     size_lines: list[str] = []
     detail_lines: list[str] = []
     for raw in description.splitlines():
@@ -118,7 +133,7 @@ def story_cards(title: str, price_label: str, description: str, quality_line: st
     cards = [first]
     if detail_lines:
         cards.append("\n".join(detail_lines[:6]))
-    cards.append((quality_line or DEFAULT_QUALITY_LINE).strip() or DEFAULT_QUALITY_LINE)
+    cards.append(quality)
     return cards
 
 
@@ -190,6 +205,7 @@ def render_story_collage(
     price_label: str,
     description: str,
     quality_line: str,
+    verbatim: bool = False,
 ) -> Path:
     """Paint a 1080×1920 story from the same photos that go into the feed post."""
     global _LAST_PILL_BOX
@@ -208,7 +224,7 @@ def render_story_collage(
 
     draw = ImageDraw.Draw(canvas)
     busyness = _Busyness(canvas)
-    cards = story_cards(title, price_label, description, quality_line)
+    cards = story_cards(title, price_label, description, quality_line, verbatim=verbatim)
 
     font, blocks, stack_width, stack_height = _fit_cards(draw, cards)
     stack_box = _place(busyness, stack_width, stack_height)
