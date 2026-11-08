@@ -80,6 +80,8 @@ def extract_color_variants(html_text: str, page_url: str, current_color: str | N
         platform.append(_inditex_variants)
     if "mango." in host:
         platform.append(_mango_variants)
+    if "linzi.com" in host:
+        platform.append(_linzi_siblings)
     general = [
         _variation_attribute_variants,
         _shopify_variants,
@@ -436,6 +438,39 @@ def _variation_attribute_variants(text: str, page_url: str) -> list[ColorVariant
             if len(variants) >= 2:
                 return variants
             variants = []
+    return variants
+
+
+_LINZI_SIBLING = re.compile(
+    r"<a\b([^>]*\bclass=[\"'][^\"']*sibling__link[^\"']*[\"'][^>]*)>(.*?)</a>",
+    re.IGNORECASE | re.DOTALL,
+)
+_LINZI_HIDDEN_NAME = re.compile(
+    r"<span[^>]*visually-hidden[^>]*>\s*([^<]+?)\s*</span>",
+    re.IGNORECASE,
+)
+
+
+def _linzi_siblings(text: str, page_url: str) -> list[ColorVariant]:
+    """Linzi sells each colour as its own product, linked from the colour swatches."""
+    if "linzi.com" not in urlsplit(page_url).netloc.lower():
+        return []
+    variants: list[ColorVariant] = []
+    for match in _LINZI_SIBLING.finditer(text):
+        attrs, inner = match.group(1), match.group(2)
+        href = _attr(attrs, "href")
+        if not href:
+            continue
+        name_match = _LINZI_HIDDEN_NAME.search(inner)
+        name = " ".join(name_match.group(1).split()) if name_match else ""
+        if not name:
+            tooltip = _attr(attrs, "ddata-tooltip") or _attr(attrs, "data-tooltip")
+            name = " ".join(tooltip.split())
+        if not name:
+            continue
+        url = urljoin(page_url, href)
+        current = "sibling__link--current" in attrs
+        variants.append(ColorVariant(name.casefold(), name[:1].upper() + name[1:], url, current))
     return variants
 
 

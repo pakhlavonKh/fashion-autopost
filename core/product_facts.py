@@ -196,7 +196,49 @@ def insert_before_color(text: str, line: str) -> str:
 
 
 def bag_caption_line(bag_size: str) -> str:
-    return f"Размер сумки: {bag_size.strip().rstrip('.')}."
+    """The bag's own measurements, and nothing else: «Размер: 16x6,5x28 см.»"""
+    return f"Размер: {format_bag_size(bag_size)}."
+
+
+_NAMED_BAG_MEASURE = re.compile(
+    r"(высота|ширина|длина|глубина)\s+(\d{1,3}(?:[.,]\d{1,2})?)\s*(см|мм)",
+    re.IGNORECASE,
+)
+_COMPACT_BAG_MEASURE = re.compile(
+    r"(\d{1,3}(?:[.,]\d{1,2})?(?:\s*[x×X]\s*\d{1,3}(?:[.,]\d{1,2})?){1,3})\s*(см|мм)",
+    re.IGNORECASE,
+)
+
+
+def format_bag_size(bag_size: str) -> str:
+    """«высота 16 см, ширина 28 см, глубина 6,5 см» becomes «16x28x6,5 см».
+
+    The order is always height, width, length, depth, and the unit is written once.
+    A size that is already «25 × 18 см» keeps its own order and only loses the spaces.
+    """
+    text = (bag_size or "").strip().rstrip(".")
+    named = _NAMED_BAG_MEASURE.findall(text)
+    if len(named) >= 2:
+        order = ("высота", "ширина", "длина", "глубина")
+        by_name: dict[str, str] = {}
+        units: list[str] = []
+        for name, number, unit in named:
+            key = name.casefold()
+            if key in by_name:
+                continue
+            by_name[key] = _plain_number(number)
+            units.append(unit.casefold())
+        numbers = [by_name[name] for name in order if name in by_name]
+        if len(set(units)) == 1 and numbers:
+            unit = "мм" if units[0] in {"mm", "мм"} else "см"
+            return "x".join(numbers) + f" {unit}"
+    compact = _COMPACT_BAG_MEASURE.search(text)
+    if compact:
+        numbers = re.findall(r"\d{1,3}(?:[.,]\d{1,2})?", compact.group(1))
+        unit = "мм" if compact.group(2).casefold() in {"mm", "мм"} else "см"
+        if len(numbers) >= 2:
+            return "x".join(_plain_number(number) for number in numbers) + f" {unit}"
+    return text
 
 
 _BAG = re.compile(

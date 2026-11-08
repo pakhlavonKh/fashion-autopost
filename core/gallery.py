@@ -434,6 +434,11 @@ def ordered_photos(
     roles: dict[str, str] = {}
     urls: list[str] = []
 
+    if "linzi.com" in page.lower() or brand_lower == "linzi":
+        media = _linzi_media_list(html_text, page)
+        if media:
+            return arrange_carousel(media, roles=roles, max_photos=max_photos)
+
     if not urls:
         if "mango" in brand_lower or "mango.com" in page:
             found = re.findall(r"https://media\.mango\.com/is/image/punto/[0-9]+-[0-9A-Z]+-[0-9A-Z]+", html_text)
@@ -804,6 +809,27 @@ def _hm_urls(html_text: str, page_url: str = "") -> list[str]:
         cleaned = url.split("?")[0].rstrip(".,;\"'")
         if cleaned.lower().endswith((".jpg", ".jpeg", ".webp", ".png")) and cleaned not in urls:
             urls.append(cleaned)
+    return urls
+
+
+def _linzi_media_list(html_text: str, page_url: str) -> list[str]:
+    """Photos inside Linzi's own gallery, not the recommended products below it."""
+    if not html_text:
+        return []
+    lowered = html_text.lower()
+    start = lowered.find("data-product-media-list")
+    if start < 0:
+        return []
+    end = lowered.find("product__siblings", start)
+    chunk = html_text[start : end if end > start else start + 60000]
+    urls: list[str] = []
+    for match in re.finditer(r"""data-image-src=['"]([^'"]+)['"]""", chunk, flags=re.IGNORECASE):
+        raw = match.group(1).split("?")[0]
+        if raw.startswith("//"):
+            raw = "https:" + raw
+        absolute = urljoin(page_url, raw)
+        if absolute not in urls:
+            urls.append(absolute)
     return urls
 
 

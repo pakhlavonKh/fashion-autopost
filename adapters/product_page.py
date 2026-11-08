@@ -151,6 +151,15 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
     final_url, html_text = _fetch_html_fast(url, timeout_seconds)
     html_text = _with_sfcc_variations(html_text, final_url)
     product = parse_product_html(html_text, final_url) if html_text else None
+    if product is None and _next_page(final_url or url):
+        # Next's own page is a bot wall, including in Chrome. The catalog search
+        # still has this style's title, price, sizes and photo.
+        from adapters.next_catalog import fetch_next_product
+
+        catalog = fetch_next_product(url)
+        if catalog is not None:
+            return catalog
+        raise ProductPageError(_unreadable_message(url))
     if product is not None and len(product.photo_urls) >= FULL_GALLERY:
         _remember_page(url, final_url, html_text)
         return product
@@ -439,6 +448,12 @@ _PRICED_IN: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+def _next_page(url: str) -> bool:
+    from adapters.next_catalog import is_next_product_url
+
+    return is_next_product_url(url)
+
+
 def _unreadable_message(url: str) -> str:
     return (
         "Не удалось прочитать товар по этой ссылке: магазин не отдал название, цену или фото. "
@@ -533,6 +548,9 @@ def fetch_product_html(url: str, timeout_seconds: float = 20.0) -> tuple[str, st
     # and draws the card in the browser.
     if _carries_product_markup(html_text) and parse_product_html(html_text, page_url) is not None:
         return _remember_page(url, page_url, html_text)
+    if _next_page(page_url):
+        logger.info("Next page %s is blocked; not opening Chrome", page_url)
+        return page_url, html_text
 
     logger.info("Product page %s came back empty, blocked or as a bare app shell, opening it in Chrome", page_url)
     for attempt in range(1, BROWSER_ATTEMPTS + 1):

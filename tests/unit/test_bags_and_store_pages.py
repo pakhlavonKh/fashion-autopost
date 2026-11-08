@@ -20,6 +20,7 @@ from core.gallery import canonical_photo_key
 from core.product_facts import (
     eu_shoe_sizes,
     extract_bag_size,
+    format_bag_size,
     extract_heel_height,
     extract_site_facts,
     is_bag,
@@ -36,7 +37,16 @@ def test_the_colour_closes_part_one_after_sizes_heel_and_bag_size() -> None:
     assert shoe == "Размеры от 36 до 41.\nВысота каблука: 8 см.\nЦвет: черный."
 
     bag = site_description("Black", ("ONE SIZE",), bag_size="высота 22 см, ширина 25,5 см, глубина 11 см")
-    assert bag == "Размер сумки: высота 22 см, ширина 25,5 см, глубина 11 см.\nЦвет: черный."
+    assert bag == "Размер: 22x25,5x11 см.\nЦвет: черный."
+
+
+def test_only_a_bag_is_written_as_measurements_joined_by_x() -> None:
+    assert format_bag_size("высота 16 см, ширина 28 см, глубина 6,5 см") == "16x28x6,5 см"
+    assert format_bag_size("высота 30 см, ширина 16 см, длина 52 см") == "30x16x52 см"
+    assert format_bag_size("25 × 18 см") == "25x18 см"
+    shoe = site_description("Black", ("36", "41"), heel_height="9 cm")
+    assert shoe == "Размеры от 36 до 41.\nВысота каблука: 8 см.\nЦвет: черный."
+    assert "x" not in shoe
 
 
 def test_a_bag_without_measurements_keeps_its_size_line() -> None:
