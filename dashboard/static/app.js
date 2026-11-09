@@ -1495,7 +1495,6 @@ async function handleLogin() {
     setApiBaseUrl(apiUrl);
   }
   setAuthUser(username, remember);
-  setAuthKey(password, remember);
 
   const loginText = document.getElementById('btnLoginText');
   btnLogin.disabled = true;
@@ -1511,6 +1510,9 @@ async function handleLogin() {
     if (res.ok) {
       const authData = await res.json();
       const confirmedUser = authData.username || username;
+      if (authData.token) {
+        setAuthKey(authData.token, remember);
+      }
       setAuthUser(confirmedUser, remember);
       updateUserBadge(confirmedUser);
       hideAuthModal();

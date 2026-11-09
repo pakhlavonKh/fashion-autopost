@@ -26,7 +26,7 @@ from core.dedup import extract_duplicate_signatures, filter_unseen
 from core.image_downloader import ImageDownloader
 from core.moderation import ConfigurableModerationGate, ModerationGate
 from core.outfits import OutfitCoordinator
-from core.pricing import FxConverter, calculate_final_price, source_price_usd, whole_price
+from core.pricing import ExchangeRateUnavailable, FxConverter, calculate_final_price, source_price_usd, whole_price
 from core.product_facts import (
     attach_site_facts,
     is_heeled_footwear,
@@ -870,7 +870,11 @@ class PipelineRunner:
         kept: list[RawProduct] = []
         rejected: list[RawProduct] = []
         for product in products:
-            usd_price = source_price_usd(product.price, product.currency, self.fx)
+            try:
+                usd_price = source_price_usd(product.price, product.currency, self.fx)
+            except ExchangeRateUnavailable as exc:
+                logger.warning("Skipping %s: %s", product.external_id, exc)
+                continue
             if usd_price > limit:
                 logger.info(
                     "Skipping %s: store price %s %s is %s USD, above the %s USD limit before markup",
@@ -1439,7 +1443,11 @@ class PipelineRunner:
                 continue
 
             # 2. Max price check
-            usd_price = source_price_usd(candidate.price, candidate.currency, self.fx)
+            try:
+                usd_price = source_price_usd(candidate.price, candidate.currency, self.fx)
+            except ExchangeRateUnavailable as exc:
+                logger.warning("Skipping %s: %s", candidate.external_id, exc)
+                continue
             if usd_price > max_price:
                 self._reject_over_source_price(candidate, already_stored=True)
                 continue

@@ -6,6 +6,7 @@ from adapters.base import RawProduct
 from adapters.product_page import parse_product_html
 from core.product_facts import (
     attach_site_facts,
+    clean_size,
     extract_heel_height,
     extract_site_facts,
     site_description,
@@ -257,6 +258,24 @@ def test_heel_caption_line_is_one_cm_less_than_website() -> None:
     assert heel_caption_line("1 cm") is None
     assert heel_caption_line("10 mm") is None
     assert heel_caption_line(None) is None
+
+
+def test_mules_are_not_heels_and_boots_still_are() -> None:
+    from core.product_facts import is_heeled_footwear
+
+    assert is_heeled_footwear("black suede mules") is False
+    assert is_heeled_footwear("мюли замшевые") is False
+    assert is_heeled_footwear("leather ankle boots") is True
+    assert is_heeled_footwear("strappy sandals") is True
+
+
+def test_a_half_size_keeps_its_fraction() -> None:
+    assert clean_size("35.5") == "35.5"
+    assert clean_size("35,5") == "35.5"
+    assert clean_size("EU 36.5") == "36.5"
+    assert clean_size("36") == "36"
+    assert clean_size("M") == "M"
+    assert site_description("Black", ("35.5", "36", "43")) == "Размеры от 35.5 до 43.\nЦвет: черный."
 
 
 def test_heel_height_is_read_from_product_json_and_keeps_the_site_number() -> None:

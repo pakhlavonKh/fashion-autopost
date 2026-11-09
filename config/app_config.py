@@ -253,8 +253,8 @@ class DashboardSettings(BaseModel):
     port: int = 8000
     host: str = "0.0.0.0"
     admin_username: str = "admin"
-    admin_password: str = "fashion-admin-2026"
-    admin_key: str = "fashion-admin-2026"
+    admin_password: str = ""
+    admin_key: str = ""
 
 
 class AppConfig(BaseModel):

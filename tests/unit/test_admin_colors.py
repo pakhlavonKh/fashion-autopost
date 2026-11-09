@@ -82,7 +82,7 @@ def test_the_link_colour_is_ready_without_a_second_page_read(tmp_path: Path) -> 
     bot.handle_update(_message(ADMIN_ID, "2", update_id=2))
     assert runner.prepared == [BEIGE]
     assert "Цвет: бежевый." in sent[-1][1]
-    assert "Фото на сайте: 12" in sent[-1][1]
+    assert "Фото на сайте: 12. В пост пойдут 10." in sent[-1][1]
 
 
 def test_all_colours_go_out_as_separate_posts(tmp_path: Path) -> None:

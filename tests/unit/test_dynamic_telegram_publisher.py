@@ -169,6 +169,8 @@ def test_dashboard_telegram_chat_endpoints(tmp_path: Path) -> None:
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(yaml.dump({"schedule": {"times": ["10:00"]}}), encoding="utf-8")
     config = AppConfig.load(config_path=cfg_file, env_path="non_existent.env")
+    config.dashboard.admin_password = "test-secret"
+    config.dashboard.admin_key = "test-secret"
     mock_runner = MagicMock()
 
     app = create_dashboard_app(config=config, runner=mock_runner, repo=repo)

@@ -25,7 +25,7 @@ from adapters.scrapers.base import generate_deterministic_id, parse_price
 from core.color_variants import extract_color_variants
 from core.dedup import variant_parts
 from core.gallery import MAX_PRODUCT_PHOTOS, _inditex_urls, ordered_photos, page_gallery_is_authoritative
-from core.store_platforms import inditex_brand, is_inditex
+from core.store_platforms import inditex_brand, is_hm_store, is_inditex, is_zara_clothing
 from core.product_facts import (
     extract_bag_size,
     extract_heel_height,
@@ -153,7 +153,8 @@ def fetch_product_page(url: str, headless: bool = True, timeout_seconds: float =
     product = parse_product_html(html_text, final_url) if html_text else None
     if product is None and _next_page(final_url or url):
         # Next's own page is a bot wall, including in Chrome. The catalog search
-        # still has this style's title, price, sizes and photo.
+        # still has this style's title, price and sizes, and the image host has
+        # the rest of that colour's shots.
         from adapters.next_catalog import fetch_next_product
 
         catalog = fetch_next_product(url)
@@ -350,6 +351,8 @@ def parse_product_html(html_text: str, url: str) -> RawProduct | None:
 def brand_from_url(url: str) -> str:
     host = urlparse(url).netloc.lower()
     host = re.sub(r"^www\d?\.", "", host)
+    if "zarahome" in host:
+        return "zarahome"
     if "zara" in host:
         return "zara"
     if "mango" in host:
@@ -402,9 +405,17 @@ def currency_hint(url: str) -> str:
         return "RUB"
     if "/uz/" in path or host.endswith(".uz"):
         return "UZS"
-    if "/es" in path or host.endswith(".hm.com") or "/de" in path or "/fr" in path or "/it" in path:
+    # A whole path piece only. "/denim", "/espadrille", "/front" and "/item" are not locales.
+    if host.endswith(".hm.com") or any(_locale_segment(path, code) for code in ("es", "de", "fr", "it")):
         return "EUR"
     return "EUR"
+
+
+def _locale_segment(path: str, code: str) -> bool:
+    """True when /code/ is its own path piece, including a path that ends in /code."""
+    folded = (path or "").lower()
+    piece = f"/{code}"
+    return f"{piece}/" in folded or folded.endswith(piece)
 
 
 def _detect_page_currency(html_text: str, default_currency: str) -> str:
@@ -1233,6 +1244,13 @@ def _absolute_url(value: str, page_url: str) -> str:
     return absolute
 
 
+def _zara_clothing_page(brand: str, page: str, html_text: str = "") -> bool:
+    """The Zara clothing images. Zara Home is an Inditex store with another parser."""
+    if "zarahome" in brand or "zarahome" in page:
+        return False
+    return is_zara_clothing(brand) or is_zara_clothing(page) or "static.zara.net" in html_text
+
+
 def _brand_image_urls(html_text: str, brand: str, url: str) -> list[str]:
     found: list[str] = []
     brand_lower = (brand or "").lower()
@@ -1241,7 +1259,7 @@ def _brand_image_urls(html_text: str, brand: str, url: str) -> list[str]:
     if "mango" in brand_lower or "mango.com" in url_lower:
         found.extend(re.findall(r"https://media\.mango\.com/is/image/punto/[0-9]+-[0-9A-Z]+-[0-9A-Z]+", html_text))
 
-    if "zara" in brand_lower or "zara.com" in url_lower or "static.zara.net" in html_text:
+    if _zara_clothing_page(brand_lower, url_lower, html_text):
         found.extend(re.findall(r"https://static\.zara\.net/(?:photos|assets|stdphotos)/[^\s\"'<>]+", html_text))
         for match in re.finditer(r'"path"\s*:\s*"(/assets/public/[^"]+|/photos/[^"]+)"\s*,\s*"name"\s*:\s*"([^"]+)"', html_text):
             p, n = match.group(1), match.group(2)
@@ -1253,7 +1271,7 @@ def _brand_image_urls(html_text: str, brand: str, url: str) -> list[str]:
     if is_inditex(brand_lower) or (inditex_brand(url) and inditex_brand(url) != "zara"):
         found.extend(_inditex_urls(html_text))
 
-    if "hm" in brand_lower or "hm.com" in url_lower:
+    if is_hm_store(brand_lower, url):
         found.extend(re.findall(r"https://image\.hm\.com/assets/hm/[^\s\"'<>]+", html_text))
 
     # General DOM / picture / srcset / img extraction

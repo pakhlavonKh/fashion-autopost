@@ -656,7 +656,7 @@ class AdminIntakeBot:
         # Later it may hold the auto text as well; the dialogue remembers which.
         own_caption = bool(post.custom_description) if multi else self._own_caption.get(post_id, False)
         photo_count = self._photo_counts.get(post_id) or 0
-        photo_line = f"📸 Фото на сайте: {photo_count}. В пост пойдут все.\n" if photo_count else ""
+        photo_line = _photo_line(photo_count)
         photo_line += _read_warnings(photo_count, self._size_counts.get(post_id))
         photo_line += "\n" if photo_line else ""
 
@@ -1184,6 +1184,20 @@ def _command_name(text: str) -> str | None:
 
 
 _COLOR_LINE = re.compile(r"^\s*цвет\s*:.*$", re.IGNORECASE | re.MULTILINE)
+
+
+# Telegram sendMediaGroup and an Instagram carousel both stop at 10.
+# The Instagram collage is one of those 10, not an extra frame.
+_POST_PHOTO_LIMIT = 10
+
+
+def _photo_line(photo_count: int) -> str:
+    """How many of the store's photos the post will actually carry."""
+    if not photo_count:
+        return ""
+    going = photo_count if photo_count <= _POST_PHOTO_LIMIT else _POST_PHOTO_LIMIT
+    which = "все" if going == photo_count else str(going)
+    return f"📸 Фото на сайте: {photo_count}. В пост пойдут {which}.\n"
 
 
 def _read_warnings(photo_count: int, size_count: int | None) -> str:

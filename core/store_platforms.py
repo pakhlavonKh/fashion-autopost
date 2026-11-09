@@ -57,3 +57,21 @@ def is_inditex(url_or_brand: str) -> bool:
 
 def is_inditex_cdn(url: str) -> bool:
     return bool(_INDITEX_CDN.search(host_of(url)))
+
+
+def is_hm_store(brand: str, page: str) -> bool:
+    """H&M only. A shop whose name merely contains the letters hm is not H&M."""
+    if (brand or "").lower() == "hm":
+        return True
+    host = host_of(page)
+    if host.startswith("www."):
+        host = host[4:]
+    return host == "hm.com" or host.endswith(".hm.com")
+
+
+def is_zara_clothing(text: str) -> bool:
+    """Zara the clothing chain. Zara Home contains the same letters and is not it."""
+    folded = (text or "").lower()
+    if "zarahome" in folded:
+        return False
+    return "zara" in folded

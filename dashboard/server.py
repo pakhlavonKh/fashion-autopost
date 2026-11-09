@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import logging
 from pathlib import Path
+import secrets
 from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -166,10 +167,11 @@ def create_dashboard_app(
             headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
         )
 
+    issued_tokens: set[str] = set()
+
     def verify_admin(
         authorization: Optional[str] = Header(None),
         x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
-        admin_key_query: Optional[str] = Query(None, alias="key"),
     ) -> bool:
         expected_pass = (
             getattr(getattr(config, "dashboard", None), "admin_password", "")
@@ -178,7 +180,11 @@ def create_dashboard_app(
         expected_user = getattr(getattr(config, "dashboard", None), "admin_username", "admin")
 
         if not expected_pass:
-            return True
+            raise HTTPException(
+                status_code=401,
+                detail="Admin kaliti noto'g'ri yoki taqdim etilmagan (Unauthorized)",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
         token = None
         if authorization:
@@ -199,16 +205,15 @@ def create_dashboard_app(
                 token = parts[0]
         elif x_admin_key:
             token = x_admin_key.strip()
-        elif admin_key_query:
-            token = admin_key_query.strip()
+        # A password in the address (?key=) is not a credential. It would be written into access logs.
 
-        if not token or token != expected_pass:
-            raise HTTPException(
-                status_code=401,
-                detail="Admin kaliti noto'g'ri yoki taqdim etilmagan (Unauthorized)",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return True
+        if token and (token in issued_tokens or token == expected_pass):
+            return True
+        raise HTTPException(
+            status_code=401,
+            detail="Admin kaliti noto'g'ri yoki taqdim etilmagan (Unauthorized)",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     @app.post("/api/auth/login")
     def auth_login(req: AuthLoginRequest):
@@ -235,10 +240,12 @@ def create_dashboard_app(
                 detail="Xavfsizlik paroli noto'g'ri (Invalid password)",
             )
 
+        token = secrets.token_urlsafe(32)
+        issued_tokens.add(token)
         return {
             "authenticated": True,
             "username": expected_user,
-            "token": expected_pass,
+            "token": token,
             "message": "Admin tizimiga muvaffaqiyatli ulanildi",
         }
 

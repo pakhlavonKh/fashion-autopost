@@ -15,7 +15,7 @@ import re
 from urllib.parse import parse_qs, urljoin, urlsplit
 import httpx
 
-from core.store_platforms import INDITEX_BRANDS, inditex_brand, is_inditex_cdn
+from core.store_platforms import INDITEX_BRANDS, inditex_brand, is_hm_store, is_inditex_cdn, is_zara_clothing
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +421,13 @@ def page_gallery_is_authoritative(html_text: str, brand: str, page_url: str) -> 
     return len(inditex_pdp_gallery(html_text)) >= 2
 
 
+def _zara_clothing_page(brand: str, page: str, html_text: str = "") -> bool:
+    """The Zara clothing parser. Zara Home shares the letters and stays on the Inditex path."""
+    if "zarahome" in brand or "zarahome" in page:
+        return False
+    return is_zara_clothing(brand) or is_zara_clothing(page) or "static.zara.net" in html_text
+
+
 def ordered_photos(
     html_text: str,
     brand: str,
@@ -445,7 +452,7 @@ def ordered_photos(
             variant = keep_single_product(found, page)
             if variant:
                 urls.extend(variant)
-        elif "zara" in brand_lower or "zara.com" in page or "static.zara.net" in html_text:
+        elif _zara_clothing_page(brand_lower, page, html_text):
             labeled = _zara_entries(html_text)
             if labeled:
                 plain_index = 0
@@ -468,7 +475,7 @@ def ordered_photos(
             urls.extend(inditex_found)
         elif "marksandspencer" in brand_lower or "marksandspencer.com" in page:
             urls.extend(_marks_urls(html_text, page))
-        elif "hm" in brand_lower or "hm.com" in page:
+        elif is_hm_store(brand_lower, page):
             hm_found = _hm_urls(html_text, page)
             urls.extend(hm_found)
         elif "cdn/shop" in html_text or "shopify" in html_text or "linzi" in brand_lower:
@@ -502,7 +509,7 @@ def ordered_photos(
         if len(matching_fallback) >= 2:
             urls = matching_fallback
 
-    if "zara" in brand_lower or "zara.com" in page:
+    if _zara_clothing_page(brand_lower, page):
         urls = _keep_zara_selected_color(urls, html_text, page)
 
     anchor = fallback[0] if fallback else ""

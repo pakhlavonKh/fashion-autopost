@@ -8,6 +8,7 @@ import pytest
 
 from core.pricing import (
     DynamicRateConverter,
+    ExchangeRateUnavailable,
     FixedRateConverter,
     calculate_final_price,
     source_price_usd,
@@ -96,6 +97,17 @@ def test_dynamic_rate_converter() -> None:
     # Update exchange rate dynamically
     dyn_fx.update_rate("EUR", Decimal("1.10"))
     assert dyn_fx.convert(Decimal("100"), "EUR", "USD") == Decimal("110.00")
+
+
+def test_a_missing_rate_is_not_replaced_with_a_guess() -> None:
+    fx = DynamicRateConverter(
+        cached_rates={"EUR": Decimal("1.08"), "USD": Decimal("1.00")},
+        fallback_rate=Decimal("1.08"),
+    )
+    fx._refresh_rates_online = lambda needed_currencies=None: False  # type: ignore[method-assign]
+    with pytest.raises(ExchangeRateUnavailable, match="PLN"):
+        fx.convert(Decimal("100"), "PLN", "USD")
+    assert fx.convert(Decimal("100"), "EUR", "USD") == Decimal("108.00")
 
 
 def test_calculate_final_price_negative_validation() -> None:

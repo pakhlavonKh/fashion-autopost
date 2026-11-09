@@ -17,6 +17,14 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+class ExchangeRateUnavailable(Exception):
+    """The live rate service did not name this currency, so the price must not be guessed."""
+
+    def __init__(self, currency: str) -> None:
+        self.currency = currency
+        super().__init__(f"No exchange rate for {currency}")
+
+
 @runtime_checkable
 class FxConverter(Protocol):
     """Interface for foreign exchange conversion between currencies."""
@@ -122,13 +130,9 @@ class DynamicRateConverter:
         if from_curr in self.rates and to_curr in self.rates:
             return (amount * self.rates[from_curr]) / self.rates[to_curr]
 
-        logger.warning(
-            "Dynamic rate unavailable for %s -> %s, using fallback rate %s",
-            from_curr,
-            to_curr,
-            self.fallback_rate,
-        )
-        return amount * self.fallback_rate
+        missing = from_curr if from_curr not in self.rates else to_curr
+        logger.warning("No exchange rate for %s; the product will not be published", missing)
+        raise ExchangeRateUnavailable(missing)
 
     def _is_cache_stale(self) -> bool:
         if self.last_fetched is None:

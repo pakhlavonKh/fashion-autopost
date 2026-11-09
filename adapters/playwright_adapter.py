@@ -14,7 +14,7 @@ from adapters.base import RawProduct, SourceAdapter
 from adapters.europe_markets import is_european_store_url, next_region_index
 from adapters.scrapers import get_scraper_for_store
 from config.app_config import EuropeanMarketConfig, ScraperSettings, ScraperStoreConfig
-from core.pricing import FixedRateConverter, FxConverter, source_price_usd
+from core.pricing import ExchangeRateUnavailable, FixedRateConverter, FxConverter, source_price_usd
 import os
 import sys
 
@@ -158,7 +158,11 @@ class PlaywrightScraperAdapter:
                 if not product.in_stock:
                     logger.debug("Skipping out-of-stock product: %s", product.external_id)
                     continue
-                usd_price = source_price_usd(product.price, product.currency, fx)
+                try:
+                    usd_price = source_price_usd(product.price, product.currency, fx)
+                except ExchangeRateUnavailable as exc:
+                    logger.warning("Skipping %s: %s", product.external_id, exc)
+                    continue
                 if usd_price > price_limit:
                     skipped_over_price += 1
                     logger.info(

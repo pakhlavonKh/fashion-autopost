@@ -392,3 +392,23 @@ def test_photos_of_other_products_still_go() -> None:
     by_words = ["https://cdn.example.com/f/red-dress-front.jpg", "https://cdn.example.com/f/red-dress-back.jpg",
                 "https://cdn.example.com/f/blue-shirt-front.jpg", "https://cdn.example.com/f/cotton-trousers.jpg"]
     assert keep_single_product(by_words, "https://shop.example.com/p/12345", anchor_url=by_words[0]) == by_words[:2]
+
+
+def test_a_shop_named_like_hm_is_not_read_as_hm() -> None:
+    from core.store_platforms import is_hm_store
+
+    assert is_hm_store("rhythm", "https://www.rhythm.com/products/linen-shirt") is False
+    assert is_hm_store("hm", "https://www2.hm.com/es_es/productpage.123.html") is True
+    assert is_hm_store("store", "https://www2.hm.com/es_es/productpage.123.html") is True
+
+
+def test_zara_home_does_not_use_the_zara_clothing_parser() -> None:
+    from adapters.product_page import brand_from_url
+    from core.gallery import _zara_clothing_page
+
+    home = "https://www.zarahome.com/es/en/cushion"
+    clothing = "https://www.zara.com/es/en/dress-p123.html"
+    assert brand_from_url(home) == "zarahome"
+    assert brand_from_url(clothing) == "zara"
+    assert _zara_clothing_page("zara", clothing) is True
+    assert _zara_clothing_page("zarahome", home, "https://static.zara.net/photos/a.jpg") is False

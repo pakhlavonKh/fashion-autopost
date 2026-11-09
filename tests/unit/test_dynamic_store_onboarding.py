@@ -88,6 +88,8 @@ def test_dashboard_scraper_stores_api(tmp_path: Path) -> None:
     db_url = f"sqlite:///{tmp_path / 'dash_test.db'}"
     repo = SqlAlchemyProductRepository(db_url)
     config = AppConfig.load(config_path=cfg_file, env_path="non_existent.env")
+    config.dashboard.admin_password = "test-secret"
+    config.dashboard.admin_key = "test-secret"
     mock_runner = MagicMock()
 
     app = create_dashboard_app(config=config, runner=mock_runner, repo=repo)

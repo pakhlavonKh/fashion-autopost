@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from unittest.mock import MagicMock
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -60,9 +61,12 @@ def test_dashboard_api_blocks_unauthorized_access(tmp_path: Path):
 
 
 def test_dashboard_api_allows_authorized_access(tmp_path: Path):
-    """Protected API endpoints must allow access with valid bearer token, X-Admin-Key, or query param."""
+    """Protected API endpoints must allow access with a header credential, not a key in the address."""
     cfg_file = tmp_path / "config.yaml"
-    cfg_file.write_text(yaml.dump({"schedule": {"times": ["10:00"]}}), encoding="utf-8")
+    cfg_file.write_text(
+        yaml.dump({"dashboard": {"admin_password": "header-secret"}, "schedule": {"times": ["10:00"]}}),
+        encoding="utf-8",
+    )
     config = AppConfig.load(config_path=cfg_file, env_path="non_existent.env")
     key = config.dashboard.admin_key
     assert key
@@ -81,9 +85,9 @@ def test_dashboard_api_allows_authorized_access(tmp_path: Path):
     res2 = client.get("/api/stats", headers={"Authorization": f"Bearer {key}"})
     assert res2.status_code == 200
 
-    # 3. Via query parameter key=
+    # 3. A password in the address does not grant access.
     res3 = client.get(f"/api/stats?key={key}")
-    assert res3.status_code == 200
+    assert res3.status_code == 401
 
     # 4. Auth verify endpoint
     res4 = client.get("/api/auth/verify", headers={"X-Admin-Key": key})
@@ -94,7 +98,10 @@ def test_dashboard_api_allows_authorized_access(tmp_path: Path):
 def test_dashboard_auth_login_endpoint(tmp_path: Path):
     """The /api/auth/login endpoint validates admin credentials and returns tokens."""
     cfg_file = tmp_path / "config.yaml"
-    cfg_file.write_text(yaml.dump({"schedule": {"times": ["10:00"]}}), encoding="utf-8")
+    cfg_file.write_text(
+        yaml.dump({"dashboard": {"admin_password": "login-secret"}, "schedule": {"times": ["10:00"]}}),
+        encoding="utf-8",
+    )
     config = AppConfig.load(config_path=cfg_file, env_path="non_existent.env")
     key = config.dashboard.admin_key
     assert key
@@ -113,7 +120,7 @@ def test_dashboard_auth_login_endpoint(tmp_path: Path):
     assert ok_res.status_code == 200
     data = ok_res.json()
     assert data["authenticated"] is True
-    assert data["token"] == key
+    assert data["token"] and data["token"] != key
 
     # Correct key via 'password' field
     ok_res2 = client.post("/api/auth/login", json={"password": key})
@@ -172,7 +179,7 @@ def test_dashboard_auth_configurable_username_and_password(tmp_path: Path, monke
     data = res_ok.json()
     assert data["authenticated"] is True
     assert data["username"] == "fashion_manager"
-    assert data["token"] == "CustomSecretPass2026!"
+    assert data["token"] and data["token"] != "CustomSecretPass2026!"
 
     # 4. Bearer token access with returned token
     res_stats = client.get("/api/stats", headers={"Authorization": f"Bearer {data['token']}"})
@@ -198,12 +205,32 @@ def test_dashboard_auth_configurable_username_and_password(tmp_path: Path, monke
 
 def _publish_now_client(tmp_path: Path, name: str) -> tuple[TestClient, MagicMock, str]:
     cfg_file = tmp_path / f"{name}.yaml"
-    cfg_file.write_text(yaml.dump({"schedule": {"times": ["10:00"]}}), encoding="utf-8")
+    cfg_file.write_text(
+        yaml.dump({"dashboard": {"admin_password": "publish-secret"}, "schedule": {"times": ["10:00"]}}),
+        encoding="utf-8",
+    )
     config = AppConfig.load(config_path=cfg_file, env_path="non_existent.env")
     repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / f'{name}.db'}")
     runner = MagicMock()
     app = create_dashboard_app(config=config, runner=runner, repo=repo)
     return TestClient(app), runner, config.dashboard.admin_key
+
+
+def test_an_empty_dashboard_password_does_not_open_the_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DASHBOARD_ADMIN_PASSWORD", raising=False)
+    monkeypatch.delenv("DASHBOARD_PASSWORD", raising=False)
+    monkeypatch.delenv("DASHBOARD_ADMIN_KEY", raising=False)
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        yaml.dump({"dashboard": {"admin_password": "", "admin_key": ""}}),
+        encoding="utf-8",
+    )
+    config = AppConfig.load(config_path=cfg_file, env_path="non_existent.env")
+    repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / 'open.db'}")
+    app = create_dashboard_app(config=config, runner=MagicMock(), repo=repo)
+    client = TestClient(app)
+    assert client.get("/api/stats").status_code == 401
+    assert client.get("/api/stats", headers={"X-Admin-Key": "anything"}).status_code == 401
 
 
 def test_publish_now_needs_admin_credentials(tmp_path: Path):

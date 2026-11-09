@@ -170,6 +170,21 @@ def test_a_longer_size_list_later_on_the_page_does_not_win() -> None:
     assert _richness(own) > _richness(read(()))
 
 
+def test_a_product_word_is_not_a_country_in_the_url() -> None:
+    from adapters.product_page import _locale_segment, currency_hint
+
+    assert _locale_segment("/products/denim-jacket", "de") is False
+    assert _locale_segment("/products/espadrille-black", "es") is False
+    assert _locale_segment("/products/front-row-dress", "fr") is False
+    assert _locale_segment("/item/silk-dress", "it") is False
+    assert _locale_segment("/es/en/dress", "es") is True
+    assert _locale_segment("/de", "de") is True
+    assert currency_hint("https://www.zara.com/es/en/product-p123.html") == "EUR"
+    assert currency_hint("https://www.zara.com/uk/en/woman-new-in-l1180.html") == "GBP"
+    assert currency_hint("https://www2.hm.com/en_us/productpage.123.html") == "USD"
+    assert currency_hint("https://www.next.es/en/style/sv123942/v95287") == "EUR"
+
+
 def test_uk_and_half_shoe_sizes_are_shoe_sizes() -> None:
     from core.product_facts import shoe_sizes
 

@@ -438,6 +438,8 @@ def test_dashboard_brand_pause_and_settings_endpoints(tmp_path: Path) -> None:
 
     repo = SqlAlchemyProductRepository(f"sqlite:///{tmp_path / 'test.db'}")
     config = AppConfig()
+    config.dashboard.admin_password = "test-secret"
+    config.dashboard.admin_key = "test-secret"
     runner = MagicMock()
     runner.publish_approved_duplicate.return_value = (True, "Published approved duplicate")
     runner.publish_next_eligible_product.return_value = (True, "Published next product")

@@ -490,9 +490,9 @@ _HEEL_WORD = re.compile(
 )
 _NOT_HEEL = re.compile(
     r"(?:"
-    r"\b(?:sneakers?|trainers?|running|flats?|ballet|loafers?|espadrilles?|"
+    r"\b(?:sneakers?|trainers?|running|flats?|ballet|loafers?|mules?|espadrilles?|"
     r"slippers?|slides?|flip[-\s]?flops?)\b|sneaker|"
-    r"кроссов|кед|балетк|лофер|эспадриль|слипон|шлепан|шлёпан|тапоч|мокасин"
+    r"кроссов|кед|балетк|лофер|мюл|эспадриль|слипон|шлепан|шлёпан|тапоч|мокасин"
     r")",
     re.IGNORECASE,
 )
@@ -777,6 +777,15 @@ def clean_size(raw: str) -> str | None:
     text = " ".join((raw or "").split())
     if not text or len(text) > 20:
         return None
+    # "EU 36.5" must stay a half size. The fallback below would keep only "36".
+    # A bare "UK 6" is left as written: it is not a half size.
+    half = re.fullmatch(r"(?:EU|UK|US)\s*(\d{1,2})[.,](\d)", text, flags=re.IGNORECASE)
+    if half:
+        text = f"{half.group(1)}.{half.group(2)}"
+    else:
+        comma = re.fullmatch(r"(\d{1,2}),(\d)", text)
+        if comma:
+            text = f"{comma.group(1)}.{comma.group(2)}"
     if _SIZE_TOKEN.match(text):
         return _display_size(text)
     match = re.search(
