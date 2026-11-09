@@ -14,4 +14,5 @@ data/europe_region_index.txt
 certbot/
 logs/*.log
 .env
+config.yaml
 
