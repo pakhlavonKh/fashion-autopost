@@ -9,10 +9,61 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote
+import logging
 import os
 import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
+
+# config.yaml is not in git; this tracked template next to it holds the same settings.
+CONFIG_TEMPLATE_NAME = "config.example.yaml"
+
+
+def config_template_path(config_path: str | Path) -> Path:
+    return Path(config_path).with_name(CONFIG_TEMPLATE_NAME)
+
+
+def config_is_directory_message(config_path: str | Path) -> str:
+    path = Path(config_path)
+    return (
+        f"{path} is a directory, not a settings file. Docker creates an empty directory when the "
+        f"file it should mount is missing on the server (git pull removes config.yaml since it "
+        f"left git). Fix on the server: rmdir {path.name} && cp {CONFIG_TEMPLATE_NAME} {path.name} && "
+        f"docker compose up -d --force-recreate app (a plain restart keeps the directory)."
+    )
+
+
+def _yaml_mapping(path: Path) -> dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        content = yaml.safe_load(f)
+    return content if isinstance(content, dict) else {}
+
+
+def read_config_document(config_path: str | Path) -> tuple[dict[str, Any], Path | None]:
+    """The YAML settings to run with and the file they came from.
+
+    config.yaml when it is a file. Otherwise the template next to it, so the service keeps
+    its schedule, timezone and markup instead of falling back to built-in defaults that
+    were never meant for production (UTC, a catalog scrape every 15 minutes, another markup).
+    A directory in place of config.yaml (Docker made one) is reported, never opened.
+    """
+    cfg_file = Path(config_path)
+    if cfg_file.is_file():
+        return _yaml_mapping(cfg_file), cfg_file
+    if cfg_file.is_dir():
+        logger.error(config_is_directory_message(cfg_file))
+    template = config_template_path(cfg_file)
+    if template.is_file():
+        logger.warning(
+            "%s not found; running with the settings in %s. Copy it to %s so dashboard changes are kept.",
+            cfg_file,
+            template,
+            cfg_file.name,
+        )
+        return _yaml_mapping(template), template
+    return {}, None
 
 
 class AggregatorSettings(BaseModel):
@@ -290,6 +341,8 @@ class AppConfig(BaseModel):
 
     # Config file tracking for hot-reload
     _config_path: Path | None = None
+    # The file the settings were read from: config.yaml, or the template when it is missing.
+    _settings_source: Path | None = None
 
     @classmethod
     def load(cls, config_path: str | Path = "config.yaml", env_path: str | Path = ".env") -> "AppConfig":
@@ -304,13 +357,8 @@ class AppConfig(BaseModel):
         elif str(env_path) in (".env", ""):
             load_dotenv(override=False)
 
-        yaml_data: dict[str, Any] = {}
         cfg_file = Path(config_path)
-        if cfg_file.exists():
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                content = yaml.safe_load(f)
-                if isinstance(content, dict):
-                    yaml_data = content
+        yaml_data, settings_source = read_config_document(cfg_file)
 
         # Map environment variables into settings
         aggregator_data = yaml_data.get("aggregator", {})
@@ -419,6 +467,7 @@ class AppConfig(BaseModel):
 
         config = cls.model_validate(yaml_data)
         config._config_path = cfg_file
+        config._settings_source = settings_source
         return config
 
     def reload_hot_fields(self) -> None:
@@ -433,13 +482,13 @@ class AppConfig(BaseModel):
         - daily_publish_cap
         - target_currency
         """
-        if not self._config_path or not self._config_path.exists():
+        # A directory in place of config.yaml was reported at load; there is nothing to re-read.
+        if not self._config_path or not self._config_path.is_file():
             return
 
-        with open(self._config_path, "r", encoding="utf-8") as f:
-            content = yaml.safe_load(f)
-            if not isinstance(content, dict):
-                return
+        content = _yaml_mapping(self._config_path)
+        if not content:
+            return
 
         if "markup" in content:
             self.markup = Decimal(str(content["markup"]))

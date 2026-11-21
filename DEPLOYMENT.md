@@ -216,9 +216,21 @@ The project is designed with hot-reload architecture:
 - To modify price markup or schedule times: edit `./config.yaml` or change it live from the Web Admin Dashboard.
 
 ### Restarting or Updating Services
+`config.yaml` is not in git (it is the file the dashboard edits). `git pull` removes an
+old tracked copy, and Docker then mounts an empty **directory** named `config.yaml`,
+which the app cannot read. Recreate the file before starting the containers
+(`./deploy.sh` does this by itself). If it had become a directory, the container must be
+recreated: a plain restart keeps the directory and fails.
+```bash
+rmdir config.yaml                     # only if it is a directory
+cp config.example.yaml config.yaml    # only if config.yaml is missing
+docker compose up -d --force-recreate app
+```
+
 ```bash
 # Pull latest Git changes and restart
 git pull origin main
+[ -f config.yaml ] || cp config.example.yaml config.yaml
 docker compose build --pull app
 docker compose up -d
 
@@ -280,3 +292,17 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ### 3. Dashboard says "Unauthorized / 401"
 **Solution**:
 Enter the exact `DASHBOARD_ADMIN_KEY` configured in your `.env` file into the dashboard login prompt.
+With no `DASHBOARD_ADMIN_PASSWORD` in `.env` the dashboard refuses every login.
+
+### 4. The Telegram bot does not answer
+Check what the app says first:
+```bash
+docker compose ps
+docker compose logs --tail 200 app
+```
+- `Failed to load configuration: [Errno 21] Is a directory: 'config.yaml'` and the
+  container keeps restarting: `config.yaml` is a directory. Run
+  `rmdir config.yaml && cp config.example.yaml config.yaml`, then `docker compose up -d --force-recreate app`.
+- `409 Conflict`: a second copy of the bot polls with the same token (another server or
+  a laptop). Stop the other copy.
+- `401 Unauthorized`: the bot token in `.env` is wrong or was revoked in @BotFather.

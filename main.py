@@ -41,6 +41,32 @@ from storage.repository import SqlAlchemyProductRepository
 logger = logging.getLogger("main")
 
 
+def _log_settings_source(config: AppConfig) -> None:
+    """Say which settings file is in use; a missing config.yaml is easy to miss otherwise."""
+    from config.app_config import config_is_directory_message
+
+    wanted = config._config_path
+    source = config._settings_source
+    if wanted is not None and wanted.is_dir():
+        logger.error(config_is_directory_message(wanted))
+    if source is None:
+        logger.warning("No settings file found (%s): running on built-in defaults.", wanted)
+    elif wanted is not None and source != wanted:
+        logger.warning(
+            "%s is missing: running with the settings in %s. Restore it on the server: cp %s %s",
+            wanted,
+            source,
+            source.name,
+            wanted.name,
+        )
+    else:
+        logger.info("Settings file: %s", source)
+    if not config.dashboard.admin_password:
+        logger.warning(
+            "DASHBOARD_ADMIN_PASSWORD is not set in .env: the admin dashboard refuses every login."
+        )
+
+
 def start_admin_intake(config: AppConfig, runner: PipelineRunner, scheduler):
     """Listen for product links from the allowed Telegram admins."""
     from publishers.admin_intake_bot import AdminIntakeBot
@@ -319,6 +345,7 @@ def main() -> None:
     setup_logging(log_dir="./logs", secrets_to_mask=secrets_to_mask)
 
     logger.info("Fashion Autopost starting up...")
+    _log_settings_source(config)
     logger.info("Dry-run mode: %s", config.dry_run)
     logger.info("Target currency: %s, Markup: %s", config.target_currency, config.markup)
     logger.info("Publishing schedule: %s in %s", config.schedule.times, config.schedule.timezone)
