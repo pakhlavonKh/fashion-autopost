@@ -20,7 +20,7 @@ from sqlalchemy import select, func, desc
 
 from adapters.brand_catalog import normalize_brand_name, resolve_european_brand
 from adapters.europe_markets import currency_for_market, is_european_store_url, market_code_from_url
-from config.app_config import AppConfig
+from config.app_config import AppConfig, config_is_directory_message, read_config_document
 from core.pipeline import PipelineRunner
 from publishers.telegram_discovery import TelegramChatDiscoveryService
 from storage.models import LogRecord, ProductRecord, TelegramChatRecord
@@ -28,6 +28,19 @@ from storage.repository import SqlAlchemyProductRepository
 
 STATIC_DIR = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
+
+
+def _editable_config(cfg_file: Path) -> dict[str, Any]:
+    """The settings a dashboard change is written on top of.
+
+    A missing config.yaml starts from the tracked template, so saving one field writes the
+    whole file and not that field alone (a file with one field would drop the schedule,
+    timezone and markup on the next start).
+    """
+    if cfg_file.is_dir():
+        raise HTTPException(status_code=500, detail=config_is_directory_message(cfg_file))
+    data, _source = read_config_document(cfg_file)
+    return data
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -476,12 +489,7 @@ def create_dashboard_app(
     def update_config(req: ConfigUpdateRequest):
         """Update operational parameters in config.yaml and trigger hot-reload."""
         cfg_file = Path(config._config_path or "config.yaml")
-        data: dict[str, Any] = {}
-        if cfg_file.exists():
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    data = loaded
+        data = _editable_config(cfg_file)
 
         if req.markup is not None:
             data["markup"] = float(req.markup)
@@ -615,12 +623,7 @@ def create_dashboard_app(
     def upsert_scraper_store(req: StoreUpsertRequest):
         """Add or update an arbitrary website scraping target in config.yaml without code changes."""
         cfg_file = Path(config._config_path or "config.yaml")
-        data: dict[str, Any] = {}
-        if cfg_file.exists():
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    data = loaded
+        data = _editable_config(cfg_file)
 
         brand_name = normalize_brand_name(req.name)
         if not brand_name:
@@ -674,12 +677,7 @@ def create_dashboard_app(
         """Remove a website scraping target from config.yaml."""
         norm_name = normalize_brand_name(store_name)
         cfg_file = Path(config._config_path or "config.yaml")
-        data: dict[str, Any] = {}
-        if cfg_file.exists():
-            with open(cfg_file, "r", encoding="utf-8") as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    data = loaded
+        data = _editable_config(cfg_file)
 
         stores_data = data.get("scraper", {}).get("stores", {})
         if norm_name not in stores_data:

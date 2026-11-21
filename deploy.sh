@@ -64,9 +64,30 @@ if [ ! -f .env ]; then
     read -p "Press [Enter] once you have verified or updated your .env file..."
 fi
 
+# 4b. Operational settings (config.yaml). It is not in git: git pull removes an old
+# tracked copy, and Docker then mounts an empty directory in its place, which the
+# app cannot read. Recreate the file from the template whenever it is missing.
+RECREATE_APP=0
+if [ -d config.yaml ]; then
+    echo "[!] config.yaml is a directory (Docker created it because the file was missing). Replacing it."
+    rmdir config.yaml 2>/dev/null || mv config.yaml "config.yaml.directory-$(date +%Y%m%d_%H%M%S)"
+    # The old container keeps a directory at that mount point: restarting it fails
+    # ("mount a directory onto a file"). Only a new container sees the file.
+    RECREATE_APP=1
+fi
+if [ ! -f config.yaml ]; then
+    cp config.example.yaml config.yaml
+    echo "[*] Created config.yaml from config.example.yaml (schedule, markup, stores, footers)."
+    echo "    Settings changed in the dashboard after it was created are kept in config.yaml."
+fi
+
 # 5. Build and Launch Containers
 echo "[*] Building and starting Docker containers..."
 docker compose build --pull
+if [ "$RECREATE_APP" = "1" ]; then
+    # First, so the old app container is never started again.
+    docker compose up -d --force-recreate app
+fi
 docker compose up -d
 
 # 6. Status verification

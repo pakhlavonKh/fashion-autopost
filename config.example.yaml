@@ -1,0 +1,163 @@
+# Template of config.yaml: the settings the service ran with before config.yaml
+# stopped being tracked in git (Nov 2026).
+#
+# On a server: cp config.example.yaml config.yaml   (deploy.sh does this when it is missing)
+# config.yaml is what the dashboard edits; this template is only read when it is missing.
+# The dashboard password is never kept here: it is DASHBOARD_ADMIN_PASSWORD in .env.
+aggregator:
+  base_url: https://api.aggregator.example.com
+  mode: playwright
+  stores:
+  - zara
+  - mango
+  timeout_seconds: 30.0
+alert:
+  channel: console
+  telegram_chat_id: null
+daily_publish_cap: 300
+dashboard:
+  admin_username: admin
+  enabled: true
+  host: 0.0.0.0
+  port: 8000
+db_url: sqlite:///./data/app.db
+dry_run: false
+fx:
+  fixed_rate: 1.08
+  mode: dynamic
+  rates:
+    EUR: 1.08
+    GBP: 1.29
+    TRY: 0.029
+    USD: 1.0
+include_product_link: true
+instagram:
+  caption_footer: 'Европейское качество
+
+    Обращаться: @nigora_7
+
+    Тел:+998998484044
+
+    ✨Отзывы: @otzivi_fashbou
+
+    Товары в наличии: @vnalichiifash
+
+
+    Наш Telegram-канал:
+
+    https://t.me/fashionalleyb
+
+    '
+  enabled: false
+  username: invito.live
+markup: 10.0
+max_products_per_run: 1
+max_source_price_usd: 80
+moderation:
+  auto_approve: true
+  enabled: false
+prompt_path: ./prompt.txt
+schedule:
+  interval_minutes: null
+  posts_per_day: 17
+  times:
+  - 06:00
+  - 07:00
+  - 08:00
+  - 09:00
+  - '10:00'
+  - '11:00'
+  - '12:00'
+  - '13:00'
+  - '14:00'
+  - '15:00'
+  - '16:00'
+  - '17:00'
+  - '18:00'
+  - '19:00'
+  - '20:00'
+  - '21:00'
+  - '22:00'
+  - '23:00'
+  timezone: Asia/Tashkent
+scraper:
+  headless: true
+  regions:
+  - code: es
+    currency: EUR
+    urls:
+      mango: https://shop.mango.com/es/es/c/mujer/new-now/56b5c5ed
+      zara: https://www.zara.com/es/es/mujer-nuevo-l1180.html
+  - code: fr
+    currency: EUR
+    urls:
+      mango: https://shop.mango.com/fr/fr/c/femme/new-now/56b5c5ed
+      zara: https://www.zara.com/fr/fr/femme-nouveau-l1180.html
+  - code: de
+    currency: EUR
+    urls:
+      mango: https://shop.mango.com/de/de/c/damen/new-now/56b5c5ed
+      zara: https://www.zara.com/de/de/damen-neuware-l1180.html
+  - code: it
+    currency: EUR
+    urls:
+      mango: https://shop.mango.com/it/it/c/donna/new-now/56b5c5ed
+      zara: https://www.zara.com/it/it/donna-nuovi-arrivi-l1180.html
+  - code: gb
+    currency: GBP
+    urls:
+      mango: https://shop.mango.com/gb/en/c/women/new-now/56b5c5ed
+      zara: https://www.zara.com/uk/en/woman-new-in-l1180.html
+  scroll_steps: 6
+  stores:
+    hm:
+      currency: EUR
+      enabled: true
+      max_items: 60
+      url: https://www2.hm.com/es_es/mujer/novedades/ver-todo.html
+    mango:
+      currency: EUR
+      enabled: true
+      max_items: 60
+      url: https://shop.mango.com/es/es/c/mujer/new-now/56b5c5ed
+    zara:
+      currency: EUR
+      enabled: true
+      max_items: 60
+      url: https://www.zara.com/es/es/mujer-nuevo-l1180.html
+    stradivarius:
+      enabled: true
+      url: https://www.stradivarius.com/es/mujer/nuevo-n1906
+      currency: EUR
+      max_items: 60
+  timeout_seconds: 30.0
+  user_agent: null
+  wait_after_scroll_ms: 1500
+target_currency: USD
+telegram:
+  admin_user_ids:
+  - 5532256714
+  - 333588697
+  - 370255715
+  bio_footer: 'Европейское качество
+
+    Обращаться: @nigora_7
+
+    Тел:+998998484044
+
+    ✨Отзывы: @otzivi_fashbou
+
+    Товары в наличии: @vnalichiifash
+
+
+    Наш Instagram:
+
+    https://www.instagram.com/fashionnestboutique?igsh=Z29pN2tscmJhd3Mx
+
+
+    Наш основной Telegram-канал:
+
+    https://t.me/fashionalleyb
+
+    '
+  enabled: true

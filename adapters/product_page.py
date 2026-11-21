@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Any
 from urllib.parse import parse_qsl, urljoin, urlparse
 
 import httpx
@@ -58,6 +59,12 @@ _page_cache: tuple[str, str, str, float] | None = None
 # sizes and its gallery.
 BROWSER_ATTEMPTS = 3
 BROWSER_RETRY_PAUSE_SECONDS = 2.0
+# nodriver waits for every answer from Chrome without a time limit, and a frozen
+# tab never answers. A read still running after this long is stuck: it is cut
+# off with the fullest view it had, its Chrome is closed and the Chrome lock is
+# free again. Without this one frozen tab held the lock for good, and the admin
+# bot, which reads the page of every link it is sent, stopped answering.
+BROWSER_READ_LIMIT_SECONDS = 100.0
 
 # A store that draws its page in the browser shows the product before the whole
 # gallery and the size list: more photos come in as the shopper scrolls, sizes
@@ -104,14 +111,22 @@ _STORE_API_JS = """(async () => {
     || ids.some((id) => new RegExp('(^|[^0-9])' + id + '([^0-9]|$)').test(url))
   )).slice(0, 6);
   const texts = [];
+  const started = Date.now();
   for (const url of wanted) {
+    if (Date.now() - started > 20000) break;
+    // A store answer that never comes must not hold the whole page read.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
     try {
-      const response = await fetch(url, { credentials: 'include' });
+      const response = await fetch(url, { credentials: 'include', signal: controller.signal });
       const type = response.headers.get('content-type') || '';
       if (!response.ok || !type.includes('json')) continue;
       const text = await response.text();
       if (text.length < 3000000) texts.push(text);
-    } catch (error) {}
+    } catch (error) {
+    } finally {
+      clearTimeout(timer);
+    }
   }
   return JSON.stringify(texts);
 })()"""
@@ -623,11 +638,35 @@ def _fetch_html_browser(url: str, timeout_seconds: float) -> tuple[str, str]:
     # keeps a second half-gigabyte browser out of the container's memory.
     with _CHROME_LOCK:
         _ensure_virtual_display()
-        return asyncio.run(_browser_html(url, timeout_seconds))
+        return asyncio.run(_browser_html_within_limit(url, timeout_seconds))
 
 
-async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
+async def _browser_html_within_limit(url: str, timeout_seconds: float) -> tuple[str, str]:
+    """The Chrome read, cut off when it runs past BROWSER_READ_LIMIT_SECONDS."""
+    import asyncio
+
+    limit = BROWSER_READ_LIMIT_SECONDS
+    progress: dict[str, Any] = {}
+    try:
+        return await asyncio.wait_for(_browser_html(url, timeout_seconds, progress=progress), limit)
+    except TimeoutError:
+        best = progress.get("best")
+        if best is not None:
+            logger.warning(
+                "Chrome read of %s was still running after %.0f s; keeping the fullest view it had", url, limit
+            )
+            return best[1], best[2]
+        raise TimeoutError(f"Chrome did not finish reading {url} within {limit:.0f} s") from None
+
+
+async def _browser_html(
+    url: str, timeout_seconds: float, progress: dict[str, Any] | None = None
+) -> tuple[str, str]:
+    """Read the page in Chrome. progress["best"] holds the fullest view so far, for a read cut off."""
     import nodriver as uc
+
+    if progress is None:
+        progress = {}
 
     chrome = "/usr/bin/google-chrome" if os.path.exists("/usr/bin/google-chrome") else None
     kwargs = {
@@ -662,11 +701,13 @@ async def _browser_html(url: str, timeout_seconds: float) -> tuple[str, str]:
                 continue
             if best is None or snapshot[0] > best[0]:
                 best, quiet = snapshot, 0
+                progress["best"] = best
             else:
                 quiet += 1
             if not scrolled:
                 # The product is on the page; walk down it so lazy photos and sizes load.
                 best = await _scroll_through(page, url, best, deadline)
+                progress["best"] = best
                 scrolled = True
             elif quiet >= SETTLE_SNAPSHOTS + (2 if _short_of_photos_or_sizes(best[0]) else 0):
                 # A read still short of photos or sizes waits a little longer; a

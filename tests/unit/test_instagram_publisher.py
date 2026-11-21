@@ -419,7 +419,8 @@ def test_dry_run_logs_instagram_caption() -> None:
 
 
 def test_config_points_instagram_at_test_account() -> None:
-    config_path = Path(__file__).resolve().parents[2] / "config.yaml"
+    # config.yaml is not in git; the tracked template holds the same settings.
+    config_path = Path(__file__).resolve().parents[2] / "config.example.yaml"
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert data["instagram"]["username"] in ("mukhsinius", "invito.live")
     assert "t.me/fashionalleyb" in data["instagram"]["caption_footer"]
