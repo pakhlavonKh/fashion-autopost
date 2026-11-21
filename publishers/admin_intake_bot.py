@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 import html
 import json
 import logging
+import queue
 import re
 import threading
+import time
 import zoneinfo
 from typing import Any, Callable
 
@@ -25,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _JOB_PREFIX = "manual_post_"
+
+# Each chat is answered by its own worker, in the order its messages came; the
+# poll loop only hands updates out. Reading a store page takes from seconds to
+# minutes, and while the poll loop did that work itself one slow or frozen page
+# read left every admin without an answer.
+_CHAT_WORKER_IDLE_SECONDS = 60.0
+# An admin who writes while the bot is still busy with their previous message
+# is told so once, instead of hearing nothing.
+_BUSY_NOTE_AFTER_SECONDS = 5.0
+_BUSY_NOTE = "⏳ Ещё работаю над вашим предыдущим сообщением. Отвечу на всё по порядку, как закончу."
 
 
 class AdminIntakeBot:
@@ -65,6 +77,12 @@ class AdminIntakeBot:
         self._own_caption: dict[int, bool] = {}
         self._photo_counts: dict[int, int] = {}
         self._size_counts: dict[int, int | None] = {}
+        # Per-chat workers: the queue of each chat being served, and since when
+        # its worker has been busy with the update in hand.
+        self._chats_lock = threading.Lock()
+        self._chat_queues: dict[str, queue.Queue] = {}
+        self._busy_since: dict[str, float] = {}
+        self._busy_noted: dict[str, float] = {}
 
     def _instagram_on(self) -> bool:
         """Live flag. The admin panel can turn Instagram back on without a code change."""
@@ -109,15 +127,29 @@ class AdminIntakeBot:
             self.scheduler.shutdown(wait=False)
 
     def restore_jobs(self) -> None:
-        """Re-arm posts that were scheduled before the process restarted."""
+        """Re-arm posts that were scheduled before the process restarted.
+
+        A post that cannot be re-armed is logged and skipped: it must not stop the
+        bot from starting, which would take the whole service down with it.
+        """
         now = datetime.now(timezone.utc)
-        for post in self.repo.list_manual_posts(["scheduled", "publishing"]):
-            if post.status == "publishing":
-                self.repo.set_manual_post_status(post.id, "scheduled")
-            run_at = post.publish_at or now
-            if run_at <= now:
-                run_at = now + timedelta(seconds=2)
-            self._arm_job(post.id, run_at)
+        try:
+            posts = self.repo.list_manual_posts(["scheduled", "publishing"])
+        except Exception:
+            logger.exception("Could not load the scheduled manual posts; none were re-armed")
+            return
+        for post in posts:
+            try:
+                if post.status == "publishing":
+                    self.repo.set_manual_post_status(post.id, "scheduled")
+                run_at = post.publish_at or now
+                if run_at.tzinfo is None:
+                    run_at = run_at.replace(tzinfo=timezone.utc)
+                if run_at <= now:
+                    run_at = now + timedelta(seconds=2)
+                self._arm_job(post.id, run_at)
+            except Exception:
+                logger.exception("Could not re-arm scheduled manual post %s", getattr(post, "id", "?"))
 
     def handle_update(self, update: dict[str, Any]) -> None:
         callback_query = update.get("callback_query")
@@ -1026,16 +1058,63 @@ class AdminIntakeBot:
             try:
                 updates = self._get_updates(timeout=25)
             except Exception as exc:
-                logger.warning("Admin intake poll failed: %s", exc)
+                logger.warning("Admin intake poll failed: %s", _poll_failure_reason(exc))
                 if self._stop.wait(3):
                     return
                 continue
             for update in updates:
                 self._offset = int(update["update_id"]) + 1
                 try:
-                    self.handle_update(update)
+                    self._dispatch(update)
                 except Exception:
-                    logger.exception("Failed to handle Telegram update %s", update.get("update_id"))
+                    logger.exception("Failed to queue Telegram update %s", update.get("update_id"))
+
+    def _dispatch(self, update: dict[str, Any]) -> None:
+        """Hand the update to its chat's worker; chats run side by side, each in order."""
+        key = _update_chat_key(update)
+        with self._chats_lock:
+            chat_queue = self._chat_queues.get(key)
+            if chat_queue is None:
+                chat_queue = queue.Queue()
+                self._chat_queues[key] = chat_queue
+                threading.Thread(
+                    target=self._serve_chat,
+                    args=(key, chat_queue),
+                    name=f"telegram-admin-chat-{key or 'other'}",
+                    daemon=True,
+                ).start()
+            chat_queue.put(update)
+            busy_since = self._busy_since.get(key)
+        if busy_since is not None:
+            self._note_busy(key, update, busy_since)
+
+    def _serve_chat(self, key: str, chat_queue: queue.Queue) -> None:
+        while not self._stop.is_set():
+            try:
+                update = chat_queue.get(timeout=_CHAT_WORKER_IDLE_SECONDS)
+            except queue.Empty:
+                with self._chats_lock:
+                    if chat_queue.empty():
+                        if self._chat_queues.get(key) is chat_queue:
+                            del self._chat_queues[key]
+                        return
+                continue
+            self._busy_since[key] = time.monotonic()
+            try:
+                self.handle_update(update)
+            except Exception:
+                logger.exception("Failed to handle Telegram update %s", update.get("update_id"))
+            finally:
+                self._busy_since.pop(key, None)
+
+    def _note_busy(self, key: str, update: dict[str, Any], busy_since: float) -> None:
+        """Tell an admin, once per long job, that the bot is alive and their message waits its turn."""
+        if time.monotonic() - busy_since < _BUSY_NOTE_AFTER_SECONDS:
+            return
+        if self._busy_noted.get(key) == busy_since or _update_user_id(update) not in self.admin_user_ids:
+            return
+        self._busy_noted[key] = busy_since
+        self._send(key, _BUSY_NOTE)
 
     def _discard_backlog(self) -> None:
         while not self._stop.is_set():
@@ -1101,6 +1180,43 @@ class AdminIntakeBot:
                     logger.warning("Telegram sendMessage failed (%s): %s", response.status_code, response.text)
         except Exception as exc:
             logger.warning("Telegram sendMessage failed: %s", exc)
+
+
+def _update_chat_key(update: dict[str, Any]) -> str:
+    """The chat an update belongs to; updates that are not a private chat or a button share ""."""
+    query = update.get("callback_query")
+    if isinstance(query, dict):
+        chat = (query.get("message") or {}).get("chat") or {}
+        return str(chat.get("id") or (query.get("from") or {}).get("id") or "")
+    message = update.get("message")
+    if isinstance(message, dict):
+        chat = message.get("chat") or {}
+        if chat.get("type") == "private":
+            return str(chat.get("id") or (message.get("from") or {}).get("id") or "")
+    return ""
+
+
+def _update_user_id(update: dict[str, Any]) -> int | None:
+    source = update.get("callback_query") or update.get("message") or {}
+    try:
+        return int((source.get("from") or {}).get("id"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _poll_failure_reason(exc: Exception) -> str:
+    """The poll error, with what it usually means when the bot stops answering."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status == 409:
+        return (
+            f"{exc} — Telegram 409 Conflict: another getUpdates call with this bot token is running "
+            "(a second copy of the bot, on a server or a laptop, or a webhook). Only one copy may poll; "
+            "if this repeats, stop the other copy."
+        )
+    if status in (401, 404):
+        return f"{exc} — Telegram rejects the bot token: check TELEGRAM_BOT_TOKEN in .env (revoked in @BotFather?)."
+    return str(exc)
 
 
 def _parse_destination(text: str) -> str | None:

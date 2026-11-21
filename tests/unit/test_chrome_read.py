@@ -100,7 +100,7 @@ def test_chrome_reads_never_overlap(monkeypatch: pytest.MonkeyPatch) -> None:
     running: list[int] = []
     peak: list[int] = []
 
-    async def read(url: str, timeout_seconds: float) -> tuple[str, str]:
+    async def read(url: str, timeout_seconds: float, progress=None) -> tuple[str, str]:
         running.append(1)
         peak.append(len(running))
         await asyncio.sleep(0.05)
@@ -117,6 +117,59 @@ def test_chrome_reads_never_overlap(monkeypatch: pytest.MonkeyPatch) -> None:
         thread.join()
     assert max(peak) == 1
     assert time.monotonic() - started >= 0.15
+
+
+def _fake_nodriver(monkeypatch: pytest.MonkeyPatch, start) -> None:
+    fake = types.SimpleNamespace(start=start, util=types.SimpleNamespace(get_registered_instances=lambda: set()))
+    monkeypatch.setitem(sys.modules, "nodriver", fake)
+    monkeypatch.setattr(product_page, "_ensure_virtual_display", lambda: None)
+
+
+def test_a_chrome_that_never_answers_is_cut_off_and_frees_the_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """nodriver waits for Chrome's answers without a limit; a frozen Chrome used to hold the lock for good."""
+
+    async def start(**kwargs):
+        await asyncio.Event().wait()
+
+    _fake_nodriver(monkeypatch, start)
+    monkeypatch.setattr(product_page, "BROWSER_READ_LIMIT_SECONDS", 0.3)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        _fetch_html_browser(URL, 40)
+    assert time.monotonic() - started < 5
+    assert not product_page._CHROME_LOCK.locked()
+
+
+def test_a_read_cut_off_keeps_the_fullest_view_it_had(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FreezingTab(_Tab):
+        """The page reads fine; the store's own data never arrives."""
+
+        async def evaluate(self, script: str, await_promise: bool = False, return_by_value: bool = False):
+            if "itxrest" in script:
+                await asyncio.Event().wait()
+            return await super().evaluate(script, await_promise, return_by_value)
+
+    tab = _FreezingTab([FULL])
+
+    class _Browser:
+        async def get(self, url: str) -> _Tab:
+            return tab
+
+    async def start(**kwargs):
+        return _Browser()
+
+    _fake_nodriver(monkeypatch, start)
+    monkeypatch.setattr(product_page, "BROWSER_READ_LIMIT_SECONDS", 1.0)
+    html, page_url = _fetch_html_browser(URL, 40)
+    assert "data-shadow-host" in html
+    assert page_url == URL
+    assert not product_page._CHROME_LOCK.locked()
+
+
+def test_the_store_data_script_gives_up_on_an_answer_that_never_comes() -> None:
+    script = product_page._STORE_API_JS
+    assert "AbortController" in script and "controller.abort()" in script
+    assert "signal: controller.signal" in script
 
 
 BASE = "https://static.pullandbear.net/assets/public/aa/bb/cc/dd"

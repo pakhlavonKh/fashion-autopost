@@ -17,6 +17,11 @@ from llm.base import HighlightSelectionResult, LLMProvider, PromptLoader, Select
 
 logger = logging.getLogger(__name__)
 
+# The SDK waits up to 10 minutes for an answer, and retries. The admin bot asks the model
+# for a product's Russian title while the admin waits for a reply, so a hung request
+# must give up in time.
+OPENAI_TIMEOUT_SECONDS = 60.0
+
 
 class FilePromptLoader:
     """Loads prompt from disk fresh on each execution (SRS FR-2.3)."""
@@ -78,7 +83,7 @@ class OpenAIProvider:
             logger.info("OpenAIProvider running in mock mode: selecting up to %d items.", max_items)
             return self._mock_selection(candidates, max_items)
 
-        client = OpenAI(api_key=self.api_key)
+        client = OpenAI(api_key=self.api_key, timeout=OPENAI_TIMEOUT_SECONDS)
 
         # Prepare candidate payload for the LLM
         candidate_payload = [
@@ -242,7 +247,7 @@ class OpenAIProvider:
             "Keep the suggestedName concise (under 16 characters)."
         )
 
-        client = OpenAI(api_key=self.api_key)
+        client = OpenAI(api_key=self.api_key, timeout=OPENAI_TIMEOUT_SECONDS)
         for attempt in range(self.max_retries + 1):
             try:
                 response = client.chat.completions.create(
@@ -332,7 +337,7 @@ class OpenAIProvider:
         if self._is_mock:
             return None
 
-        client = OpenAI(api_key=self.api_key)
+        client = OpenAI(api_key=self.api_key, timeout=OPENAI_TIMEOUT_SECONDS)
         system_instruction = (
             "You are an expert fashion translator for a luxury clothing store.\n"
             "Translate the given fashion color / shade name into Russian in lowercase.\n"
@@ -376,7 +381,7 @@ class OpenAIProvider:
         if self._is_mock:
             return None
 
-        client = OpenAI(api_key=self.api_key)
+        client = OpenAI(api_key=self.api_key, timeout=OPENAI_TIMEOUT_SECONDS)
         system_instruction = (
             "You translate fashion product names from any store language into Russian.\n"
             "Output ONLY a short, natural Russian product name (1-6 words), capitalised like a sentence, "
